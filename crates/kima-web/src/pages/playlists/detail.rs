@@ -232,7 +232,7 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
                 <div class="absolute inset-0 scale-110 blur-md opacity-20">
                     <img alt="" class="absolute inset-0 w-full h-full object-cover" src={src} />
                 </div>
-                <div class="absolute inset-0 bg-gradient-to-b from-transparent via-[#0a0a0a]/80 to-[#0a0a0a]"></div>
+                <div class="absolute inset-0 bg-gradient-to-b from-transparent via-(--bg-primary)/80 to-(--bg-primary)"></div>
             </div>
         },
         None => dom! { <span class="hidden" /> },
@@ -349,7 +349,7 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
 
     let list = if tracks.is_empty() {
         dom! {
-            <div class="relative overflow-hidden rounded-lg border-2 border-white/10 bg-gradient-to-br from-[#0f0f0f] to-[#0a0a0a] p-12">
+            <div class="relative overflow-hidden rounded-lg border-2 border-white/10 bg-gradient-to-br from-(--bg-secondary) to-(--bg-primary) p-12">
                 <div class="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-brand to-brand-dark"></div>
                 <div class="flex items-center gap-3 mb-8 pb-4 border-b border-white/10">
                     <div class="w-2 h-2 bg-brand"></div>
@@ -374,7 +374,7 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
     };
 
     dom! {
-        <div class="min-h-screen bg-gradient-to-b from-[#0a0a0a] to-black section-stack">
+        <div class="min-h-screen bg-gradient-to-b from-(--bg-primary) to-black section-stack">
             <div class="relative">
                 {backdrop}
                 <div class="relative page-shell pt-8 pb-6">

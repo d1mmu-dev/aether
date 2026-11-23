@@ -3,6 +3,7 @@
 mod api;
 mod app;
 mod auth;
+mod brand;
 mod components;
 mod icons;
 #[rustfmt::skip]

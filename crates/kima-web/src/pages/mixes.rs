@@ -33,14 +33,14 @@ pub fn mix_covers(mix: &Mix, token: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// The hero's background: the mix's colour over a fade to the page, or upstream's purple default.
+/// The hero's background: the mix's colour over a fade to the page, or the Midnight Slate default (upstream: purple, D-284).
 pub fn hero_background(color: Option<&str>) -> String {
     match color.filter(|c| !c.is_empty() && !c.contains([';', '{', '}', '<', '>'])) {
         Some(color) => {
-            format!("background: {color}, linear-gradient(to bottom, transparent, #1a1a1a);")
+            format!("background: {color}, linear-gradient(to bottom, transparent, var(--bg-hover));")
         }
         None => {
-            "background: linear-gradient(to bottom, rgba(88, 28, 135, 0.4), #1a1a1a, transparent);"
+            "background: linear-gradient(to bottom, rgba(74, 106, 144, 0.4), var(--bg-hover), transparent);"
                 .to_owned()
         }
     }
@@ -420,7 +420,7 @@ fn mix_body(ctx: &Ctx, id: &str, detail: &Rc<MixDetail>) -> DomNode {
         <div class="min-h-screen" data-testid="mix-page">
             <div class="relative pt-16 pb-10 page-shell" style={background}>
                 <div class="flex items-end gap-6">
-                    <div class="relative flex items-center justify-center w-[140px] h-[140px] md:w-[192px] md:h-[192px] bg-[#282828] rounded shrink-0 overflow-hidden">
+                    <div class="relative flex items-center justify-center w-[140px] h-[140px] md:w-[192px] md:h-[192px] bg-(--bg-hover) rounded shrink-0 overflow-hidden">
                         {cover_art}
                     </div>
                     <div class="flex-1 min-w-0 pb-1">
@@ -434,7 +434,7 @@ fn mix_body(ctx: &Ctx, id: &str, detail: &Rc<MixDetail>) -> DomNode {
                     </div>
                 </div>
             </div>
-            <div class="bg-gradient-to-b from-[#1a1a1a]/60 to-transparent page-shell py-4">
+            <div class="bg-gradient-to-b from-(--bg-hover)/60 to-transparent page-shell py-4">
                 <div class="flex items-center gap-4">
                     {play}
                     {shuffle}
@@ -549,7 +549,7 @@ fn track_row(
                 </button>
             </div>
             <div class="flex items-center gap-3 min-w-0">
-                <div class="relative w-10 h-10 bg-[#282828] rounded flex items-center justify-center overflow-hidden shrink-0">{cover}</div>
+                <div class="relative w-10 h-10 bg-(--bg-hover) rounded flex items-center justify-center overflow-hidden shrink-0">{cover}</div>
                 <div class="min-w-0">
                     <p class={title_class}>{title}</p>
                     <p class="text-xs text-[var(--text-secondary)] truncate">{artist}</p>
@@ -600,10 +600,9 @@ mod tests {
     fn the_hero_takes_the_mix_colour_or_upstreams_default() {
         assert_eq!(
             hero_background(Some("linear-gradient(red, blue)")),
-            "background: linear-gradient(red, blue), linear-gradient(to bottom, transparent, #1a1a1a);"
+            "background: linear-gradient(red, blue), linear-gradient(to bottom, transparent, var(--bg-hover));"
         );
-        let fallback =
-            "background: linear-gradient(to bottom, rgba(88, 28, 135, 0.4), #1a1a1a, transparent);";
+        let fallback = "background: linear-gradient(to bottom, rgba(74, 106, 144, 0.4), var(--bg-hover), transparent);";
         assert_eq!(hero_background(None), fallback);
         assert_eq!(hero_background(Some("")), fallback);
         // A colour cannot close the declaration and add another.

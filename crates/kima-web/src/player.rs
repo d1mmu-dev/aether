@@ -1222,7 +1222,7 @@ impl Player {
                 })
             });
             let tile = dom! {
-                <div class="relative w-full h-full bg-gradient-to-br from-[#2a2a2a] to-[#1a1a1a] rounded-lg overflow-hidden flex items-center justify-center transition-transform duration-300">
+                <div class="relative w-full h-full bg-gradient-to-br from-(--border-interactive) to-(--bg-hover) rounded-lg overflow-hidden flex items-center justify-center transition-transform duration-300">
                     {inner}
                 </div>
             };
@@ -1291,7 +1291,7 @@ impl Player {
 
         let volume_value = self.0.volume.map(|v| format!("{v}"));
         let volume_style = self.0.volume.map(|v| {
-            format!("background: linear-gradient(to right, rgb(252, 162, 0) {v}%, rgba(255, 255, 255, 0.15) {v}%);")
+            format!("background: linear-gradient(to right, rgb(139, 175, 209) {v}%, rgba(223, 231, 239, 0.15) {v}%);")
         });
         let volume_now = self.0.volume.map(|v| format!("{v}"));
         let mute_icon = self.0.volume.render_value(|v| {
@@ -1495,10 +1495,10 @@ impl Player {
             let artist = item.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default();
             dom! {
                 <div class="fixed left-2 right-2 z-(--z-player) min-[1025px]:hidden" style="bottom: calc(var(--nav-h) + 8px);">
-                    <div class="pointer-events-none absolute bottom-full inset-x-4 h-6 rounded-t-full bg-gradient-to-b from-transparent to-[#15100a]/85"></div>
-                    <div class="rounded-2xl p-[2px]" style="background: linear-gradient(90deg, rgb(252, 162, 0) 0%, rgb(212, 140, 0) 50%, rgb(252, 162, 0) 100%);">
+                    <div class="pointer-events-none absolute bottom-full inset-x-4 h-6 rounded-t-full bg-gradient-to-b from-transparent to-(--bg-primary)/85"></div>
+                    <div class="rounded-2xl p-[2px]" style="background: linear-gradient(90deg, rgb(139, 175, 209) 0%, rgb(109, 143, 179) 50%, rgb(139, 175, 209) 100%);">
                         <div class="rounded-xl overflow-hidden">
-                            <div class="relative bg-gradient-to-r from-[#1a1508] via-[#1a1200] to-[#1a1508]">
+                            <div class="relative bg-gradient-to-r from-(--bg-secondary) via-(--bg-primary) to-(--bg-secondary)">
                                 <div class="absolute inset-0 bg-gradient-to-r from-brand/25 via-brand-dark/35 to-brand/25"></div>
                                 <div class="relative h-[2px] bg-white/20 w-full">
                                     <div class="h-full bg-brand transition-all duration-150" style={progress.clone()}></div>

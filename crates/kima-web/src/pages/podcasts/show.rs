@@ -73,7 +73,7 @@ fn hero(
     };
     dom! {
         <div class="page-shell pt-8 pb-6 flex flex-col sm:flex-row gap-6">
-            <div class="w-48 h-48 md:w-[192px] md:h-[192px] shrink-0 rounded-lg overflow-hidden bg-[#181818] ring-1 ring-white/10 flex items-center justify-center">
+            <div class="w-48 h-48 md:w-[192px] md:h-[192px] shrink-0 rounded-lg overflow-hidden bg-(--bg-tertiary) ring-1 ring-white/10 flex items-center justify-center">
                 {art}
             </div>
             <div class="flex flex-col justify-end min-w-0">

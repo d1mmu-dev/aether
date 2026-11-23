@@ -30,15 +30,22 @@
     --text-micro: 0.6875rem;     /* 11px */
     --text-micro--line-height: 1.4;
 
-    --color-brand: #fca200;
-    --color-brand-hover: #e69200;
-    --color-brand-light: #fcb84d;
-    --color-brand-dark: #d48c00;
-    /* Glyphs and text that sit on an amber fill. */
-    --color-on-brand: #160a02;
+    /* Aether "Midnight Slate" (owner decision D-284): a muted blue-grey accent on navy. It supersedes the
+     * upstream amber/violet brand on purpose; status, mood and content-type colours below keep their meaning. */
+    --color-brand: #8bafd1;
+    --color-brand-hover: #7a9fc4;
+    --color-brand-light: #a3c0dc;
+    --color-brand-dark: #6d8fb3;
+    /* Glyphs and text that sit on an accent fill (8:1 on #8bafd1). */
+    --color-on-brand: #0d1420;
 
-    /* The violet cosmos bleed behind page headers and hero backdrops. */
-    --color-ambient: #773b97;
+    /* Tailwind's black and white follow the palette: `bg-black` is the navy ground, `text-white` the primary
+     * text, and `white/10`-style overlays tint toward blue-grey instead of neutral grey. */
+    --color-black: #0d1420;
+    --color-white: #dfe7ef;
+
+    /* The slate bleed behind page headers and hero backdrops. */
+    --color-ambient: #4a6a90;
 
     /* One colour per content type, used only to mark the type: section bars,
      * type dots. Controls and the playing state always use brand. */
@@ -46,7 +53,7 @@
     --color-type-album: oklch(0.63 0.07 195);
     --color-type-podcast: oklch(0.6 0.125 350);
     --color-type-audiobook: oklch(0.57 0.155 33);
-    --color-type-artist: #fca200;
+    --color-type-artist: #8bafd1;
 
     /* Status: outcome of an action, never decoration. */
     --color-success: #22c55e;
@@ -114,24 +121,24 @@
 }
 
 :root {
-    /* Kima Design System - Dark Theme Only */
+    /* Aether design system, Midnight Slate (dark only). */
 
     /* Background Layers */
-    --bg-primary: #0a0a0a; /* Primary canvas */
-    --bg-secondary: #0f0f0f; /* Cards, panels */
-    --bg-tertiary: #141414; /* Nested content, wells */
-    --bg-hover: #1a1a1a; /* Modals, dropdowns, hover */
+    --bg-primary: #0d1420; /* Primary canvas */
+    --bg-secondary: #151f2e; /* Cards, panels */
+    --bg-tertiary: #1a2638; /* Nested content, wells */
+    --bg-hover: #1e2b3f; /* Modals, dropdowns, hover */
 
     /* Borders */
-    --border-subtle: #1c1c1c; /* Subtle borders (default) */
-    --border-interactive: #262626; /* Interactive elements */
-    --border-focus: #333333; /* Focus, selected states */
+    --border-subtle: #223047; /* Subtle borders (default) */
+    --border-interactive: #2a3a55; /* Interactive elements */
+    --border-focus: #34476a; /* Focus, selected states */
 
-    /* Three text tones, contrast measured against the #0a0a0a ground. */
-    --text-primary: #e5e5e5; /* 16.4:1 -- titles, values, emphasis */
-    --text-secondary: #a3a3a3; /* 8.6:1  -- sentences, descriptions, help text */
-    /* 5.4:1 on the page ground, 4.7:1 on the lightest card surface (#1a1a1a). */
-    --text-muted: #858585; /* labels, meta, timestamps */
+    /* Three text tones, contrast measured against the #0d1420 ground. */
+    --text-primary: #dfe7ef; /* 14.8:1 -- titles, values, emphasis */
+    --text-secondary: #9aaaba; /* 7.8:1  -- sentences, descriptions, help text */
+    /* 5.9:1 on the page ground, 4.5:1 on the lightest card surface (#1e2b3f). */
+    --text-muted: #8193a8; /* labels, meta, timestamps */
 
 /* Stacking order: one ladder, named by what sits on each rung. */
     --z-raised: 10;            /* overlay inside a component: hover play, scrim */
@@ -347,7 +354,7 @@ code {
         line-height: 1.1;
         font-weight: 700;
         letter-spacing: -0.025em;
-        color: #fff;
+        color: var(--text-primary);
     }
     @media (min-width: 48rem) {
         .t-page-title {
@@ -367,7 +374,7 @@ img {
 
 body {
     background: var(--bg-primary);
-    color: #e5e5e5;
+    color: var(--text-primary);
     font-family: "Montserrat", -apple-system, BlinkMacSystemFont,
         "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     min-height: 100vh;
@@ -550,14 +557,14 @@ button:disabled {
 }
 
 
-/* Vibe map, the library as a night sky (upstream app/globals.css, verbatim). */
+/* Vibe map, the library as a night sky (upstream app/globals.css shape; Midnight Slate stops, D-284). */
 .vibe-sky {
-    background: radial-gradient(115% 90% at 50% 40%, #180b1e 0%, #0b0510 25%, #040207 48%, #000000 68%);
+    background: radial-gradient(115% 90% at 50% 40%, #16233a 0%, #0d1420 25%, #090e17 48%, #05080e 68%);
 }
 
-/* Floating surfaces over the map: dark violet glass, so the stars read through. */
+/* Floating surfaces over the map: dark navy glass, so the stars read through. */
 .vibe-glass {
-    background: rgba(8, 5, 14, 0.66);
+    background: rgba(9, 14, 23, 0.66);
     border: 1px solid rgba(255, 255, 255, 0.1);
     backdrop-filter: blur(18px) saturate(120%);
     -webkit-backdrop-filter: blur(18px) saturate(120%);
@@ -565,5 +572,5 @@ button:disabled {
 }
 
 .vibe-glass--solid {
-    background: rgba(12, 8, 20, 0.94);
+    background: rgba(13, 20, 32, 0.94);
 }

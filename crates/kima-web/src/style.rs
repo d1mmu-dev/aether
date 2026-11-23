@@ -6,17 +6,19 @@
 //! checked in, so building kima-web needs neither Node nor Tailwind. Views then use the same utility classes
 //! as the legacy components (`class="flex items-center gap-3 ..."`), hover/focus states included.
 //!
-//! Montserrat (SIL OFL 1.1) and the logo mask are embedded as data URIs so the page needs no extra files
+//! Montserrat (SIL OFL 1.1) and the Aether logo mask (`assets/aether-mark.svg`) are embedded as data URIs so the page needs no extra files
 //! (the SSR proxy serves only the wasm and its loader) and the font is there on first paint.
 
 use std::sync::OnceLock;
 
 const CSS: &str = include_str!("../assets/kima.css");
 const FONT: &[u8] = include_bytes!("../assets/fonts/montserrat-latin.woff2");
-const MARK: &[u8] = include_bytes!("../assets/kima.webp");
+const MARK: &[u8] = include_bytes!("../assets/aether-mark.svg");
 
-/// The logo's gradient (upstream kima-hub `frontend/lib/brandGradient.ts`), amber at the top to azure at the bottom.
-pub const BRAND_GRADIENT: &str = "linear-gradient(180deg, #fca506 2%, #fdac15 9%, #fdb530 17%, #fcb253 24%, #f69472 31%, #e86690 39%, #cd45aa 46%, #a633c2 54%, #7731d2 61%, #483ad9 69%, #234ed9 76%, #0e6bd3 83%, #0583cd 91%, #0191c9 98%)";
+/// The Aether mark's gradient (Midnight Slate, D-284): pale blue-grey at the top to the accent and a deep slate
+/// blue at the bottom. Upstream's amber-to-azure `brandGradient.ts` is intentionally superseded.
+pub const BRAND_GRADIENT: &str =
+    "linear-gradient(180deg, #dfe7ef 2%, #b8cde2 30%, #8bafd1 60%, #5f84ad 98%)";
 
 /// Standard base64 (RFC 4648, padded).
 pub fn base64(bytes: &[u8]) -> String {
@@ -52,7 +54,7 @@ pub fn stylesheet() -> &'static str {
         )
         .replace(
             "__KIMA_MARK__",
-            &format!("\"data:image/webp;base64,{}\"", base64(MARK)),
+            &format!("\"data:image/svg+xml;base64,{}\"", base64(MARK)),
         )
     })
 }

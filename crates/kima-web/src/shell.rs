@@ -12,6 +12,7 @@ use kima_api_types::playlists::PlaylistListEntry;
 use vertigo::{Computed, DomNode, Reactive, Resource, Value, bind, dom, get_driver};
 
 use crate::api::client::load;
+use crate::brand::PRODUCT_NAME;
 use crate::icons::icon;
 use crate::route::Route;
 use crate::style::BRAND_GRADIENT;
@@ -23,7 +24,7 @@ const SCAN_POLL_SECS: u32 = 600;
 /// The logo mark at `size` px.
 pub fn kima_mark(size: u32, class: &'static str) -> DomNode {
     let style = format!("width: {size}px; height: {size}px; background: {BRAND_GRADIENT};");
-    dom! { <span role="img" aria-label="Kima" class={class} style={style}></span> }
+    dom! { <span role="img" aria-label={PRODUCT_NAME} class={class} style={style}></span> }
 }
 
 /// The collection item is lit on the artists, albums and tracks pages, on `/` (the artists with the mixes above
@@ -124,7 +125,7 @@ pub fn frame(ctx: &Ctx, page: DomNode) -> DomNode {
             <div class="flex-1 flex gap-2 p-2 pt-0 overflow-hidden tablet:contents">
                 {sidebar(ctx, route.clone())}
                 <main id="main-content" tabindex="-1"
-                    class="flex-1 bg-gradient-to-b from-[#1a1a1a] via-black to-black rounded-lg overflow-y-auto relative focus:outline-none tablet:mx-2 tablet:mt-[var(--topbar-h)] tablet:mb-[var(--nav-h)]">
+                    class="flex-1 bg-gradient-to-b from-(--bg-hover) via-black to-black rounded-lg overflow-y-auto relative focus:outline-none tablet:mx-2 tablet:mt-[var(--topbar-h)] tablet:mb-[var(--nav-h)]">
                     <div class="fixed inset-0 pointer-events-none z-0 overflow-hidden" style="will-change: auto; transform: translateZ(0px);">
                         <div class="absolute inset-0 bg-gradient-to-t from-purple-950/15 via-purple-950/5 to-transparent"></div>
                         <div class="absolute inset-0 bg-gradient-to-t from-black/40 via-black/10 to-transparent"></div>
@@ -333,7 +334,7 @@ fn top_bar_desktop(ctx: &Ctx, route: Computed<Route>) -> DomNode {
                         {icon("search", "absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--text-secondary)]")}
                         <input type="text" name="q" value={ctx.query.to_computed()} on_input={on_input}
                             placeholder="What do you want to play?" aria-label="Search" autocapitalize="none" autocomplete="off"
-                            class="w-full h-12 pl-12 pr-4 bg-[var(--bg-hover)] hover:bg-[#242424] border-2 border-transparent focus:border-white/20 rounded-full text-sm text-white placeholder-gray-400 transition-all duration-200 outline-none" />
+                            class="w-full h-12 pl-12 pr-4 bg-[var(--bg-hover)] hover:bg-(--border-subtle) border-2 border-transparent focus:border-white/20 rounded-full text-sm text-white placeholder-gray-400 transition-all duration-200 outline-none" />
                     </div>
                 </form>
             </div>
@@ -370,7 +371,7 @@ fn top_bar_mobile(ctx: &Ctx) -> DomNode {
                     {icon("search", "absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-secondary)]")}
                     <input type="text" name="q-mobile" value={ctx.query.to_computed()} on_input={on_input}
                         placeholder="Search..." aria-label="Search" autocapitalize="none" autocomplete="off"
-                        class="w-full h-11 pl-10 pr-3 bg-[var(--bg-hover)] hover:bg-[#242424] border-2 border-transparent focus:border-white/20 rounded-full text-sm text-white placeholder-gray-400 transition-all duration-200 outline-none" />
+                        class="w-full h-11 pl-10 pr-3 bg-[var(--bg-hover)] hover:bg-(--border-subtle) border-2 border-transparent focus:border-white/20 rounded-full text-sm text-white placeholder-gray-400 transition-all duration-200 outline-none" />
                 </div>
             </form>
             {profile_switcher(ctx)}
@@ -762,7 +763,7 @@ fn drawer(ctx: &Ctx) -> DomNode {
                         <div class="flex items-center justify-between px-5 py-4 border-b border-white/[0.06]">
                             <a class="flex items-center gap-3" href={Route::Home.to_string()} on_click={close.clone()}>
                                 {kima_mark(32, "kima-mark inline-block shrink-0")}
-                                <span class="text-lg font-bold text-white tracking-tight">"Kima"</span>
+                                <span class="text-lg font-bold text-white tracking-tight">{PRODUCT_NAME}</span>
                             </a>
                             <button class="w-9 h-9 flex items-center justify-center text-[var(--text-muted)] hover:text-white transition-colors duration-200 rounded-full hover:bg-white/10"
                                 aria-label="Close menu" on_click={close.clone()}>

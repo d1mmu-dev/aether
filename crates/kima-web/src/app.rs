@@ -12,6 +12,7 @@ use vertigo::{Computed, DomNode, Reactive, Value, bind, dom, get_driver};
 
 use crate::api::client::ApiClient;
 use crate::auth::{BrowserStorage, Session, effective_route};
+use crate::brand::{DOCUMENT_TITLE, THEME_COLOR};
 use crate::pages;
 use crate::player::Player;
 use crate::route::Route;
@@ -112,8 +113,8 @@ pub fn render() -> DomNode {
             <head>
                 <meta charset="utf-8" />
                 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-                <meta name="theme-color" content="#000000" />
-                <title>"kima"</title>
+                <meta name="theme-color" content={THEME_COLOR} />
+                <title>{DOCUMENT_TITLE}</title>
                 <style>{stylesheet()}</style>
             </head>
             <body class="antialiased">

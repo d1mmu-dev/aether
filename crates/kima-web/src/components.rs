@@ -167,7 +167,7 @@ pub fn library_page(ctx: &Ctx, tab: Tab, count: Option<String>, body: DomNode) -
         <div class="min-h-screen">
             <header class="relative">
                 <div aria-hidden="true" class="pointer-events-none absolute inset-x-0 -top-16 h-[300px]"
-                    style="background: radial-gradient(280px 280px at 82% 14%, rgba(119, 59, 151, 0.3), transparent 70%);"></div>
+                    style="background: radial-gradient(280px 280px at 82% 14%, rgba(74, 106, 144, 0.3), transparent 70%);"></div>
                 <div class="relative page-shell pt-8 pb-6">
                     <h1 class="text-4xl md:text-5xl font-bold tracking-tight text-white leading-none">"Collection"</h1>
                     <p class="mt-3 text-sm tabular-nums text-[var(--text-secondary)] truncate transition-opacity duration-500">{count}</p>
@@ -297,7 +297,7 @@ pub fn media_card(card: Card) -> DomNode {
     dom! {
         <a class="group block animate-rise [animation-delay:calc(var(--i)*45ms)]" href={href} style={style}>
             <div class="relative">
-                <div class="relative w-full h-full bg-[#181818] flex items-center justify-center overflow-hidden rounded-lg ring-1 ring-white/10 shadow-[0_8px_24px_rgba(0,0,0,0.35)] aspect-square">
+                <div class="relative w-full h-full bg-(--bg-tertiary) flex items-center justify-center overflow-hidden rounded-lg ring-1 ring-white/10 shadow-[0_8px_24px_rgba(0,0,0,0.35)] aspect-square">
                     {art}
                     <div class="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none"></div>
                     {play}

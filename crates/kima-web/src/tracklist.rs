@@ -187,7 +187,7 @@ pub fn library_rows(ctx: &Ctx, tracks: Vec<Track>) -> DomNode {
             let len = format_time(t.duration as f64);
             let queue = queue_button(ctx, t, ROW_ACTION);
             let add = add_to_playlist(ctx, t.id.to_string(), ROW_ACTION);
-            let cover = cover_box(ctx, t, 80, "relative w-11 h-11 bg-[#181818] rounded border border-white/10 flex items-center justify-center overflow-hidden shrink-0");
+            let cover = cover_box(ctx, t, 80, "relative w-11 h-11 bg-(--bg-tertiary) rounded border border-white/10 flex items-center justify-center overflow-hidden shrink-0");
             let style = format!("--i: {};", i.min(20));
             dom! {
                 <div data-track-row="true" class={row_class} style={style}>
@@ -252,7 +252,7 @@ pub fn compact_rows(ctx: &Ctx, tracks: Vec<Track>) -> DomNode {
             let album_href = Route::Tracks { album: Some(t.album.id.to_string()) }.to_string();
             let len = format_time(t.duration as f64);
             let n = (i + 1).to_string();
-            let cover = cover_box(ctx, t, 80, "w-10 h-10 bg-[#181818] rounded overflow-hidden flex-shrink-0 relative");
+            let cover = cover_box(ctx, t, 80, "w-10 h-10 bg-(--bg-tertiary) rounded overflow-hidden flex-shrink-0 relative");
             let add = add_to_playlist(ctx, t.id.to_string(), "w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-secondary)] hover:text-white hover:bg-white/10 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-all");
             dom! {
                 <div data-track-row="true" class="flex items-center gap-3 p-2 rounded-md group transition-colors hover:bg-white/5">

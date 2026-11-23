@@ -5,6 +5,7 @@ use kima_api_types::onboarding::OnboardingStatus;
 use vertigo::{DomNode, Resource, Value, bind, dom, get_driver};
 
 use crate::api::client::load;
+use crate::brand::{FOOTER, PRODUCT_NAME};
 use crate::route::Route;
 use crate::shell::kima_mark;
 use crate::ui::{BTN_PRIMARY, Ctx, INPUT, LABEL, flag};
@@ -108,11 +109,11 @@ pub fn render(ctx: &Ctx) -> DomNode {
 
     dom! {
         <div class="min-h-screen w-full relative overflow-hidden">
-            <div class="absolute inset-0 bg-[#000]">
+            <div class="absolute inset-0 bg-black">
                 <div class="absolute inset-0 bg-gradient-to-br from-brand/5 via-transparent to-transparent"></div>
                 <div class="opacity-[0.08]">
                     <div class="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-                        <div class="absolute inset-0 bg-gradient-to-t to-transparent" style="background-image: linear-gradient(to top, rgba(252, 162, 0, 0.15), rgba(252, 162, 0, 0.05), transparent);"></div>
+                        <div class="absolute inset-0 bg-gradient-to-t to-transparent" style="background-image: linear-gradient(to top, rgba(139, 175, 209, 0.15), rgba(139, 175, 209, 0.05), transparent);"></div>
                         <div class="absolute inset-0 bg-gradient-to-t from-black/40 via-black/10 to-transparent"></div>
                     </div>
                 </div>
@@ -125,12 +126,12 @@ pub fn render(ctx: &Ctx) -> DomNode {
                                 <div class="absolute inset-0 bg-white/10 blur-xl rounded-full group-hover:bg-white/20 transition-all duration-300"></div>
                                 {kima_mark(40, "kima-mark inline-block shrink-0 relative z-(--z-raised)")}
                             </div>
-                            <span class="text-3xl font-bold text-white">"Kima"</span>
+                            <span class="text-3xl font-bold text-white">{PRODUCT_NAME}</span>
                         </div>
                     </div>
-                    <div class="bg-[#111]/90 rounded-lg p-6 md:p-8 border border-white/10 animate-rise transition-shadow duration-200">
+                    <div class="bg-(--bg-secondary)/90 rounded-lg p-6 md:p-8 border border-white/10 animate-rise transition-shadow duration-200">
                         <h1 class="text-2xl font-bold text-white mb-1 text-center">"Welcome back"</h1>
-                        <p class="text-[var(--text-secondary)] text-center mb-8">"Sign in to continue to Kima"</p>
+                        <p class="text-[var(--text-secondary)] text-center mb-8">{format!("Sign in to continue to {PRODUCT_NAME}")}</p>
                         <form class="space-y-4" on_submit={submit}>
                             <div>
                                 <label for="username" class={LABEL}>"Username"</label>
@@ -150,7 +151,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
                         {first_run}
                         {setup_hint}
                     </div>
-                    <p class="text-center text-[var(--text-muted)] text-sm mt-6">"© 2026 Kima. Your music, your way."</p>
+                    <p class="text-center text-[var(--text-muted)] text-sm mt-6">{FOOTER}</p>
                 </div>
             </div>
         </div>

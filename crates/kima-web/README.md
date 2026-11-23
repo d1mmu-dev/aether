@@ -31,6 +31,17 @@ and a hashed `wasm_run.<hash>.js`. vertigo 0.13 writes no static `index.html` an
 Set `VERTIGO=/path/to/vertigo` to pick a CLI that is not first on `PATH`; keep it at the same version as the
 `vertigo` crate (`=0.13.4` in `Cargo.toml`).
 
+## Aether brand and Midnight Slate theme (D-284)
+
+The UI shows the product as **Aether** (`src/brand.rs`: name, document title, theme colour, footer) with its own
+mark (`assets/aether-mark.svg`, embedded as a mask). Colours come from the central tokens in
+`assets/kima-base.css`: ground `#0D1420`, surfaces `#151F2E`, borders `#223047`, accent `#8BAFD1`, text
+`#DFE7EF`/`#9AAABA`; Tailwind `black`/`white` follow the palette. Mood, genre, decade, content-type and status
+colours keep their meaning. Upstream colour parity is superseded on purpose; layout parity is still the target.
+`brand.rs` tests guard the visible name, the tokens, the status colours and (until the technical rename) the
+storage keys. The crate, its storage keys and environment variables still carry the `kima` name: that is the
+next rebrand stage (`docs/superpowers/plans/2026-11-23-aether-rebrand.md`).
+
 ## Account profiles (M-PROF, D-248)
 
 - Login fetches the account-local profile list before entering the app: more than one profile opens

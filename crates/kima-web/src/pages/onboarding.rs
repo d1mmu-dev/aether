@@ -7,6 +7,7 @@ use serde_json::Value as Json;
 use vertigo::{DomNode, Resource, Value, bind, dom, get_driver};
 
 use crate::api::client::load;
+use crate::brand::{FOOTER, PRODUCT_NAME};
 use crate::route::Route;
 use crate::shell::kima_mark;
 use crate::ui::{BTN_PRIMARY, Ctx, LABEL, flag};
@@ -100,7 +101,7 @@ fn form(ctx: &Ctx) -> DomNode {
 
     dom! {
         <div class="min-h-screen relative overflow-hidden">
-            <div class="absolute inset-0 bg-[#000]">
+            <div class="absolute inset-0 bg-black">
                 <div class="absolute inset-0 bg-gradient-to-br from-brand/5 via-transparent to-transparent"></div>
             </div>
             <div class="relative z-(--z-raised) min-h-screen flex items-center justify-center p-6">
@@ -111,16 +112,16 @@ fn form(ctx: &Ctx) -> DomNode {
                                 <div class="absolute inset-0 bg-white/10 blur-xl rounded-full"></div>
                                 {kima_mark(48, "kima-mark inline-block shrink-0 relative z-(--z-raised)")}
                             </div>
-                            <h1 class="text-4xl font-bold text-white">"Kima Hub"</h1>
+                            <h1 class="text-4xl font-bold text-white">{PRODUCT_NAME}</h1>
                         </div>
                         <p class="text-[var(--text-secondary)] text-lg">"Welcome to your personal music streaming platform"</p>
                     </div>
-                    <div class="bg-[#111]/90 rounded-lg border border-white/10 overflow-hidden">
+                    <div class="bg-(--bg-secondary)/90 rounded-lg border border-white/10 overflow-hidden">
                         <div class="p-6 md:p-8">
                             <div class="space-y-6">
                                 <div>
                                     <h2 class="text-2xl font-bold text-white mb-1">"Create Your Admin Account"</h2>
-                                    <p class="text-[var(--text-secondary)]">"This is the owner account for your Kima server. You'll manage users, integrations, and settings from here."</p>
+                                    <p class="text-[var(--text-secondary)]">{format!("This is the owner account for your {PRODUCT_NAME} server. You'll manage users, integrations, and settings from here.")}</p>
                                 </div>
                                 <form class="space-y-4 mt-8" on_submit={submit}>
                                     <div>
@@ -144,7 +145,7 @@ fn form(ctx: &Ctx) -> DomNode {
                             </div>
                         </div>
                     </div>
-                    <p class="text-center text-[var(--text-muted)] text-sm mt-6">"© 2026 Kima. Your music, your way."</p>
+                    <p class="text-center text-[var(--text-muted)] text-sm mt-6">{FOOTER}</p>
                 </div>
             </div>
         </div>

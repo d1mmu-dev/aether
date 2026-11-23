@@ -235,7 +235,7 @@ fn station_card(
     let style = format!("--i: {index};");
     let wash = format!("background: linear-gradient(135deg, {hue}8c, {hue}1a);");
     let shade = format!(
-        "background: linear-gradient(to top, rgb(0 0 0 / 0.9), rgb(0 0 0 / 0.4) 70%), linear-gradient(135deg, {hue}40, transparent 60%);"
+        "background: linear-gradient(to top, rgb(13 20 32 / 0.9), rgb(13 20 32 / 0.4) 70%), linear-gradient(135deg, {hue}40, transparent 60%);"
     );
     let token = ctx.session.current_token();
     let cover = match cover.and_then(|c| cover_url(&c, 300, token.as_deref())) {

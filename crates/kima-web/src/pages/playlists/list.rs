@@ -182,7 +182,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
     );
 
     dom! {
-        <div class="min-h-screen bg-gradient-to-b from-[#0a0a0a] to-black section-stack">
+        <div class="min-h-screen bg-gradient-to-b from-(--bg-primary) to-black section-stack">
             <header class="page-shell pt-8 pb-6">
                 {eyebrow("Your library")}
                 <div class="flex flex-wrap items-end justify-between gap-4">

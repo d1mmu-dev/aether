@@ -43,7 +43,7 @@ const STATIC_STATIONS: [(&str, &str, &str, Style, usize); 4] = [
         "all",
         "Shuffle All",
         "Your entire library",
-        style("hover:border-brand/40", "#fca208"),
+        style("hover:border-brand/40", "#8bafd1"),
         10,
     ),
     (

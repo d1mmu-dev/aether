@@ -146,12 +146,12 @@ if (SSR) {
 if (!process.argv.includes('--profiles-only')) {
 await goto(BASE + '/');
 await ev('localStorage.clear()'); await goto(BASE + '/collection');
-check('unauthenticated /collection shows login and rewrites the URL', (await ev('location.pathname')) === '/login' && (await text()).includes('Sign in to continue to Kima'));
+check('unauthenticated /collection shows login and rewrites the URL', (await ev('location.pathname')) === '/login' && (await text()).includes('Sign in to continue to Aether'));
 
 // The sheet really reaches the browser: class rules present, Montserrat loaded (CSP `font-src` once blocked its data: URI).
 const styled = await ev(`(async()=>{await document.fonts.ready;let n=0;const walk=(l)=>{for(const r of l){if(r.cssRules&&r.cssRules.length)walk(r.cssRules);if(r.selectorText&&/(^|,)\\s*\\./.test(r.selectorText))n++}};for(const s of document.styleSheets){try{walk(s.cssRules)}catch{}}
   const btn=document.querySelector('button[type=submit]');return {n,font:document.fonts.check('16px Montserrat')&&[...document.fonts].every(f=>f.status==='loaded'),btnBg:btn&&getComputedStyle(btn).backgroundColor}})()`);
-check('login page is styled: utility class rules present, Montserrat loaded, primary button is amber', styled.n >= 100 && styled.font && styled.btnBg === 'rgb(252, 162, 0)', JSON.stringify(styled));
+check('login page is styled: utility class rules present, Montserrat loaded, primary button is the Midnight Slate accent', styled.n >= 100 && styled.font && styled.btnBg === 'rgb(139, 175, 209)', JSON.stringify(styled));
 
 await setInput('username', USER); await setInput('password', 'nope-wrong');
 await ev(`document.querySelector('button[type=submit]').click()`); await sleep(1500);
