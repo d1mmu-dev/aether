@@ -1,0 +1,74 @@
+/* Bundled Aether themes (localization/themes plan, task 3). Plain CSS appended unlayered after aether.css by
+ * style.rs, so it needs no Tailwind regeneration: each block re-declares the semantic tokens the compiled
+ * utilities read (`bg-black` = ground, `text-white` = primary text, `white/10` overlays, `--bg-*`, `--text-*`,
+ * `--border-*`, brand and status). `:root[data-theme=...]` outranks the `:root` defaults. Every theme declares
+ * every required token (checked by theme.rs tests, which also measure contrast). No imports, urls or scripts. */
+
+:root[data-theme="midnight-slate"] {
+    color-scheme: dark;
+    --color-black: #0d1420;
+    --color-white: #dfe7ef;
+    --color-brand: #8bafd1;
+    --color-brand-hover: #7a9fc4;
+    --color-brand-light: #a3c0dc;
+    --color-brand-dark: #6d8fb3;
+    --color-on-brand: #0d1420;
+    --color-ambient: #4a6a90;
+    --color-danger-light: #f87171;
+    --bg-primary: #0d1420;
+    --bg-secondary: #151f2e;
+    --bg-tertiary: #1a2638;
+    --bg-hover: #1e2b3f;
+    --border-subtle: #223047;
+    --border-interactive: #2a3a55;
+    --border-focus: #34476a;
+    --text-primary: #dfe7ef;
+    --text-secondary: #9aaaba;
+    --text-muted: #8193a8;
+}
+
+:root[data-theme="graphite"] {
+    color-scheme: dark;
+    --color-black: #121212;
+    --color-white: #e6e6e6;
+    --color-brand: #a9b8c6;
+    --color-brand-hover: #98a8b8;
+    --color-brand-light: #bfcad5;
+    --color-brand-dark: #8796a5;
+    --color-on-brand: #121212;
+    --color-ambient: #3d3d3d;
+    --color-danger-light: #f87171;
+    --bg-primary: #121212;
+    --bg-secondary: #1b1b1b;
+    --bg-tertiary: #222222;
+    --bg-hover: #2a2a2a;
+    --border-subtle: #2e2e2e;
+    --border-interactive: #3a3a3a;
+    --border-focus: #4a4a4a;
+    --text-primary: #e6e6e6;
+    --text-secondary: #b0b0b0;
+    --text-muted: #8f8f8f;
+}
+
+:root[data-theme="daylight"] {
+    color-scheme: light;
+    --color-black: #f5f7fa;
+    --color-white: #1c2530;
+    --color-brand: #335b85;
+    --color-brand-hover: #2c5078;
+    --color-brand-light: #2f5680;
+    --color-brand-dark: #2c4f74;
+    --color-on-brand: #ffffff;
+    --color-ambient: #b8cde2;
+    --color-danger-light: #b91c1c;
+    --bg-primary: #f5f7fa;
+    --bg-secondary: #e9edf2;
+    --bg-tertiary: #dde3ea;
+    --bg-hover: #d3dbe4;
+    --border-subtle: #c9d2dc;
+    --border-interactive: #b4c0cd;
+    --border-focus: #8a9bb0;
+    --text-primary: #1c2530;
+    --text-secondary: #3e4a58;
+    --text-muted: #56636f;
+}

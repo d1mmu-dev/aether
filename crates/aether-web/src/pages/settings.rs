@@ -1,5 +1,6 @@
 //! `/settings`: account password, per-profile settings, profile management and app tokens.
 
+mod appearance;
 mod apps;
 mod profiles;
 
@@ -17,7 +18,7 @@ use aether_api_types::auth::{ChangePassword, ChangePasswordResponse, MeResponse}
 use vertigo::{DomNode, Value, bind, dom, get_driver};
 
 use crate::api::client::load;
-use crate::components::eyebrow;
+use crate::i18n::Msg;
 use crate::ui::{Ctx, flag, resource_view};
 
 /// The backend's rule (6+ characters) and the confirm field, checked before a round trip; the backend's
@@ -36,6 +37,16 @@ pub fn validate(current: &str, new: &str, confirm: &str) -> Result<ChangePasswor
         current_password: current.to_owned(),
         new_password: new.to_owned(),
     })
+}
+
+/// `components::eyebrow` with text that follows the language.
+fn eyebrow_text(text: vertigo::Computed<String>) -> DomNode {
+    dom! {
+        <p class="t-eyebrow mb-4 flex items-center gap-2">
+            <span aria-hidden="true" class="w-1.5 h-1.5 rounded-full bg-brand"></span>
+            {text}
+        </p>
+    }
 }
 
 pub fn render(ctx: &Ctx) -> DomNode {
@@ -97,29 +108,32 @@ pub fn render(ctx: &Ctx) -> DomNode {
     let ai_row = podcast_ai_row(ctx);
     let profile_section = profiles::render(ctx);
     let apps_section = apps::render(ctx);
+    let appearance_section = appearance::render(ctx);
+    let t = |m: crate::i18n::Msg| ctx.prefs.text(m);
     dom! {
         <div class="min-h-screen bg-[var(--bg-primary)]">
             <header class="page-shell pt-8 pb-6">
-                {eyebrow("System configuration")}
+                {eyebrow_text(t(Msg::SettingsEyebrow))}
                 <div class="flex flex-wrap items-end justify-between gap-4">
                     <div class="min-w-0">
-                        <h1 class="text-4xl md:text-5xl font-bold tracking-tight text-white leading-none">"Settings"</h1>
+                        <h1 class="text-4xl md:text-5xl font-bold tracking-tight text-white leading-none">{t(Msg::SettingsTitle)}</h1>
                     </div>
                 </div>
             </header>
             <div class="page-shell pb-8 flex gap-12">
-                <nav class="w-48 shrink-0 sticky top-8 self-start hidden md:block" aria-label="Settings sections">
+                <nav class="w-48 shrink-0 sticky top-8 self-start hidden md:block" aria-label={t(Msg::SettingsSections)}>
                     <div class="space-y-0.5">
-                        <div aria-current="true" class="w-full min-h-[44px] flex items-center text-left px-3 py-2 rounded-lg text-sm tabular-nums transition-all text-brand bg-brand/10 border border-brand/20">"Account"</div>
+                        <div aria-current="true" class="w-full min-h-[44px] flex items-center text-left px-3 py-2 rounded-lg text-sm tabular-nums transition-all text-brand bg-brand/10 border border-brand/20">{t(Msg::SectionAccount)}</div>
                     </div>
                 </nav>
                 <div class="flex-1 min-w-0">
                     <div class="section-stack">
+                        {appearance_section}
                         <section id="account" class="scroll-mt-24 animate-rise">
                             <div class="mb-4">
                                 <div class="flex items-center gap-3 mb-1">
                                     <span aria-hidden="true" class="w-1 rounded-full shrink-0 h-6 bg-brand"></span>
-                                    <h2 class="font-bold tracking-tight text-white text-lg">"Account"</h2>
+                                    <h2 class="font-bold tracking-tight text-white text-lg">{t(Msg::SectionAccount)}</h2>
                                     <span class="flex-1 border-t border-white/10"></span>
                                 </div>
                             </div>

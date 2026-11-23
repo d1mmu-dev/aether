@@ -55,7 +55,7 @@ pub fn stylesheet() -> &'static str {
         .replace(
             "__AETHER_MARK__",
             &format!("\"data:image/svg+xml;base64,{}\"", base64(MARK)),
-        )
+        ) + crate::theme::CSS
     })
 }
 

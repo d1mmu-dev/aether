@@ -13,6 +13,7 @@ use vertigo::{Computed, DomNode, Reactive, Resource, Value, bind, dom, get_drive
 
 use crate::api::client::load;
 use crate::brand::PRODUCT_NAME;
+use crate::i18n::Msg;
 use crate::icons::icon;
 use crate::route::Route;
 use crate::style::BRAND_GRADIENT;
@@ -136,7 +137,7 @@ pub fn frame(ctx: &Ctx, page: DomNode) -> DomNode {
             </div>
             {ctx.player.desktop_bar(vibe_button(ctx))}
             {ctx.player.mobile_mini()}
-            {bottom_nav(route)}
+            {bottom_nav(&ctx.prefs, route)}
             {toast}
         </div>
     }
@@ -387,7 +388,7 @@ const NAV_IDLE: &str = "flex items-center gap-3 py-2.5 px-2 border-l-2 transitio
 fn nav_item(
     href: String,
     number: &'static str,
-    label: &'static str,
+    label: Computed<String>,
     active: Computed<bool>,
 ) -> DomNode {
     let class = active.map(|a| if a { NAV_ACTIVE } else { NAV_IDLE }.to_owned());
@@ -416,7 +417,7 @@ fn nav_item(
         .to_owned()
     });
     dom! {
-        <a class={class} href={href} aria-label={label}>
+        <a class={class} href={href} aria-label={label.clone()}>
             <span class={number_class}>{number}</span>
             <div class={divider_class}></div>
             <span class={label_class}>{label}</span>
@@ -425,41 +426,42 @@ fn nav_item(
 }
 
 fn sidebar(ctx: &Ctx, route: Computed<Route>) -> DomNode {
+    let prefs = &ctx.prefs;
     let collection = nav_item(
         Route::Artists.to_string(),
         "01",
-        "Collection",
+        prefs.text(Msg::NavCollection),
         route.map(|r| is_collection(&r)),
     );
     // Upstream's rail lists radio right after collection (`primaryNavigation`).
     let radio_nav = nav_item(
         Route::Radio.to_string(),
         "02",
-        "Radio",
+        prefs.text(Msg::NavRadio),
         route.map(|r| is_radio(&r)),
     );
     let search = nav_item(
         Route::Search.to_string(),
         "03",
-        "Search",
+        prefs.text(Msg::NavSearch),
         route.map(|r| r == Route::Search),
     );
     let playlists_nav = nav_item(
         Route::Playlists.to_string(),
         "04",
-        "Playlists",
+        prefs.text(Msg::NavPlaylists),
         route.map(|r| is_playlists(&r)),
     );
     let podcasts_nav = nav_item(
         Route::Podcasts.to_string(),
         "05",
-        "Podcasts",
+        prefs.text(Msg::NavPodcasts),
         route.map(|r| is_podcasts(&r)),
     );
     let vibe_nav = nav_item(
         Route::Vibe { track: None }.to_string(),
         "06",
-        "Vibe",
+        prefs.text(Msg::NavVibe),
         route.map(|r| is_vibe(&r)),
     );
     let stack = playlist_stack(ctx, route);
@@ -644,7 +646,7 @@ fn side_panel(ctx: &Ctx, open: Value<bool>) -> DomNode {
 
 fn bottom_nav_item(
     href: String,
-    label: &'static str,
+    label: Computed<String>,
     name: &'static str,
     active: Computed<bool>,
 ) -> DomNode {
@@ -678,41 +680,41 @@ fn bottom_nav_item(
         }
     });
     dom! {
-        <a class={class} aria-label={label} href={href}>
+        <a class={class} aria-label={label.clone()} href={href}>
             {glyph}
             <span class={label_class}>{label}</span>
         </a>
     }
 }
 
-fn bottom_nav(route: Computed<Route>) -> DomNode {
+fn bottom_nav(prefs: &crate::prefs::Prefs, route: Computed<Route>) -> DomNode {
     let collection = bottom_nav_item(
         Route::Artists.to_string(),
-        "Collection",
+        prefs.text(Msg::NavCollection),
         "library",
         route.map(|r| is_collection(&r)),
     );
     let vibe = bottom_nav_item(
         Route::Vibe { track: None }.to_string(),
-        "Vibe",
+        prefs.text(Msg::NavVibe),
         "orbit",
         route.map(|r| is_vibe(&r)),
     );
     let search = bottom_nav_item(
         Route::Search.to_string(),
-        "Search",
+        prefs.text(Msg::NavSearch),
         "search",
         route.map(|r| r == Route::Search),
     );
     let playlists = bottom_nav_item(
         Route::Playlists.to_string(),
-        "Playlists",
+        prefs.text(Msg::NavPlaylists),
         "list-music",
         route.map(|r| is_playlists(&r)),
     );
     let podcasts = bottom_nav_item(
         Route::Podcasts.to_string(),
-        "Podcasts",
+        prefs.text(Msg::NavPodcasts),
         "mic-vocal",
         route.map(|r| is_podcasts(&r)),
     );

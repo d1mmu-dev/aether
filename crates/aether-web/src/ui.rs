@@ -57,6 +57,8 @@ pub struct Ctx {
     pub toast: Value<Option<(u32, String)>>,
     /// The vibe page's map and map loader, kept across visits.
     pub vibe: crate::pages::vibe::Shared,
+    /// Interface language and theme (device-level in this slice).
+    pub prefs: crate::prefs::Prefs,
 }
 
 impl Ctx {
