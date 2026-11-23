@@ -42,12 +42,17 @@ fn state_of(ctx: &Ctx, id: String) -> Computed<(bool, bool)> {
 
 fn queue_button(ctx: &Ctx, track: &Track, class: &'static str) -> DomNode {
     let (ctx, track) = (ctx.clone(), track.clone());
+    let ctx_label = ctx.prefs.text(crate::i18n::Msg::AddToQueue);
+    let ctx_hint = ctx.prefs.hint(crate::i18n::Msg::AddToQueue);
     let add = move |_: vertigo::ClickEvent| {
         ctx.player.enqueue(queue_item(&track));
-        ctx.notify(format!("Added “{}” to the queue", track.title));
+        ctx.notify(crate::i18n::added_to_queue(
+            ctx.prefs.current(),
+            &track.title,
+        ));
     };
     dom! {
-        <button class={class} title="add to queue" aria-label="Add to queue" on_click={add}>
+        <button class={class} title={ctx_hint} aria-label={ctx_label} on_click={add}>
             {icon("list-plus", "w-4 h-4")}
         </button>
     }

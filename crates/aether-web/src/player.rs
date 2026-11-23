@@ -25,6 +25,7 @@ use vertigo::{
 
 use crate::api::client::{ApiClient, ApiError};
 use crate::auth::Session;
+use crate::i18n::{self, Locale, Msg};
 use crate::icons::icon;
 use crate::position;
 use crate::route::Route;
@@ -151,6 +152,26 @@ pub fn next_target(
 
 /// Sleep timer presets in minutes (as the legacy popover).
 pub const SLEEP_PRESETS: [u32; 6] = [15, 30, 45, 60, 90, 120];
+
+/// The play button's label and tooltip: they follow both the playing state and the language.
+fn play_texts(
+    playing: &Value<bool>,
+    locale: &Computed<Locale>,
+) -> (Computed<String>, Computed<String>) {
+    let label = {
+        let (playing, locale) = (playing.clone(), locale.clone());
+        Computed::from(move |ctx| {
+            let msg = if playing.get(ctx) {
+                Msg::Pause
+            } else {
+                Msg::Play
+            };
+            msg.text(locale.get(ctx)).to_owned()
+        })
+    };
+    let title = label.map(|l| l.to_lowercase());
+    (label, title)
+}
 
 /// `1h 05m`, `12:05` style countdown: `m:ss` under an hour, `h:mm:ss` above.
 pub fn format_countdown(secs: u64) -> String {
@@ -1118,17 +1139,17 @@ impl Player {
     }
 
     /// The sleep-timer button with its preset popover (legacy `SleepTimer`).
-    fn sleep_timer(&self) -> DomNode {
+    fn sleep_timer(&self, locale: Computed<Locale>) -> DomNode {
         let me = self.clone();
         let (left, open) = (self.0.sleep_left.clone(), self.0.sleep_open.clone());
         let state = Computed::from({
             let (left, open) = (left.clone(), open.clone());
-            move |ctx| (left.get(ctx), open.get(ctx))
+            move |ctx| (left.get(ctx), open.get(ctx), locale.get(ctx))
         });
-        state.render_value(bind!(me, |(left, open): (Option<u64>, bool)| {
+        state.render_value(bind!(me, |(left, open, locale): (Option<u64>, bool, Locale)| {
             let label = match left {
-                Some(secs) => format!("Sleep timer: {} remaining", format_countdown(secs)),
-                None => "Sleep timer".to_owned(),
+                Some(secs) => i18n::sleep_timer_left(locale, &format_countdown(secs)),
+                None => Msg::SleepTimer.text(locale).to_owned(),
             };
             let class = if left.is_some() {
                 "transition-all duration-200 hover:scale-110 flex items-center gap-1 text-brand hover:text-brand-hover"
@@ -1147,11 +1168,7 @@ impl Player {
                 let presets: Vec<DomNode> = SLEEP_PRESETS
                     .iter()
                     .map(|&mins| {
-                        let text = if mins >= 60 {
-                            format!("{} hour{}", mins / 60, if mins > 60 { "s" } else { "" })
-                        } else {
-                            format!("{mins} minutes")
-                        };
+                        let text = i18n::sleep_preset(locale, mins);
                         let pick = bind!(me, |_| me.set_sleep_timer(mins));
                         dom! { <button class="w-full text-left px-3 py-1.5 rounded text-sm transition-colors text-[var(--text-primary)] hover:bg-white/[0.06] hover:text-white" on_click={pick}>{text}</button> }
                     })
@@ -1160,7 +1177,7 @@ impl Player {
                     dom! {
                         <div class="px-3 py-2 border-t border-white/[0.06]">
                             <button class="w-full text-center text-sm text-danger-light hover:brightness-125 py-1 transition-colors"
-                                on_click={bind!(me, |_| me.clear_sleep_timer())}>"Cancel Timer"</button>
+                                on_click={bind!(me, |_| me.clear_sleep_timer())}>{Msg::CancelTimer.text(locale)}</button>
                         </div>
                     }
                 } else {
@@ -1170,10 +1187,10 @@ impl Player {
                 dom! {
                     <div>
                         <div class="fixed inset-0 z-(--z-dropdown)" on_click={close}></div>
-                        <div role="dialog" aria-label="Sleep timer options"
+                        <div role="dialog" aria-label={Msg::SleepTimerOptions.text(locale)}
                             class="animate-panel-up absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 bg-[var(--bg-hover)] border border-white/10 rounded-lg overflow-hidden z-(--z-dropdown)">
                             <div class="px-3 py-2 border-b border-white/[0.06]">
-                                <span class="text-xs text-[var(--text-secondary)] font-medium">"Sleep Timer"</span>
+                                <span class="text-xs text-[var(--text-secondary)] font-medium">{Msg::SleepTimer.text(locale)}</span>
                             </div>
                             <div class="p-1.5">{rows_box(presets)}</div>
                             {cancel}
@@ -1200,8 +1217,10 @@ impl Player {
     /// The desktop player bar (`UniversalPlayer` at its widest: cover + title, transport, seek, volume).
     /// The desktop player bar. `vibe` is the "match this vibe" control the shell builds (it needs the
     /// router and the server's features); it sits after repeat, as upstream's `VibeToggleButton`.
-    pub fn desktop_bar(&self, vibe: DomNode) -> DomNode {
+    pub fn desktop_bar(&self, vibe: DomNode, locale: Computed<Locale>) -> DomNode {
         let me = self.clone();
+        let t = |m: Msg| locale.map(move |l| m.text(l).to_owned());
+        let hint = |m: Msg| locale.map(move |l| m.hint(l));
         let current = self.current();
         let has_track = current.map(|i| i.is_some());
         let class_if = |on: Computed<bool>, yes: &'static str, no: &'static str| {
@@ -1231,14 +1250,21 @@ impl Player {
                 None => dom! { <div class="relative flex-shrink-0 w-14 h-14">{tile}</div> },
             }
         }));
-        let title = current.map(|i| match i {
-            Some(i) => i.title,
-            None => "Not Playing".to_owned(),
-        });
-        let artist = current.map(|i| match i {
-            Some(i) => i.artist.map(|a| a.name).unwrap_or_default(),
-            None => "Select something to play".to_owned(),
-        });
+        // Track metadata is shown as received; only the empty state is translated.
+        let title = {
+            let (current, locale) = (current.clone(), locale.clone());
+            Computed::from(move |ctx| match current.get(ctx) {
+                Some(i) => i.title,
+                None => Msg::NotPlaying.text(locale.get(ctx)).to_owned(),
+            })
+        };
+        let artist = {
+            let (current, locale) = (current.clone(), locale.clone());
+            Computed::from(move |ctx| match current.get(ctx) {
+                Some(i) => i.artist.map(|a| a.name).unwrap_or_default(),
+                None => Msg::SelectSomethingToPlay.text(locale.get(ctx)).to_owned(),
+            })
+        };
 
         let times_class = class_if(
             has_track.clone(),
@@ -1272,14 +1298,7 @@ impl Player {
         let slider_max = self.0.duration.map(|d| format!("{}", d.max(1.0)));
         let slider_value = self.0.position.map(|p| format!("{p}"));
 
-        let play_label = self
-            .0
-            .playing
-            .map(|p| if p { "Pause" } else { "Play" }.to_owned());
-        let play_title = self
-            .0
-            .playing
-            .map(|p| if p { "pause" } else { "play" }.to_owned());
+        let (play_label, play_title) = play_texts(&self.0.playing, &locale);
         let play_icon = self.0.playing.render_value(|playing| {
             if playing {
                 icon("pause", "w-5 h-5 relative z-(--z-raised)")
@@ -1314,13 +1333,17 @@ impl Player {
         let shuffle_pressed = shuffle_on.map(|on| on.to_string());
         // Shuffle is off while a radio station plays (D-282): the button says so and stays disabled.
         let station_live = self.0.station_live.clone();
-        let shuffle_title = station_live.map(|live| {
-            if live {
-                "shuffle is off while a radio station plays".to_owned()
-            } else {
-                "shuffle".to_owned()
-            }
-        });
+        let shuffle_title = {
+            let (station_live, locale) = (station_live.clone(), locale.clone());
+            Computed::from(move |ctx| {
+                let msg = if station_live.get(ctx) {
+                    Msg::ShuffleOffForStation
+                } else {
+                    Msg::Shuffle
+                };
+                msg.hint(locale.get(ctx))
+            })
+        };
         let shuffle_disabled = flag({
             let has_track = has_track.clone();
             Computed::from(move |ctx| !has_track.get(ctx) || station_live.get(ctx))
@@ -1334,22 +1357,28 @@ impl Player {
             }
             .to_owned()
         });
-        let repeat_label = repeat_value.map(|r| {
-            match r {
-                Repeat::Off => "Repeat off",
-                Repeat::All => "Repeat all",
-                Repeat::One => "Repeat one",
-            }
-            .to_owned()
-        });
-        let repeat_title = repeat_value.map(|r| {
-            match r {
-                Repeat::Off => "repeat: off",
-                Repeat::All => "repeat: all (loop queue)",
-                Repeat::One => "repeat: one (loop this track)",
-            }
-            .to_owned()
-        });
+        let repeat_label = {
+            let (repeat, locale) = (repeat_value.clone(), locale.clone());
+            Computed::from(move |ctx| {
+                let msg = match repeat.get(ctx) {
+                    Repeat::Off => Msg::RepeatOff,
+                    Repeat::All => Msg::RepeatAll,
+                    Repeat::One => Msg::RepeatOne,
+                };
+                msg.text(locale.get(ctx)).to_owned()
+            })
+        };
+        let repeat_title = {
+            let (repeat, locale) = (repeat_value.clone(), locale.clone());
+            Computed::from(move |ctx| {
+                let msg = match repeat.get(ctx) {
+                    Repeat::Off => Msg::RepeatOffHint,
+                    Repeat::All => Msg::RepeatAllHint,
+                    Repeat::One => Msg::RepeatOneHint,
+                };
+                msg.hint(locale.get(ctx))
+            })
+        };
         let repeat_pressed = repeat_value.map(|r| (r != Repeat::Off).to_string());
         let repeat_icon = repeat_value.render_value(|r| {
             if r == Repeat::One {
@@ -1358,7 +1387,7 @@ impl Player {
                 icon("repeat", "w-4 h-4")
             }
         });
-        let sleep = self.sleep_timer();
+        let sleep = self.sleep_timer(locale.clone());
 
         dom! {
             <div class="relative flex-shrink-0 tablet:hidden">
@@ -1374,19 +1403,19 @@ impl Player {
                             {sleep}
                         </div>
                         <div class="flex-1 flex flex-col items-center gap-2">
-                            <div class="flex items-center gap-5" role="group" aria-label="Playback controls">
-                                <button class={shuffle_class} aria-label="Shuffle" title={shuffle_title} aria-pressed={shuffle_pressed}
+                            <div class="flex items-center gap-5" role="group" aria-label={t(Msg::PlaybackControls)}>
+                                <button class={shuffle_class} aria-label={t(Msg::Shuffle)} title={shuffle_title} aria-pressed={shuffle_pressed}
                                     disabled={shuffle_disabled} on_click={bind!(me, |_| me.toggle_shuffle())}>
                                     {icon("shuffle", "w-4 h-4")}
                                 </button>
                                 <button class="transition-all duration-200 hover:scale-110 relative disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100 text-[var(--text-secondary)] hover:text-white"
-                                    aria-label="Rewind 30 seconds" title="rewind 30 seconds" disabled={no_track.clone()}
+                                    aria-label={t(Msg::Rewind30)} title={hint(Msg::Rewind30)} disabled={no_track.clone()}
                                     on_click={bind!(me, |_| me.skip_by(-30.0))}>
                                     {icon("rotate-ccw", "w-4 h-4")}
                                     <span class="absolute text-micro font-semibold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">"30"</span>
                                 </button>
                                 <button class="text-[var(--text-secondary)] hover:text-white transition-all duration-200 hover:scale-110 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100"
-                                    aria-label="Previous track" title="previous track" disabled={no_track.clone()}
+                                    aria-label={t(Msg::PreviousTrack)} title={hint(Msg::PreviousTrack)} disabled={no_track.clone()}
                                     on_click={bind!(me, |_| me.prev())}>
                                     {icon("skip-back", "w-5 h-5")}
                                 </button>
@@ -1397,12 +1426,12 @@ impl Player {
                                     <span>{play_icon}</span>
                                 </button>
                                 <button class="text-[var(--text-secondary)] hover:text-white transition-all duration-200 hover:scale-110 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100"
-                                    aria-label="Next track" title="next track" disabled={no_track.clone()}
+                                    aria-label={t(Msg::NextTrack)} title={hint(Msg::NextTrack)} disabled={no_track.clone()}
                                     on_click={bind!(me, |_| me.next())}>
                                     {icon("skip-forward", "w-5 h-5")}
                                 </button>
                                 <button class="transition-all duration-200 hover:scale-110 relative disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100 text-[var(--text-secondary)] hover:text-white"
-                                    aria-label="Forward 30 seconds" title="forward 30 seconds" disabled={no_track.clone()}
+                                    aria-label={t(Msg::Forward30)} title={hint(Msg::Forward30)} disabled={no_track.clone()}
                                     on_click={bind!(me, |_| me.skip_by(30.0))}>
                                     {icon("rotate-cw", "w-4 h-4")}
                                     <span class="absolute text-micro font-semibold top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">"30"</span>
@@ -1415,11 +1444,11 @@ impl Player {
                             </div>
                             <div class="w-full flex items-center gap-3">
                                 <span class={times_class}>{position_text}</span>
-                                <div class="relative rounded-full transition-all h-1 bg-white/[0.15] cursor-pointer group flex-1" title="click or drag to seek">
+                                <div class="relative rounded-full transition-all h-1 bg-white/[0.15] cursor-pointer group flex-1" title={hint(Msg::SeekHint)}>
                                     <div class={fill_class} style={fill}>
                                         <div class="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-brand rounded-full transition-opacity opacity-0 group-hover:opacity-100"></div>
                                     </div>
-                                    <input type="range" aria-label="Seek" min="0" max={slider_max} step="1" value={slider_value}
+                                    <input type="range" aria-label={t(Msg::Seek)} min="0" max={slider_max} step="1" value={slider_value}
                                         disabled={no_track.clone()}
                                         class="absolute left-0 -top-2 w-full h-5 m-0 opacity-0 cursor-pointer disabled:cursor-not-allowed"
                                         on_input={bind!(me, |v: String| {
@@ -1432,12 +1461,12 @@ impl Player {
                             </div>
                         </div>
                         <div class="flex items-center gap-3 w-52 justify-end">
-                            <button class="text-[var(--text-secondary)] hover:text-white transition-all duration-200 hover:scale-110" aria-label="Mute"
+                            <button class="text-[var(--text-secondary)] hover:text-white transition-all duration-200 hover:scale-110" aria-label={t(Msg::Mute)}
                                 on_click={bind!(me, |_| me.toggle_mute())}>
                                 {mute_icon}
                             </button>
                             <div class="relative flex-1">
-                                <input type="range" min="0" max="100" aria-label="Volume" aria-valuemin="0" aria-valuemax="100"
+                                <input type="range" min="0" max="100" aria-label={t(Msg::Volume)} aria-valuemin="0" aria-valuemax="100"
                                     aria-valuenow={volume_now} value={volume_value} style={volume_style}
                                     class="w-full h-1 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:bg-brand [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:transition-all [&::-webkit-slider-thumb]:hover:scale-110"
                                     on_input={bind!(me, |v: String| {
@@ -1454,7 +1483,8 @@ impl Player {
     }
 
     /// The phone / tablet mini player: floats above the bottom navigation, only while a track is loaded.
-    pub fn mobile_mini(&self) -> DomNode {
+    pub fn mobile_mini(&self, locale: Computed<Locale>) -> DomNode {
+        let controls_label = locale.map(|l| Msg::PlaybackControls.text(l).to_owned());
         let me = self.clone();
         let progress = {
             let (position, duration) = (self.0.position.clone(), self.0.duration.clone());
@@ -1468,15 +1498,8 @@ impl Player {
                 format!("width: {pct:.4}%;")
             })
         };
-        let play_label = self
-            .0
-            .playing
-            .map(|p| if p { "Pause" } else { "Play" }.to_owned());
-        let play_title = self
-            .0
-            .playing
-            .map(|p| if p { "pause" } else { "play" }.to_owned());
-        self.current().render_value(bind!(me, progress, play_label, play_title, |item: Option<QueueItem>| {
+        let (play_label, play_title) = play_texts(&self.0.playing, &locale);
+        self.current().render_value(bind!(me, progress, play_label, play_title, controls_label, |item: Option<QueueItem>| {
             let play_icon = me.0.playing.render_value(|playing| {
                 if playing {
                     icon("pause", "w-5 h-5")
@@ -1511,7 +1534,7 @@ impl Player {
                                             <p class="text-gray-300/70 text-xs truncate leading-tight mt-0.5">{artist}</p>
                                         </div>
                                     </div>
-                                    <div class="flex items-center gap-1.5 flex-shrink-0" role="group" aria-label="Playback controls">
+                                    <div class="flex items-center gap-1.5 flex-shrink-0" role="group" aria-label={controls_label.clone()}>
                                         <button class="w-10 h-10 rounded-full flex items-center justify-center transition bg-brand text-black hover:scale-105"
                                             aria-label={play_label.clone()} title={play_title.clone()} on_click={bind!(me, |_| me.toggle())}>
                                             {play_icon}

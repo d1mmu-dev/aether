@@ -1,4 +1,5 @@
-//! `/login`: username + password, `POST /api/auth/login`, the backend's error message shown verbatim.
+//! `/login`: username + password, `POST /api/auth/login`. A rejected sign-in (401) is shown as a localized
+//! message; any other backend error message is shown verbatim.
 
 use aether_api_types::auth::{Credentials, LoginResponse};
 use aether_api_types::onboarding::OnboardingStatus;
@@ -6,15 +7,16 @@ use vertigo::{DomNode, Resource, Value, bind, dom, get_driver};
 
 use crate::api::client::load;
 use crate::brand::{FOOTER, PRODUCT_NAME};
+use crate::i18n::{Msg, UiError};
 use crate::route::Route;
 use crate::shell::aether_mark;
 use crate::ui::{BTN_PRIMARY, Ctx, INPUT, LABEL, flag};
 
 /// The form's input check; the server stays the authority (its message is shown for anything else).
-pub fn validate(username: &str, password: &str) -> Result<Credentials, String> {
+pub fn validate(username: &str, password: &str) -> Result<Credentials, Msg> {
     let username = username.trim();
     if username.is_empty() || password.is_empty() {
-        return Err("Enter a username and a password".into());
+        return Err(Msg::LoginFieldsRequired);
     }
     Ok(Credentials {
         username: username.to_owned(),
@@ -25,7 +27,7 @@ pub fn validate(username: &str, password: &str) -> Result<Credentials, String> {
 pub fn render(ctx: &Ctx) -> DomNode {
     let username = Value::new(String::new());
     let password = Value::new(String::new());
-    let error: Value<Option<String>> = Value::new(None);
+    let error: Value<Option<UiError>> = Value::new(None);
     let busy = Value::new(false);
 
     let submit = bind!(ctx, username, password, error, busy, || {
@@ -35,7 +37,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
         ) {
             Ok(c) => c,
             Err(message) => {
-                error.set(Some(message));
+                error.set(Some(UiError::Msg(message)));
                 return;
             }
         };
@@ -65,10 +67,10 @@ pub fn render(ctx: &Ctx) -> DomNode {
                             ctx.session.replace_pair(&done.token, &done.refresh_token);
                             vertigo::js! { window.location.replace(url) };
                         }
-                        Err(err) => error.set(Some(err.message)),
+                        Err(err) => error.set(Some(UiError::Server(err.message))),
                     }
                 }
-                Err(err) => error.set(Some(err.message)),
+                Err(err) => error.set(Some(UiError::sign_in(err.status, err.message))),
             }
             busy.set(false);
         }));
@@ -91,21 +93,22 @@ pub fn render(ctx: &Ctx) -> DomNode {
         dom! { <span class="hidden" /> }
     }));
 
-    let error_view = error.render_value(|e| match e {
-        Some(message) => dom! {
-            <div role="alert" class="p-3 rounded-lg bg-danger/10 border border-danger/30 text-sm text-danger-light">{message}</div>
+    let error_view = error.render_value(bind!(ctx, |e| match e {
+        Some(e) => dom! {
+            <div role="alert" class="p-3 rounded-lg bg-danger/10 border border-danger/30 text-sm text-danger-light">{ctx.prefs.format(move |l| e.text(l))}</div>
         },
         None => dom! { <span class="hidden" /> },
-    });
+    }));
     let disabled = busy.to_computed();
     // Only when registration is open; nothing while loading, on an error or when it is closed (the legacy page
     // shows nothing either), so the card does not change height when the status arrives.
-    let setup_hint = status.render_value(|state| match state {
+    let setup_hint = status.render_value(bind!(ctx, |state| match state {
         Resource::Ready(s) if s.registration_open => dom! {
-            <a class="block mt-4 text-center text-sm text-[var(--text-secondary)] hover:text-white" href={Route::Setup.to_string()}>"Create an account"</a>
+            <a class="block mt-4 text-center text-sm text-[var(--text-secondary)] hover:text-white" href={Route::Setup.to_string()}>{ctx.prefs.text(Msg::CreateAnAccount)}</a>
         },
         _ => dom! { <span class="hidden" /> },
-    });
+    }));
+    let t = |m: Msg| ctx.prefs.text(m);
 
     dom! {
         <div class="min-h-screen w-full relative overflow-hidden">
@@ -130,23 +133,23 @@ pub fn render(ctx: &Ctx) -> DomNode {
                         </div>
                     </div>
                     <div class="bg-(--bg-secondary)/90 rounded-lg p-6 md:p-8 border border-white/10 animate-rise transition-shadow duration-200">
-                        <h1 class="text-2xl font-bold text-white mb-1 text-center">"Welcome back"</h1>
-                        <p class="text-[var(--text-secondary)] text-center mb-8">{format!("Sign in to continue to {PRODUCT_NAME}")}</p>
+                        <h1 class="text-2xl font-bold text-white mb-1 text-center">{t(Msg::WelcomeBack)}</h1>
+                        <p class="text-[var(--text-secondary)] text-center mb-8">{ctx.prefs.format(|l| crate::i18n::sign_in_to(l, PRODUCT_NAME))}</p>
                         <form class="space-y-4" on_submit={submit}>
                             <div>
-                                <label for="username" class={LABEL}>"Username"</label>
-                                <input id="username" type="text" name="username" placeholder="Enter your username" autocomplete="username"
+                                <label for="username" class={LABEL}>{t(Msg::Username)}</label>
+                                <input id="username" type="text" name="username" placeholder={t(Msg::UsernamePlaceholder)} autocomplete="username"
                                     autocapitalize="none" class={format!("{INPUT} ")}
                                     value={username.clone()} on_input={bind!(username, |v: String| username.set(v))} />
                             </div>
                             <div>
-                                <label for="password" class={LABEL}>"Password"</label>
-                                <input id="password" type="password" name="password" placeholder="Enter your password" autocomplete="current-password"
+                                <label for="password" class={LABEL}>{t(Msg::Password)}</label>
+                                <input id="password" type="password" name="password" placeholder={t(Msg::PasswordPlaceholder)} autocomplete="current-password"
                                     autocapitalize="none" class={format!("{INPUT} ")}
                                     value={password.clone()} on_input={bind!(password, |v: String| password.set(v))} />
                             </div>
                             {error_view}
-                            <button type="submit" class={format!("{BTN_PRIMARY} w-full")} disabled={flag(disabled)}>"Sign In"</button>
+                            <button type="submit" class={format!("{BTN_PRIMARY} w-full")} disabled={flag(disabled)}>{t(Msg::SignIn)}</button>
                         </form>
                         {first_run}
                         {setup_hint}
@@ -164,6 +167,7 @@ mod tests {
 
     #[test]
     fn empty_fields_are_rejected_before_any_request() {
+        assert_eq!(validate("", "x").unwrap_err(), Msg::LoginFieldsRequired);
         assert!(validate("", "x").is_err());
         assert!(validate("  ", "x").is_err());
         assert!(validate("a", "").is_err());

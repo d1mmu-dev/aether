@@ -308,6 +308,26 @@ impl Prefs {
             .to_computed()
             .map(move |l| msg.text(l).to_owned())
     }
+
+    /// A tooltip (`title=`) that follows the language.
+    pub fn hint(&self, msg: Msg) -> Computed<String> {
+        self.locale.to_computed().map(move |l| msg.hint(l))
+    }
+
+    /// A message with arguments (an `i18n` sentence function) that follows the language.
+    pub fn format(&self, sentence: impl Fn(Locale) -> String + 'static) -> Computed<String> {
+        self.locale.to_computed().map(sentence)
+    }
+
+    /// The language right now, for one-off texts such as a toast (shown once, never re-rendered).
+    pub fn current(&self) -> Locale {
+        vertigo::transaction(|c| self.locale.get(c))
+    }
+
+    /// A message in the current language, for one-off texts such as a toast.
+    pub fn now(&self, msg: Msg) -> String {
+        msg.text(self.current()).to_owned()
+    }
 }
 
 #[cfg(test)]

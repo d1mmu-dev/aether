@@ -46,7 +46,7 @@ fn shuffle_library(ctx: &Ctx) {
                 ctx.player
                     .play_queue(found.tracks.iter().map(queue_item).collect(), 0);
             }
-            Ok(_) => ctx.notify("The library has no tracks to shuffle"),
+            Ok(_) => ctx.notify(ctx.prefs.now(crate::i18n::Msg::NothingToShuffle)),
             Err(e) => ctx.notify(e.message),
         }
     }));

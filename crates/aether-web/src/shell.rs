@@ -135,8 +135,8 @@ pub fn frame(ctx: &Ctx, page: DomNode) -> DomNode {
                 </main>
                 {side_panel(ctx, panel_open)}
             </div>
-            {ctx.player.desktop_bar(vibe_button(ctx))}
-            {ctx.player.mobile_mini()}
+            {ctx.player.desktop_bar(vibe_button(ctx), ctx.prefs.locale.to_computed())}
+            {ctx.player.mobile_mini(ctx.prefs.locale.to_computed())}
             {bottom_nav(&ctx.prefs, route)}
             {toast}
         </div>
@@ -168,10 +168,10 @@ fn profile_switcher_data(ctx: &Ctx) -> DomNode {
     }));
     data.render_value(bind!(ctx, busy, error, |state: Resource<Rc<aether_api_types::profiles::ProfilesResponse>>| {
         let Resource::Ready(data) = state else {
-            return dom! { <a href={Route::Profiles.to_string()} class="text-sm text-white p-2">"Profiles"</a> };
+            return dom! { <a href={Route::Profiles.to_string()} class="text-sm text-white p-2">{ctx.prefs.text(Msg::Profiles)}</a> };
         };
         let Some(current) = data.profiles.iter().find(|p| p.id == data.current) else {
-            return dom! { <a href={Route::Profiles.to_string()}>"Choose profile"</a> };
+            return dom! { <a href={Route::Profiles.to_string()}>{ctx.prefs.text(Msg::ChooseProfile)}</a> };
         };
         let picture = crate::pages::profiles::avatar(current);
         let name = current.name.clone();
@@ -183,25 +183,27 @@ fn profile_switcher_data(ctx: &Ctx) -> DomNode {
             dom! { <button class="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-white/10 text-left disabled:opacity-50" on_click={click} disabled={flag(busy.to_computed())}>{picture}<span>{name}</span></button> }
         }).collect();
         let manage = if crate::auth::is_main(Some(current)) {
-            dom! { <a href={Route::Settings.to_string()} class="block p-2 text-brand hover:underline">"Manage profiles"</a> }
+            dom! { <a href={Route::Settings.to_string()} class="block p-2 text-brand hover:underline">{ctx.prefs.text(Msg::ManageProfiles)}</a> }
         } else { dom! { <span /> } };
         let failure = error.render_value(|message| match message {
             Some(message) => dom! { <p role="alert" class="text-danger-light p-2">{message}</p> },
             None => dom! { <span /> },
         });
         let sign_out = bind!(ctx, |_| ctx.sign_out());
+        let current_name = current.name.clone();
+        let listening = ctx.prefs.format(move |l| crate::i18n::listening_as(l, &current_name));
         dom! {
             <details class="relative ml-2 text-white">
-                <summary aria-label="Switch profile" class="flex items-center gap-2 cursor-pointer rounded-lg focus:outline-none focus:ring-2 focus:ring-brand">
+                <summary aria-label={ctx.prefs.text(Msg::SwitchProfile)} class="flex items-center gap-2 cursor-pointer rounded-lg focus:outline-none focus:ring-2 focus:ring-brand">
                     {picture}<span class="max-w-24 truncate text-sm">{name}</span>
                 </summary>
                 <div class="absolute right-0 top-full mt-2 w-64 p-3 rounded-lg border border-white/10 bg-[var(--bg-primary)] shadow-lg z-(--z-dropdown)">
-                    <p class="text-xs text-[var(--text-muted)] p-2">{format!("Listening as {}", current.name)}</p>
+                    <p class="text-xs text-[var(--text-muted)] p-2">{listening}</p>
                     {..rows}
-                    <a href={Route::Profiles.to_string()} class="block p-2 hover:underline">"Who's listening?"</a>
+                    <a href={Route::Profiles.to_string()} class="block p-2 hover:underline">{ctx.prefs.text(Msg::WhoIsListening)}</a>
                     {manage}
                     {failure}
-                    <button class="block p-2 text-danger-light hover:underline" on_click={sign_out}>"Sign out"</button>
+                    <button class="block p-2 text-danger-light hover:underline" on_click={sign_out}>{ctx.prefs.text(Msg::SignOut)}</button>
                 </div>
             </details>
         }
@@ -224,11 +226,11 @@ fn start_scan(ctx: &Ctx, scanning: Value<bool>) {
         return;
     }
     scanning.set(true);
-    ctx.notify("Starting scan…");
+    ctx.notify(ctx.prefs.now(Msg::ScanStarting));
     get_driver().spawn(bind!(ctx, scanning, async move {
         match scan_library(&ctx).await {
             Ok(()) => {
-                ctx.notify("Scan finished");
+                ctx.notify(ctx.prefs.now(Msg::ScanFinished));
                 ctx.refresh.change(|n| *n += 1);
                 ctx.playlists_rev.change(|n| *n += 1);
             }
@@ -247,8 +249,8 @@ async fn scan_library(ctx: &Ctx) -> Result<(), String> {
         .map_err(|e| e.message)?;
     let dir = started
         .music_path
-        .unwrap_or_else(|| "the music directory".into());
-    ctx.notify(format!("Scanning {dir}…"));
+        .unwrap_or_else(|| ctx.prefs.now(Msg::TheMusicDirectory));
+    ctx.notify(crate::i18n::scanning_dir(ctx.prefs.current(), &dir));
     for _ in 0..SCAN_POLL_SECS {
         get_driver().sleep(1000).await;
         let status = client
@@ -258,15 +260,16 @@ async fn scan_library(ctx: &Ctx) -> Result<(), String> {
         match status.status.as_str() {
             "completed" => return Ok(()),
             "failed" => {
-                return Err(format!(
-                    "Scan failed: {}",
-                    status.error.unwrap_or_else(|| "unknown error".into())
-                ));
+                // The server's reason is shown as received.
+                let reason = status
+                    .error
+                    .unwrap_or_else(|| ctx.prefs.now(Msg::UnknownError));
+                return Err(crate::i18n::scan_failed(ctx.prefs.current(), &reason));
             }
             _ => {}
         }
     }
-    Err("Scan is still running; refresh the page later".into())
+    Err(ctx.prefs.now(Msg::ScanStillRunning))
 }
 
 /// Typing in either search box: remember the text and show the results page.
@@ -327,24 +330,24 @@ fn top_bar_desktop(ctx: &Ctx, route: Computed<Route>) -> DomNode {
             </div>
             <div class="flex-1 flex items-center justify-center gap-3 max-w-3xl mx-auto">
                 <a class="w-12 h-12 rounded-full flex items-center justify-center transition-all duration-200 flex-shrink-0 bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-white hover:scale-105"
-                    aria-label="Home" title="home" href={Route::Home.to_string()}>
+                    aria-label={ctx.prefs.text(Msg::Home)} title={ctx.prefs.hint(Msg::Home)} href={Route::Home.to_string()}>
                     {icon("house", "w-6 h-6")}
                 </a>
                 <form class="flex-1 max-w-md" on_submit={on_submit}>
                     <div class="relative">
                         {icon("search", "absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--text-secondary)]")}
                         <input type="text" name="q" value={ctx.query.to_computed()} on_input={on_input}
-                            placeholder="What do you want to play?" aria-label="Search" autocapitalize="none" autocomplete="off"
+                            placeholder={ctx.prefs.text(Msg::SearchPlaceholder)} aria-label={ctx.prefs.text(Msg::NavSearch)} autocapitalize="none" autocomplete="off"
                             class="w-full h-12 pl-12 pr-4 bg-[var(--bg-hover)] hover:bg-(--border-subtle) border-2 border-transparent focus:border-white/20 rounded-full text-sm text-white placeholder-gray-400 transition-all duration-200 outline-none" />
                     </div>
                 </form>
             </div>
             <div class="w-72 flex items-center justify-end gap-2 px-2">
                 <button on_click={scan} disabled={flag(scan_disabled)} class={sync_class}
-                    aria-label="Sync library" title="sync library" name="scan">
+                    aria-label={ctx.prefs.text(Msg::SyncLibrary)} title={ctx.prefs.hint(Msg::SyncLibrary)} name="scan">
                     {spin}
                 </button>
-                <a class={settings_class} aria-label="Settings" title="settings" href={Route::Settings.to_string()}>
+                <a class={settings_class} aria-label={ctx.prefs.text(Msg::SettingsTitle)} title={ctx.prefs.hint(Msg::SettingsTitle)} href={Route::Settings.to_string()}>
                     {icon("settings", "w-5 h-5")}
                 </a>
                 {profile_switcher(ctx)}
@@ -360,18 +363,18 @@ fn top_bar_mobile(ctx: &Ctx) -> DomNode {
     dom! {
         <header class="fixed top-0 left-0 right-0 bg-black flex items-center px-3 z-(--z-header) h-[var(--topbar-h)] min-[1025px]:hidden">
             <button class="w-11 h-11 flex items-center justify-center bg-[var(--bg-secondary)] border border-[var(--border-interactive)] rounded-md text-white hover:bg-[var(--bg-tertiary)] transition-colors duration-200 mr-2 flex-shrink-0"
-                aria-label="Open menu" on_click={open_menu}>
+                aria-label={ctx.prefs.text(Msg::OpenMenu)} on_click={open_menu}>
                 {icon("menu", "w-5 h-5")}
             </button>
             <a class="w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 flex-shrink-0 mr-2 bg-[var(--bg-primary)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-white"
-                aria-label="Home" title="home" href={Route::Home.to_string()}>
+                aria-label={ctx.prefs.text(Msg::Home)} title={ctx.prefs.hint(Msg::Home)} href={Route::Home.to_string()}>
                 {icon("house", "w-5 h-5")}
             </a>
             <form class="flex-1 min-w-0" on_submit={on_submit}>
                 <div class="relative">
                     {icon("search", "absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-secondary)]")}
                     <input type="text" name="q-mobile" value={ctx.query.to_computed()} on_input={on_input}
-                        placeholder="Search..." aria-label="Search" autocapitalize="none" autocomplete="off"
+                        placeholder={ctx.prefs.text(Msg::SearchPlaceholderShort)} aria-label={ctx.prefs.text(Msg::NavSearch)} autocapitalize="none" autocomplete="off"
                         class="w-full h-11 pl-10 pr-3 bg-[var(--bg-hover)] hover:bg-(--border-subtle) border-2 border-transparent focus:border-white/20 rounded-full text-sm text-white placeholder-gray-400 transition-all duration-200 outline-none" />
                 </div>
             </form>
@@ -522,7 +525,7 @@ fn playlist_stack(ctx: &Ctx, route: Computed<Route>) -> DomNode {
                 </div>
                 <div class="relative">
                     <a class="w-6 h-6 flex items-center justify-center bg-[var(--bg-primary)] border-2 border-white/10 text-[var(--text-muted)] hover:text-brand hover:border-brand/50 hover:bg-brand/5 transition-all duration-200"
-                        aria-label="Create playlist" title="create playlist" href={Route::Playlists.to_string()}>
+                        aria-label={ctx.prefs.text(Msg::CreatePlaylist)} title={ctx.prefs.hint(Msg::CreatePlaylist)} href={Route::Playlists.to_string()}>
                         {icon("plus", "w-3.5 h-3.5")}
                     </a>
                 </div>
@@ -622,7 +625,7 @@ fn side_panel(ctx: &Ctx, open: Value<bool>) -> DomNode {
         <div class="shrink-0 h-full relative z-(--z-raised) tablet:hidden" style={wrapper_style}>
             <div id="activity-panel" class="absolute inset-y-0 right-0 w-[380px] bg-[var(--bg-primary)] flex flex-col overflow-hidden transition-transform duration-300 ease-[cubic-bezier(0.25,1,0.5,1)] rounded-lg" style={panel_style}>
                 <button class="absolute left-0 top-0 bottom-0 w-12 flex items-center justify-center cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors duration-200 z-(--z-raised)"
-                    title="open panel" aria-label="Toggle queue panel" on_click={toggle.clone()}>
+                    title={ctx.prefs.hint(Msg::OpenPanel)} aria-label={ctx.prefs.text(Msg::ToggleQueuePanel)} on_click={toggle.clone()}>
                     {icon("chevron-left", "w-5 h-5 text-[var(--text-muted)]")}
                 </button>
                 <div class={body_class}>
@@ -768,11 +771,11 @@ fn drawer(ctx: &Ctx) -> DomNode {
                                 <span class="text-lg font-bold text-white tracking-tight">{PRODUCT_NAME}</span>
                             </a>
                             <button class="w-9 h-9 flex items-center justify-center text-[var(--text-muted)] hover:text-white transition-colors duration-200 rounded-full hover:bg-white/10"
-                                aria-label="Close menu" on_click={close.clone()}>
+                                aria-label={ctx.prefs.text(Msg::CloseMenu)} on_click={close.clone()}>
                                 {icon("x", "w-5 h-5")}
                             </button>
                         </div>
-                        <nav class="flex-1 overflow-y-auto py-4" role="navigation" aria-label="Mobile menu">
+                        <nav class="flex-1 overflow-y-auto py-4" role="navigation" aria-label={ctx.prefs.text(Msg::MobileMenu)}>
                             <div class="px-3 mb-6">
                                 <div class="text-xs font-semibold text-[var(--text-muted)] px-3 mb-2">"Quick Links"</div>
                                 <a class={radio_class} href={Route::Radio.to_string()} aria-current={radio_current} on_click={close.clone()}>
