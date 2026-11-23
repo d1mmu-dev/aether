@@ -12,7 +12,7 @@ runs in the Docker image, the production server or CI. The repository does not b
 does not match it yet, see [`crates/aether-web/README.md`](crates/aether-web/README.md). Every difference from upstream is logged in
 [`docs/DIVERGENCES.md`](docs/DIVERGENCES.md). Licensed under GPL-3.0-only, like upstream.
 
-## Renamed from kima-rs (D-284)
+## Renamed from kima-rs (D-285)
 
 Until 2026-11-23 this project was called kima-rs (repository `kima-rs-hub`). Every own technical name moved to
 Aether in one step, with no compatibility layer: crates `aether-*`, binary `aether`, environment variables

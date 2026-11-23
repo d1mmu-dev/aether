@@ -28,7 +28,7 @@ If you turn on two-factor authentication later (a planned milestone), your accou
 
 ### Why the server can decrypt tokens
 
-Token and salt sign-in is the older scheme most apps still use. To check `t`, the server must compute `md5(token + s)` itself, so it has to recover the token; a one-way hash is not enough. Upstream Aether stores only SHA-256 digests and so refuses `t`/`s`. Aether stores two things per token:
+Token and salt sign-in is the older scheme most apps still use. To check `t`, the server must compute `md5(token + s)` itself, so it has to recover the token; a one-way hash is not enough. Upstream Kima stores only SHA-256 digests and so refuses `t`/`s`. Aether stores two things per token:
 
 - the SHA-256 of the token, which answers `apiKey=` and `p=` in one lookup without decrypting anything;
 - the token encrypted with XChaCha20-Poly1305 under a key derived from `SETTINGS_ENCRYPTION_KEY`, bound to its database row.
