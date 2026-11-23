@@ -7,8 +7,9 @@ mod profiles;
 const FIELD: &str = "w-full bg-white/5 text-white text-sm px-3 py-2 rounded-lg border border-white/10 outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-50";
 const BUTTON: &str = "inline-flex items-center justify-center rounded-lg border border-white/20 px-3 py-2 text-sm text-white hover:bg-white/10 aria-pressed:bg-brand/20 aria-pressed:border-brand disabled:opacity-50 disabled:cursor-not-allowed";
 
-fn message_view(message: Value<Option<String>>) -> DomNode {
-    message.render_value(|value| match value {
+/// An inline error that follows the language (catalogue messages) or shows the server's body as received.
+fn message_view(ctx: &Ctx, message: Value<Option<UiError>>) -> DomNode {
+    localized(ctx, message).render_value(|value| match value {
         Some(text) => dom! { <p role="alert" class="text-sm text-danger-light">{text}</p> },
         None => dom! { <span /> },
     })
@@ -18,20 +19,26 @@ use aether_api_types::auth::{ChangePassword, ChangePasswordResponse, MeResponse}
 use vertigo::{DomNode, Value, bind, dom, get_driver};
 
 use crate::api::client::load;
-use crate::i18n::Msg;
+use crate::i18n::{Msg, UiError};
 use crate::ui::{Ctx, flag, resource_view};
+
+/// `error` rendered in the current language; changes in place when either the error or the language does.
+fn localized(ctx: &Ctx, error: Value<Option<UiError>>) -> vertigo::Computed<Option<String>> {
+    let locale = ctx.prefs.locale.clone();
+    vertigo::Computed::from(move |c| error.get(c).map(|e| e.text(locale.get(c))))
+}
 
 /// The backend's rule (6+ characters) and the confirm field, checked before a round trip; the backend's
 /// own message is shown verbatim for anything else (e.g. a wrong current password).
-pub fn validate(current: &str, new: &str, confirm: &str) -> Result<ChangePassword, String> {
+pub fn validate(current: &str, new: &str, confirm: &str) -> Result<ChangePassword, Msg> {
     if current.is_empty() {
-        return Err("Enter your current password".into());
+        return Err(Msg::EnterCurrentPassword);
     }
     if new.chars().count() < 6 {
-        return Err("New password must be at least 6 characters".into());
+        return Err(Msg::NewPasswordTooShort);
     }
     if new != confirm {
-        return Err("Passwords do not match".into());
+        return Err(Msg::PasswordsDoNotMatch);
     }
     Ok(ChangePassword {
         current_password: current.to_owned(),
@@ -54,19 +61,22 @@ pub fn render(ctx: &Ctx) -> DomNode {
         ctx.client.get::<MeResponse>("/api/auth/me").await
     }));
     let show_form = Value::new(false);
-    let signed_in = resource_view(me.clone(), |me: std::rc::Rc<MeResponse>| {
-        let username = me.username.clone();
-        let role = if crate::auth::is_admin(&me) {
-            "Administrator"
-        } else {
-            "Member"
-        };
-        row(
-            "Signed in as",
-            dom! { <p class="text-xs tabular-nums text-[var(--text-muted)] mt-0.5">{role}</p> },
-            dom! { <span id="account-username" class="text-sm text-white">{username}</span> },
-        )
-    });
+    let signed_in = resource_view(
+        me.clone(),
+        bind!(ctx, |me: std::rc::Rc<MeResponse>| {
+            let username = me.username.clone();
+            let role = ctx.prefs.text(if crate::auth::is_admin(&me) {
+                Msg::RoleAdministrator
+            } else {
+                Msg::RoleMember
+            });
+            row(
+                ctx.prefs.text(Msg::SignedInAs),
+                dom! { <p class="text-xs tabular-nums text-[var(--text-muted)] mt-0.5">{role}</p> },
+                dom! { <span id="account-username" class="text-sm text-white">{username}</span> },
+            )
+        }),
+    );
     let password_row = resource_view(
         me,
         bind!(ctx, show_form, |me: std::rc::Rc<MeResponse>| {
@@ -79,9 +89,9 @@ pub fn render(ctx: &Ctx) -> DomNode {
             }
             show_form.render_value(bind!(ctx, show_form, |open: bool| {
         let (class, label) = if open {
-            ("text-xs text-[var(--text-muted)] hover:text-white/70 transition-colors", "Cancel")
+            ("text-xs text-[var(--text-muted)] hover:text-white/70 transition-colors", ctx.prefs.text(Msg::Cancel))
         } else {
-            ("text-xs text-brand hover:text-brand-hover transition-colors", "Change")
+            ("text-xs text-brand hover:text-brand-hover transition-colors", ctx.prefs.text(Msg::Change))
         };
         let toggle = bind!(show_form, |_| {
             let now = vertigo::transaction(|c| show_form.get(c));
@@ -95,8 +105,8 @@ pub fn render(ctx: &Ctx) -> DomNode {
         dom! {
             <div>
                 {row(
-                    "Password",
-                    dom! { <p class="text-xs tabular-nums text-[var(--text-muted)] mt-0.5">"Change your account password"</p> },
+                    ctx.prefs.text(Msg::Password),
+                    dom! { <p class="text-xs tabular-nums text-[var(--text-muted)] mt-0.5">{ctx.prefs.text(Msg::ChangePasswordHint)}</p> },
                     dom! { <button type="button" class={class} on_click={toggle}>{label}</button> },
                 )}
                 {form}
@@ -171,6 +181,7 @@ fn podcast_ai_row(ctx: &Ctx) -> DomNode {
         get_driver().spawn(bind!(ctx, on, busy, async move {
             match crate::api::podcasts::save_ai_setting(&ctx.client, want).await {
                 Ok(show) => on.set(show),
+                // A server failure body is shown as received.
                 Err(err) => ctx.notify(err.message),
             }
             busy.set(false);
@@ -194,10 +205,10 @@ fn podcast_ai_row(ctx: &Ctx) -> DomNode {
         )
     });
     row(
-        "Show AI-generated podcasts",
-        dom! { <p class="text-xs tabular-nums text-[var(--text-muted)] mt-0.5">"Shows and episodes labelled AI are hidden unless this is on; unlabelled ones always show"</p> },
+        ctx.prefs.text(Msg::ShowAiPodcasts),
+        dom! { <p class="text-xs tabular-nums text-[var(--text-muted)] mt-0.5">{ctx.prefs.text(Msg::ShowAiPodcastsHint)}</p> },
         dom! {
-            <button type="button" role="switch" name="podcast-ai" aria-label="Show AI-generated podcasts"
+            <button type="button" role="switch" name="podcast-ai" aria-label={ctx.prefs.text(Msg::ShowAiPodcasts)}
                 aria-checked={checked} class={class} on_click={toggle}
                 disabled={flag(busy.to_computed())}>
                 <span class={knob}></span>
@@ -207,8 +218,7 @@ fn podcast_ai_row(ctx: &Ctx) -> DomNode {
 }
 
 /// `SettingsRow`: label and description on the left, the control on the right (stacked on phones).
-fn row(label: &str, description: DomNode, control: DomNode) -> DomNode {
-    let label = label.to_owned();
+fn row(label: vertigo::Computed<String>, description: DomNode, control: DomNode) -> DomNode {
     dom! {
         <div class="flex flex-col gap-1.5 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:min-h-[56px]">
             <div class="sm:flex-1">
@@ -224,8 +234,9 @@ fn password_form(ctx: &Ctx) -> DomNode {
     let current = Value::new(String::new());
     let new = Value::new(String::new());
     let confirm = Value::new(String::new());
-    let error: Value<Option<String>> = Value::new(None);
-    let done: Value<Option<String>> = Value::new(None);
+    let error: Value<Option<UiError>> = Value::new(None);
+    // Only ever the catalogue's success message: the server's English body is not shown.
+    let done: Value<Option<Msg>> = Value::new(None);
     let busy = Value::new(false);
 
     let submit = bind!(ctx, current, new, confirm, error, done, busy, || {
@@ -237,7 +248,7 @@ fn password_form(ctx: &Ctx) -> DomNode {
             Ok(b) => b,
             Err(message) => {
                 done.set(None);
-                error.set(Some(message));
+                error.set(Some(UiError::Msg(message)));
                 return;
             }
         };
@@ -265,22 +276,26 @@ fn password_form(ctx: &Ctx) -> DomNode {
                         current.set(String::new());
                         new.set(String::new());
                         confirm.set(String::new());
-                        done.set(Some(answer.message));
+                        done.set(Some(Msg::PasswordChanged));
                     }
-                    Err(err) => error.set(Some(err.message)),
+                    Err(err) => error.set(Some(UiError::Server(err.message))),
                 }
                 busy.set(false);
             }
         ));
     });
 
-    let error_view = error.render_value(|e| match e {
+    let error_view = localized(ctx, error).render_value(|e| match e {
         Some(message) => {
             dom! { <p class="inline-flex items-center gap-1.5 text-sm text-danger-light" id="password-error">{message}</p> }
         }
         None => dom! { <span class="hidden" /> },
     });
-    let done_view = done.render_value(|d| match d {
+    let done_text = {
+        let locale = ctx.prefs.locale.clone();
+        vertigo::Computed::from(move |c| done.get(c).map(|m| m.text(locale.get(c)).to_owned()))
+    };
+    let done_view = done_text.render_value(|d| match d {
         Some(message) => {
             dom! { <p class="inline-flex items-center gap-1.5 text-sm text-success" id="password-done">{message}</p> }
         }
@@ -291,23 +306,78 @@ fn password_form(ctx: &Ctx) -> DomNode {
     dom! {
         <form class="py-4 space-y-3 border-t border-b border-white/5" on_submit={submit}>
             <div class="relative">
-                <input id="settings-current" type="password" name="current" aria-label="Current password" placeholder="Current password" autocomplete="current-password"
+                <input id="settings-current" type="password" name="current" aria-label={ctx.prefs.text(Msg::CurrentPassword)} placeholder={ctx.prefs.text(Msg::CurrentPassword)} autocomplete="current-password"
                     class={FIELD} value={current.clone()} on_input={bind!(current, |v: String| current.set(v))} />
             </div>
             <div class="relative">
-                <input id="settings-new" type="password" name="new" aria-label="New password (6+ characters)" placeholder="New password (min 6 characters)" autocomplete="new-password"
+                <input id="settings-new" type="password" name="new" aria-label={ctx.prefs.text(Msg::NewPasswordLabel)} placeholder={ctx.prefs.text(Msg::NewPasswordPlaceholder)} autocomplete="new-password"
                     class={FIELD} value={new.clone()} on_input={bind!(new, |v: String| new.set(v))} />
             </div>
             <div class="relative">
-                <input id="settings-confirm" type="password" name="confirm" aria-label="Confirm new password" placeholder="Confirm new password" autocomplete="new-password"
+                <input id="settings-confirm" type="password" name="confirm" aria-label={ctx.prefs.text(Msg::ConfirmNewPassword)} placeholder={ctx.prefs.text(Msg::ConfirmNewPassword)} autocomplete="new-password"
                     class={FIELD} value={confirm.clone()} on_input={bind!(confirm, |v: String| confirm.set(v))} />
             </div>
             <div class="inline-flex items-center gap-3">
-                <button type="submit" class="inline-flex items-center justify-center gap-2 rounded-lg font-semibold transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed bg-brand hover:bg-brand-hover text-black px-4 py-2 text-xs" disabled={flag(busy.to_computed())}>"Change Password"</button>
+                <button type="submit" class="inline-flex items-center justify-center gap-2 rounded-lg font-semibold transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed bg-brand hover:bg-brand-hover text-black px-4 py-2 text-xs" disabled={flag(busy.to_computed())}>{ctx.prefs.text(Msg::ChangePasswordButton)}</button>
                 {error_view}
                 {done_view}
             </div>
-            <p class="text-xs text-warning">"Changing your password signs out every app that uses these tokens. You will need to create new ones."</p>
+            <p class="text-xs text-warning">{ctx.prefs.text(Msg::PasswordChangeWarning)}</p>
         </form>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::Locale;
+
+    #[test]
+    fn password_validation_errors_are_catalogue_messages() {
+        assert_eq!(
+            validate("", "secret1", "secret1").unwrap_err(),
+            Msg::EnterCurrentPassword
+        );
+        assert_eq!(
+            validate("old", "short", "short").unwrap_err(),
+            Msg::NewPasswordTooShort
+        );
+        assert_eq!(
+            validate("old", "secret1", "secret2").unwrap_err(),
+            Msg::PasswordsDoNotMatch
+        );
+        // Six characters counted as characters, not bytes.
+        let body = validate("old", "żółćźę", "żółćźę").unwrap();
+        assert_eq!(body.new_password, "żółćźę");
+        assert_eq!(
+            Msg::NewPasswordTooShort.text(Locale::Pl),
+            "Nowe hasło musi mieć co najmniej 6 znaków"
+        );
+    }
+
+    #[test]
+    fn no_hardcoded_english_left_in_settings_views() {
+        for (file, src) in [
+            ("settings.rs", include_str!("settings.rs")),
+            ("settings/profiles.rs", include_str!("settings/profiles.rs")),
+            ("settings/apps.rs", include_str!("settings/apps.rs")),
+        ] {
+            let view = src.split("#[cfg(test)]").next().unwrap();
+            for text in [
+                "\"Signed in as\"",
+                "\"Change Password\"",
+                "\"Profile saved\"",
+                "\"Delete permanently\"",
+                "\"Create app token\"",
+                "\"App token copied\"",
+                "\"Revoke\"",
+                "\"Apps\"",
+                "\"Profiles\"",
+                "aria-label=\"",
+                "placeholder=\"",
+            ] {
+                assert!(!view.contains(text), "{file} still hardcodes {text}");
+            }
+        }
     }
 }

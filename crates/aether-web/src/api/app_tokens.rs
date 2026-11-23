@@ -1,4 +1,5 @@
 use super::client::{ApiClient, ApiError};
+use crate::i18n::Msg;
 use aether_api_types::app_tokens::{AppTokensResponse, CreateAppToken, CreatedAppToken};
 
 pub const LIST_PATH: &str = "/api/api-keys";
@@ -7,13 +8,13 @@ pub fn token_path(id: uuid::Uuid) -> String {
     format!("{LIST_PATH}/{id}")
 }
 
-pub fn create_body(name: &str) -> Result<CreateAppToken, String> {
+pub fn create_body(name: &str) -> Result<CreateAppToken, Msg> {
     let name = name.trim();
     if name.is_empty() {
-        return Err("Device name is required".into());
+        return Err(Msg::DeviceNameRequired);
     }
     if name.chars().count() > 100 {
-        return Err("Device name must be at most 100 characters".into());
+        return Err(Msg::DeviceNameTooLong);
     }
     Ok(CreateAppToken {
         device_name: name.into(),
@@ -50,8 +51,11 @@ mod tests {
     #[test]
     fn device_name_is_trimmed_and_bounded_without_client_account_cap() {
         assert_eq!(create_body(" Phone ").unwrap().device_name, "Phone");
-        assert!(create_body(" ").is_err());
+        assert_eq!(create_body(" ").err(), Some(Msg::DeviceNameRequired));
         assert!(create_body(&"ą".repeat(100)).is_ok());
-        assert!(create_body(&"ą".repeat(101)).is_err());
+        assert_eq!(
+            create_body(&"ą".repeat(101)).err(),
+            Some(Msg::DeviceNameTooLong)
+        );
     }
 }

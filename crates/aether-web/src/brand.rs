@@ -9,8 +9,14 @@ pub const PRODUCT_NAME: &str = "Aether";
 /// The document title (the body is lowercase, the tab title follows it).
 pub const DOCUMENT_TITLE: &str = "aether";
 
-/// The footer line under the login and onboarding cards.
-pub const FOOTER: &str = "© 2026 Aether. Your music, your way.";
+/// The footer line under the login and onboarding cards: the year and product name are fixed, only the
+/// tagline follows the language.
+pub fn footer(locale: crate::i18n::Locale) -> String {
+    format!(
+        "© 2026 {PRODUCT_NAME}. {}",
+        crate::i18n::Msg::FooterTagline.text(locale)
+    )
+}
 
 /// The tab icon: the Aether "A" with its orbital ring on Midnight Slate.
 pub const FAVICON_SVG: &str = include_str!("../assets/favicon.svg");
@@ -89,13 +95,18 @@ mod tests {
             assert!(
                 src.contains("PRODUCT_NAME")
                     || src.contains("DOCUMENT_TITLE")
-                    || src.contains("FOOTER"),
+                    || src.contains("brand::footer"),
                 "{file} does not use the brand constants"
             );
         }
         assert_eq!(PRODUCT_NAME, "Aether");
         assert_eq!(DOCUMENT_TITLE, PRODUCT_NAME.to_lowercase());
-        assert!(FOOTER.contains(PRODUCT_NAME));
+        use crate::i18n::Locale;
+        assert_eq!(footer(Locale::En), "© 2026 Aether. Your music, your way.");
+        assert_eq!(
+            footer(Locale::Pl),
+            "© 2026 Aether. Twoja muzyka, na Twój sposób."
+        );
     }
 
     /// Owner-approved Midnight Slate tokens (lowercase hex: Tailwind's minifier lowercases them).

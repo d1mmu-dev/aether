@@ -6,7 +6,7 @@ use aether_api_types::onboarding::OnboardingStatus;
 use vertigo::{DomNode, Resource, Value, bind, dom, get_driver};
 
 use crate::api::client::load;
-use crate::brand::{FOOTER, PRODUCT_NAME};
+use crate::brand::PRODUCT_NAME;
 use crate::i18n::{Msg, UiError};
 use crate::route::Route;
 use crate::shell::aether_mark;
@@ -154,7 +154,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
                         {first_run}
                         {setup_hint}
                     </div>
-                    <p class="text-center text-[var(--text-muted)] text-sm mt-6">{FOOTER}</p>
+                    <p class="text-center text-[var(--text-muted)] text-sm mt-6">{ctx.prefs.format(crate::brand::footer)}</p>
                 </div>
             </div>
         </div>

@@ -191,6 +191,116 @@ catalogue! {
         "Couldn't save the change to your profile; it was undone.",
         "Nie udało się zapisać zmiany w profilu; została cofnięta.",
     ),
+    // settings: account
+    SignedInAs => ("Signed in as", "Zalogowano jako"),
+    RoleAdministrator => ("Administrator", "Administrator"),
+    RoleMember => ("Member", "Użytkownik"),
+    ChangePasswordHint => ("Change your account password", "Zmień hasło do konta"),
+    Change => ("Change", "Zmień"),
+    Cancel => ("Cancel", "Anuluj"),
+    CurrentPassword => ("Current password", "Obecne hasło"),
+    NewPasswordLabel => ("New password (6+ characters)", "Nowe hasło (co najmniej 6 znaków)"),
+    NewPasswordPlaceholder => ("New password (min 6 characters)", "Nowe hasło (min. 6 znaków)"),
+    ConfirmNewPassword => ("Confirm new password", "Potwierdź nowe hasło"),
+    ChangePasswordButton => ("Change Password", "Zmień hasło"),
+    PasswordChangeWarning => (
+        "Changing your password signs out every app that uses these tokens. You will need to create new ones.",
+        "Zmiana hasła wyloguje wszystkie aplikacje, które używają tych tokenów. Trzeba będzie utworzyć nowe.",
+    ),
+    EnterCurrentPassword => ("Enter your current password", "Wpisz obecne hasło"),
+    NewPasswordTooShort => (
+        "New password must be at least 6 characters",
+        "Nowe hasło musi mieć co najmniej 6 znaków",
+    ),
+    /// The change-password success (200); the server's body is not shown.
+    PasswordChanged => ("Password changed successfully", "Hasło zostało zmienione"),
+    ShowAiPodcasts => ("Show AI-generated podcasts", "Pokazuj podcasty generowane przez AI"),
+    ShowAiPodcastsHint => (
+        "Shows and episodes labelled AI are hidden unless this is on; unlabelled ones always show",
+        "Audycje i odcinki oznaczone jako AI są ukryte, dopóki ta opcja jest wyłączona; nieoznaczone są zawsze widoczne",
+    ),
+    // settings: profiles
+    ProfilesIntro => (
+        "Up to 5 profiles, including main. Multiple kids profiles are allowed. Kids has no content filters yet. No PIN is required: profiles are not a security boundary.",
+        "Do 5 profili, wliczając główny. Można mieć kilka profili dziecięcych. Profil dziecięcy nie ma jeszcze filtrów treści. PIN nie jest wymagany: profile nie są zabezpieczeniem.",
+    ),
+    ProfileLimitReached => (
+        "Profile limit reached. Delete a profile before adding another.",
+        "Osiągnięto limit profili. Usuń jeden z profili, zanim dodasz kolejny.",
+    ),
+    OnlyMainManagesProfiles => (
+        "Only the main profile can manage profiles.",
+        "Tylko profil główny może zarządzać profilami.",
+    ),
+    EditProfile => ("Edit profile", "Edytuj profil"),
+    AddProfile => ("Add profile", "Dodaj profil"),
+    KindMain => ("Main", "Główny"),
+    KindKids => ("Kids", "Dziecięcy"),
+    KindStandard => ("Standard", "Standardowy"),
+    KindUnknown => ("Unknown", "Nieznany"),
+    MainKindFixed => ("Main profile kind cannot be changed.", "Rodzaju profilu głównego nie można zmienić."),
+    ProfileKindGroup => ("Profile kind", "Rodzaj profilu"),
+    AvatarPreset => ("Avatar preset", "Awatar"),
+    AvatarInitial => ("Initial", "Inicjał"),
+    AvatarCat => ("Cat", "Kot"),
+    AvatarDog => ("Dog", "Pies"),
+    AvatarFox => ("Fox", "Lis"),
+    AvatarOwl => ("Owl", "Sowa"),
+    AvatarBear => ("Bear", "Niedźwiedź"),
+    AvatarPanda => ("Panda", "Panda"),
+    AvatarRabbit => ("Rabbit", "Królik"),
+    AvatarPenguin => ("Penguin", "Pingwin"),
+    AvatarRobot => ("Robot", "Robot"),
+    AvatarRocket => ("Rocket", "Rakieta"),
+    AvatarStar => ("Star", "Gwiazda"),
+    AvatarMusic => ("Music", "Muzyka"),
+    ProfileName => ("Profile name", "Nazwa profilu"),
+    ProfileNamePlaceholder => ("Profile name (1–50 characters)", "Nazwa profilu (1–50 znaków)"),
+    SaveProfile => ("Save profile", "Zapisz profil"),
+    ProfileSaved => ("Profile saved", "Profil zapisany"),
+    ProfileDeleted => ("Profile and personal data deleted", "Usunięto profil i jego dane osobiste"),
+    DeleteProfilePermanently => ("Delete profile permanently", "Usuń profil na zawsze"),
+    DeleteProfileWarning => (
+        "This cannot be undone. Deleting this profile permanently deletes its playlists, listening history, stars, ratings, settings, playback state, bookmarks, podcast follows/progress/download records and app tokens. Its sessions and app tokens stop working. Other profiles and the shared library are not deleted.",
+        "Tej operacji nie można cofnąć. Usunięcie profilu na zawsze usuwa jego playlisty, historię słuchania, gwiazdki, oceny, ustawienia, stan odtwarzania, zakładki, obserwowane podcasty wraz z postępem i pobraniami oraz tokeny aplikacji. Jego sesje i tokeny aplikacji przestają działać. Inne profile i wspólna biblioteka nie są usuwane.",
+    ),
+    ConfirmProfileName => ("Confirm profile name", "Potwierdź nazwę profilu"),
+    DeletePermanently => ("Delete permanently", "Usuń na zawsze"),
+    ProfileNameLength => ("Profile name must be 1 to 50 characters", "Nazwa profilu musi mieć od 1 do 50 znaków"),
+    InvalidProfileKind => ("Invalid profile kind", "Nieprawidłowy rodzaj profilu"),
+    UnknownAvatar => ("Unknown avatar", "Nieznany awatar"),
+    // settings: app tokens
+    SectionApps => ("Apps", "Aplikacje"),
+    AppsIntro => (
+        "Only this profile's Subsonic app tokens are listed. Each profile manages its own tokens, including main. The account shares a limit of 50 tokens across all profiles; the server enforces it.",
+        "Widoczne są tylko tokeny aplikacji Subsonic tego profilu. Każdy profil, także główny, zarządza własnymi tokenami. Wszystkie profile konta mają wspólny limit 50 tokenów; pilnuje go serwer.",
+    ),
+    NoAppTokens => ("No app tokens for this profile.", "Ten profil nie ma tokenów aplikacji."),
+    Revoke => ("Revoke", "Unieważnij"),
+    AppTokenRevoked => ("App token revoked", "Token aplikacji unieważniony"),
+    AppTokenCopied => ("App token copied", "Skopiowano token aplikacji"),
+    CopyBlocked => (
+        "Copy was blocked. Select and copy the token manually.",
+        "Kopiowanie zostało zablokowane. Zaznacz i skopiuj token ręcznie.",
+    ),
+    SaveTokenNow => (
+        "Save this app token now. It is shown only once; dismissing or leaving Settings hides it permanently. Use your account username and this token in your Subsonic app. It signs into this profile.",
+        "Zapisz teraz ten token aplikacji. Jest pokazywany tylko raz; po ukryciu go lub wyjściu z Ustawień zniknie na zawsze. W aplikacji Subsonic użyj nazwy użytkownika konta i tego tokenu. Token loguje do tego profilu.",
+    ),
+    NewAppToken => ("New app token (shown once)", "Nowy token aplikacji (pokazywany raz)"),
+    CopyToken => ("Copy token", "Kopiuj token"),
+    HideToken => ("I saved it — hide token", "Zapisano — ukryj token"),
+    RefreshAppTokens => ("Refresh app tokens", "Odśwież tokeny aplikacji"),
+    AppDeviceName => ("App device name", "Nazwa urządzenia aplikacji"),
+    DeviceNamePlaceholder => ("Device name (e.g. Phone)", "Nazwa urządzenia (np. Telefon)"),
+    CreateAppToken => ("Create app token", "Utwórz token aplikacji"),
+    DeviceNameRequired => ("Device name is required", "Podaj nazwę urządzenia"),
+    DeviceNameTooLong => (
+        "Device name must be at most 100 characters",
+        "Nazwa urządzenia może mieć najwyżej 100 znaków",
+    ),
+    // footer (the product name and year stay outside the catalogue)
+    FooterTagline => ("Your music, your way.", "Twoja muzyka, na Twój sposób."),
 }
 
 impl Msg {
@@ -337,6 +447,36 @@ pub fn pl_plural(n: u64) -> PlPlural {
     }
 }
 
+/// The profile counter, e.g. "2 / 5 profiles" (Polish avoids the plural with a label).
+pub fn profile_count(locale: Locale, count: usize, max: u32) -> String {
+    match locale {
+        Locale::En => format!("{count} / {max} profiles"),
+        Locale::Pl => format!("Profile: {count} / {max}"),
+    }
+}
+
+/// The typed-name deletion prompt; `name` is the profile's own name, shown as is.
+pub fn type_name_to_confirm(locale: Locale, name: &str) -> String {
+    match locale {
+        Locale::En => format!("Type {name} exactly to confirm"),
+        Locale::Pl => format!("Aby potwierdzić, wpisz dokładnie: {name}"),
+    }
+}
+
+/// An app token's dates; the timestamps are shown as received.
+pub fn token_dates(locale: Locale, created: &str, last_used: Option<&str>) -> String {
+    match locale {
+        Locale::En => format!(
+            "Created {created} · Last used {}",
+            last_used.unwrap_or("never")
+        ),
+        Locale::Pl => format!(
+            "Utworzono {created} · Ostatnie użycie: {}",
+            last_used.unwrap_or("nigdy")
+        ),
+    }
+}
+
 /// A complete "N tracks" phrase (whole sentences per locale, no concatenated noun fragments).
 // First consumer: the library count labels of the next translation slice.
 #[allow(dead_code)]
@@ -432,8 +572,44 @@ mod tests {
             .copied()
             .filter(|m| m.text(Locale::En) == m.text(Locale::Pl))
             .collect();
-        assert_eq!(same, vec![Msg::NavRadio]);
-        assert!(Msg::ALL.len() >= 80, "{}", Msg::ALL.len());
+        assert_eq!(
+            same,
+            vec![
+                Msg::NavRadio,
+                Msg::RoleAdministrator,
+                Msg::AvatarPanda,
+                Msg::AvatarRobot
+            ]
+        );
+        assert!(Msg::ALL.len() >= 150, "{}", Msg::ALL.len());
+    }
+
+    #[test]
+    fn settings_sentences_keep_names_and_dates_verbatim() {
+        let name = "Zażółć <b>";
+        for l in Locale::ALL {
+            assert!(type_name_to_confirm(l, name).contains(name));
+            let dates = token_dates(l, "2026-11-23T10:00:00Z", Some("2026-11-24"));
+            assert!(dates.contains("2026-11-23T10:00:00Z") && dates.contains("2026-11-24"));
+        }
+        assert_eq!(
+            type_name_to_confirm(Locale::Pl, "Ala"),
+            "Aby potwierdzić, wpisz dokładnie: Ala"
+        );
+        assert_eq!(
+            type_name_to_confirm(Locale::En, "Ala"),
+            "Type Ala exactly to confirm"
+        );
+        assert_eq!(
+            token_dates(Locale::Pl, "X", None),
+            "Utworzono X · Ostatnie użycie: nigdy"
+        );
+        assert_eq!(
+            token_dates(Locale::En, "X", None),
+            "Created X · Last used never"
+        );
+        assert_eq!(profile_count(Locale::En, 2, 5), "2 / 5 profiles");
+        assert_eq!(profile_count(Locale::Pl, 1, 5), "Profile: 1 / 5");
     }
 
     #[test]

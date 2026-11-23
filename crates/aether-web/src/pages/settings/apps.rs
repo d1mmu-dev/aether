@@ -1,6 +1,7 @@
 //! Tokens belong to the authenticated profile; no profile selector or account-wide list.
 use super::{BUTTON, FIELD, message_view};
 use crate::api::app_tokens as api;
+use crate::i18n::{Msg, UiError, token_dates};
 use crate::ui::{Ctx, flag, resource_view};
 use aether_api_types::app_tokens::{AppTokensResponse, CreatedAppToken};
 use std::rc::Rc;
@@ -35,25 +36,26 @@ pub(super) fn render(ctx: &Ctx) -> DomNode {
         bind!(ctx, data, busy, error, |answer: Rc<AppTokensResponse>| {
             let rows: Vec<DomNode> = answer.api_keys.iter().map(|token| {
             let name = token.name.clone();
-            let created = format!("Created {} · Last used {}", token.created_at, token.last_used.as_deref().unwrap_or("never"));
+            let (created_at, last_used) = (token.created_at.clone(), token.last_used.clone());
+            let created = ctx.prefs.format(move |l| token_dates(l, &created_at, last_used.as_deref()));
             let id = token.id;
             let revoke = bind!(ctx, data, busy, error, |_| {
                 if vertigo::transaction(|c| busy.get(c)) { return; }
                 busy.set(true); error.set(None);
                 get_driver().spawn(bind!(ctx, data, busy, error, async move {
                     match api::revoke(&ctx.client, id).await {
-                        Ok(_) => { ctx.notify("App token revoked"); refresh(&ctx, data, busy); }
-                        Err(err) => { error.set(Some(err.message)); busy.set(false); }
+                        Ok(_) => { ctx.notify(ctx.prefs.now(Msg::AppTokenRevoked)); refresh(&ctx, data, busy); }
+                        Err(err) => { error.set(Some(UiError::Server(err.message))); busy.set(false); }
                     }
                 }));
             });
             dom! { <div class="border border-white/10 rounded-lg p-4 space-y-2">
                 <p class="text-white font-semibold">{name}</p><p class="text-xs text-[var(--text-muted)]">{created}</p>
-                <button type="button" class={BUTTON} on_click={revoke} disabled={flag(busy.to_computed())}>"Revoke"</button>
+                <button type="button" class={BUTTON} on_click={revoke} disabled={flag(busy.to_computed())}>{ctx.prefs.text(Msg::Revoke)}</button>
             </div> }
         }).collect();
             if rows.is_empty() {
-                dom! { <p class="text-sm text-[var(--text-muted)]">"No app tokens for this profile."</p> }
+                dom! { <p class="text-sm text-[var(--text-muted)]">{ctx.prefs.text(Msg::NoAppTokens)}</p> }
             } else {
                 dom! { <div class="space-y-3">{..rows}</div> }
             }
@@ -66,7 +68,7 @@ pub(super) fn render(ctx: &Ctx) -> DomNode {
         let body = match api::create_body(&vertigo::transaction(|c| name.get(c))) {
             Ok(body) => body,
             Err(message) => {
-                error.set(Some(message));
+                error.set(Some(UiError::Msg(message)));
                 return;
             }
         };
@@ -80,7 +82,7 @@ pub(super) fn render(ctx: &Ctx) -> DomNode {
                     refresh(&ctx, data, busy);
                 }
                 Err(err) => {
-                    error.set(Some(err.message));
+                    error.set(Some(UiError::Server(err.message)));
                     busy.set(false);
                 }
             }
@@ -94,13 +96,13 @@ pub(super) fn render(ctx: &Ctx) -> DomNode {
                 // Do not claim success when the browser denies clipboard access.
                 vertigo::js! { document.getElementById("app-token-secret").select() };
                 if matches!(vertigo::js! { document.execCommand("copy") }, vertigo::JsJson::True) {
-                    ctx.notify("App token copied");
-                } else { ctx.notify("Copy was blocked. Select and copy the token manually."); }
+                    ctx.notify(ctx.prefs.now(Msg::AppTokenCopied));
+                } else { ctx.notify(ctx.prefs.now(Msg::CopyBlocked)); }
             });
             dom! { <div class="border border-brand/40 rounded-lg p-4 space-y-3">
-                <p role="status" class="text-sm text-warning">"Save this app token now. It is shown only once; dismissing or leaving Settings hides it permanently. Use your account username and this token in your Subsonic app. It signs into this profile."</p>
-                <input id="app-token-secret" aria-label="New app token (shown once)" class={FIELD} readonly="readonly" autocomplete="off" spellcheck="false" value={value.api_key} />
-                <div class="flex flex-wrap gap-2"><button type="button" class={BUTTON} on_click={copy}>"Copy token"</button><button type="button" class={BUTTON} on_click={dismiss}>"I saved it — hide token"</button></div>
+                <p role="status" class="text-sm text-warning">{ctx.prefs.text(Msg::SaveTokenNow)}</p>
+                <input id="app-token-secret" aria-label={ctx.prefs.text(Msg::NewAppToken)} class={FIELD} readonly="readonly" autocomplete="off" spellcheck="false" value={value.api_key} />
+                <div class="flex flex-wrap gap-2"><button type="button" class={BUTTON} on_click={copy}>{ctx.prefs.text(Msg::CopyToken)}</button><button type="button" class={BUTTON} on_click={dismiss}>{ctx.prefs.text(Msg::HideToken)}</button></div>
             </div> }
         },
         None => dom! { <span /> },
@@ -116,13 +118,13 @@ pub(super) fn render(ctx: &Ctx) -> DomNode {
         refresh(&ctx, data.clone(), busy.clone());
     });
     dom! { <section id="apps" class="space-y-4">
-        <h2 class="text-lg font-bold text-white">"Apps"</h2>
-        <p class="text-sm text-[var(--text-muted)]">"Only this profile's Subsonic app tokens are listed. Each profile manages its own tokens, including main. The account shares a limit of 50 tokens across all profiles; the server enforces it."</p>
+        <h2 class="text-lg font-bold text-white">{ctx.prefs.text(Msg::SectionApps)}</h2>
+        <p class="text-sm text-[var(--text-muted)]">{ctx.prefs.text(Msg::AppsIntro)}</p>
         {reveal}{rows}
-        <button type="button" class={BUTTON} on_click={reload} disabled={flag(busy.to_computed())}>"Refresh app tokens"</button>
+        <button type="button" class={BUTTON} on_click={reload} disabled={flag(busy.to_computed())}>{ctx.prefs.text(Msg::RefreshAppTokens)}</button>
         <form class="space-y-3" on_submit={submit}>
-            <input aria-label="App device name" placeholder="Device name (e.g. Phone)" maxlength="100" class={FIELD} value={name.clone()} on_input={bind!(name, |v: String| name.set(v))} disabled={flag(create_disabled.clone())} />
-            <button type="submit" class={BUTTON} disabled={flag(create_disabled)}>"Create app token"</button>
-        </form>{message_view(error)}
+            <input aria-label={ctx.prefs.text(Msg::AppDeviceName)} placeholder={ctx.prefs.text(Msg::DeviceNamePlaceholder)} maxlength="100" class={FIELD} value={name.clone()} on_input={bind!(name, |v: String| name.set(v))} disabled={flag(create_disabled.clone())} />
+            <button type="submit" class={BUTTON} disabled={flag(create_disabled)}>{ctx.prefs.text(Msg::CreateAppToken)}</button>
+        </form>{message_view(ctx, error)}
     </section> }
 }

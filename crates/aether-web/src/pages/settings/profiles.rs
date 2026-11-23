@@ -1,5 +1,6 @@
 use super::{BUTTON, FIELD, message_view};
 use crate::api::profiles as api;
+use crate::i18n::{Msg, UiError, profile_count, type_name_to_confirm};
 use crate::ui::{Ctx, flag, resource_view};
 use aether_api_types::profiles::{
     AVATAR_PRESETS, CreateProfile, Profile, ProfileKind, ProfilesResponse, is_avatar_preset,
@@ -9,13 +10,13 @@ use vertigo::{DomNode, Resource, Value, bind, dom, get_driver};
 
 type Data = Value<Resource<Rc<ProfilesResponse>>>;
 
-fn refresh(ctx: &Ctx, data: Data, error: Value<Option<String>>, busy: Value<bool>) {
+fn refresh(ctx: &Ctx, data: Data, error: Value<Option<UiError>>, busy: Value<bool>) {
     get_driver().spawn(bind!(ctx, async move {
         match api::list(&ctx.client).await {
             Ok(answer) => data.set(Resource::Ready(Rc::new(answer))),
             Err(err) => {
                 data.set(Resource::Error(err.message.clone()));
-                error.set(Some(err.message));
+                error.set(Some(UiError::Server(err.message)));
             }
         }
         busy.set(false);
@@ -40,7 +41,7 @@ pub(super) fn render(ctx: &Ctx) -> DomNode {
             let rows: Vec<DomNode> = answer.profiles.iter().map(|p| {
             let picture = crate::pages::profiles::avatar(p);
             let name = p.name.clone();
-            let kind = format!("{:?}", p.kind);
+            let kind = ctx.prefs.text(kind_label(p.kind));
             let edit = if manager { editor(&ctx, Some(p.clone()), data.clone(), error.clone(), busy.clone()) } else { dom! { <span /> } };
             dom! { <div class="border border-white/10 rounded-lg p-4 space-y-3">
                 <div class="flex items-center gap-3">{picture}<span class="font-semibold text-white">{name}</span><span class="text-xs text-brand">{kind}</span></div>
@@ -50,18 +51,19 @@ pub(super) fn render(ctx: &Ctx) -> DomNode {
             let add = if can_add(manager, answer.profiles.len(), answer.max) {
                 editor(&ctx, None, data.clone(), error.clone(), busy.clone())
             } else if manager {
-                dom! { <p class="text-sm text-warning">"Profile limit reached. Delete a profile before adding another."</p> }
+                dom! { <p class="text-sm text-warning">{ctx.prefs.text(Msg::ProfileLimitReached)}</p> }
             } else {
-                dom! { <p class="text-sm text-[var(--text-muted)]">"Only the main profile can manage profiles."</p> }
+                dom! { <p class="text-sm text-[var(--text-muted)]">{ctx.prefs.text(Msg::OnlyMainManagesProfiles)}</p> }
             };
-            let count = format!("{} / {} profiles", answer.profiles.len(), answer.max);
+            let (len, max) = (answer.profiles.len(), answer.max);
+            let count = ctx.prefs.format(move |l| profile_count(l, len, max));
             dom! { <div class="space-y-4"><p class="text-sm text-[var(--text-muted)]">{count}</p>{..rows}{add}</div> }
         }),
     );
     dom! { <section id="profiles" class="space-y-4">
-        <h2 class="text-lg font-bold text-white">"Profiles"</h2>
-        <p class="text-sm text-[var(--text-muted)]">"Up to 5 profiles, including main. Multiple kids profiles are allowed. Kids has no content filters yet. No PIN is required: profiles are not a security boundary."</p>
-        {content}{message_view(error)}
+        <h2 class="text-lg font-bold text-white">{ctx.prefs.text(Msg::Profiles)}</h2>
+        <p class="text-sm text-[var(--text-muted)]">{ctx.prefs.text(Msg::ProfilesIntro)}</p>
+        {content}{message_view(ctx, error)}
     </section> }
 }
 
@@ -69,7 +71,7 @@ fn editor(
     ctx: &Ctx,
     profile: Option<Profile>,
     data: Data,
-    error: Value<Option<String>>,
+    error: Value<Option<UiError>>,
     busy: Value<bool>,
 ) -> DomNode {
     let name = Value::new(profile.as_ref().map(|p| p.name.clone()).unwrap_or_default());
@@ -88,11 +90,11 @@ fn editor(
     let is_main = profile
         .as_ref()
         .is_some_and(|p| p.kind == ProfileKind::Main);
-    let title = if profile.is_some() {
-        "Edit profile"
+    let title = ctx.prefs.text(if profile.is_some() {
+        Msg::EditProfile
     } else {
-        "Add profile"
-    };
+        Msg::AddProfile
+    });
     let submit = bind!(ctx, profile, name, kind, avatar, data, error, busy, || {
         if vertigo::transaction(|c| busy.get(c)) {
             return;
@@ -101,7 +103,7 @@ fn editor(
         let update = match update_form(&n, k, &a) {
             Ok(b) => b,
             Err(e) => {
-                error.set(Some(e));
+                error.set(Some(UiError::Msg(e)));
                 return;
             }
         };
@@ -110,7 +112,7 @@ fn editor(
             match profile_form(&n, k, &a) {
                 Ok(b) => Some(b),
                 Err(e) => {
-                    error.set(Some(e));
+                    error.set(Some(UiError::Msg(e)));
                     return;
                 }
             }
@@ -128,28 +130,37 @@ fn editor(
             match result {
                 Ok(_) => {
                     api::invalidate(&ctx.profiles_rev);
-                    ctx.notify("Profile saved");
+                    ctx.notify(ctx.prefs.now(Msg::ProfileSaved));
                     refresh(&ctx, data, error, busy);
                 }
                 Err(err) => {
-                    error.set(Some(err.message));
+                    error.set(Some(UiError::Server(err.message)));
                     busy.set(false);
                 }
             }
         }));
     });
     let kinds = if is_main {
-        dom! { <p class="text-xs text-[var(--text-muted)]">"Main profile kind cannot be changed."</p> }
+        dom! { <p class="text-xs text-[var(--text-muted)]">{ctx.prefs.text(Msg::MainKindFixed)}</p> }
     } else {
-        let choices: Vec<DomNode> = [(ProfileKind::Standard, "Standard"), (ProfileKind::Kids, "Kids")].into_iter().map(|(k, label)| {
+        let choices: Vec<DomNode> = [ProfileKind::Standard, ProfileKind::Kids].into_iter().map(|k| {
+            let label = ctx.prefs.text(kind_label(k));
             let checked = kind.map(move |v| (v == k).to_string());
             let click = bind!(kind, |_| kind.set(k));
             dom! { <button type="button" class={BUTTON} aria-pressed={checked} on_click={click} disabled={flag(busy.to_computed())}>{label}</button> }
         }).collect();
-        dom! { <div role="group" aria-label="Profile kind" class="flex gap-2">{..choices}</div> }
+        dom! { <div role="group" aria-label={ctx.prefs.text(Msg::ProfileKindGroup)} class="flex gap-2">{..choices}</div> }
     };
     let avatars: Vec<DomNode> = std::iter::once("").chain(AVATAR_PRESETS).map(|preset| {
-        let label = if preset.is_empty() { "Initial".to_owned() } else { format!("{} {preset}", crate::pages::profiles::avatar_text(Some(preset), "")) };
+        let label = match avatar_label(preset) {
+            Some(name) if !preset.is_empty() => {
+                let glyph = crate::pages::profiles::avatar_text(Some(preset), "");
+                ctx.prefs.format(move |l| format!("{glyph} {}", name.text(l)))
+            }
+            Some(name) => ctx.prefs.text(name),
+            // A preset without a catalogue name (never shipped) keeps its identifier.
+            None => vertigo::Computed::from(move |_| preset.to_owned()),
+        };
         let checked = avatar.map(move |v| (v == preset).to_string());
         let click = bind!(avatar, |_| avatar.set(preset.into()));
         dom! { <button type="button" class={BUTTON} aria-pressed={checked} on_click={click} disabled={flag(busy.to_computed())}>{label}</button> }
@@ -161,9 +172,9 @@ fn editor(
     dom! { <details class="space-y-3">
         <summary class="text-brand cursor-pointer">{title}</summary>
         <form on_submit={submit} class="space-y-3 py-3">
-            <input class={FIELD} aria-label="Profile name" placeholder="Profile name (1–50 characters)" maxlength="50" value={name.clone()} on_input={bind!(name, |v: String| name.set(v))} disabled={flag(busy.to_computed())} />
-            {kinds}<div role="group" aria-label="Avatar preset" class="flex flex-wrap gap-2">{..avatars}</div>
-            <button type="submit" class={BUTTON} disabled={flag(busy.to_computed())}>"Save profile"</button>
+            <input class={FIELD} aria-label={ctx.prefs.text(Msg::ProfileName)} placeholder={ctx.prefs.text(Msg::ProfileNamePlaceholder)} maxlength="50" value={name.clone()} on_input={bind!(name, |v: String| name.set(v))} disabled={flag(busy.to_computed())} />
+            {kinds}<div role="group" aria-label={ctx.prefs.text(Msg::AvatarPreset)} class="flex flex-wrap gap-2">{..avatars}</div>
+            <button type="submit" class={BUTTON} disabled={flag(busy.to_computed())}>{ctx.prefs.text(Msg::SaveProfile)}</button>
         </form>{delete}
     </details> }
 }
@@ -172,7 +183,7 @@ fn deletion(
     ctx: &Ctx,
     profile: Profile,
     data: Data,
-    error: Value<Option<String>>,
+    error: Value<Option<UiError>>,
     busy: Value<bool>,
 ) -> DomNode {
     let typed = Value::new(String::new());
@@ -195,40 +206,71 @@ fn deletion(
             match api::delete(&ctx.client, profile.id).await {
                 Ok(_) => {
                     api::invalidate(&ctx.profiles_rev);
-                    ctx.notify("Profile and personal data deleted");
+                    ctx.notify(ctx.prefs.now(Msg::ProfileDeleted));
                     refresh(&ctx, data, error, busy);
                 }
                 Err(err) => {
-                    error.set(Some(err.message));
+                    error.set(Some(UiError::Server(err.message)));
                     busy.set(false);
                 }
             }
         }));
     });
-    let prompt = format!("Type {} exactly to confirm", profile.name);
+    let name = profile.name.clone();
+    let prompt = ctx.prefs.format(move |l| type_name_to_confirm(l, &name));
     dom! { <details class="border-t border-white/10 py-3 space-y-3">
-        <summary class="text-danger-light cursor-pointer">"Delete profile permanently"</summary>
-        <p class="text-sm text-warning">"This cannot be undone. Deleting this profile permanently deletes its playlists, listening history, stars, ratings, settings, playback state, bookmarks, podcast follows/progress/download records and app tokens. Its sessions and app tokens stop working. Other profiles and the shared library are not deleted."</p>
-        <label class="text-sm text-white">{prompt}<input class={FIELD} aria-label="Confirm profile name" autocomplete="off" value={typed.clone()} on_input={bind!(typed, |v: String| typed.set(v))} /></label>
-        <button type="button" class={BUTTON} disabled={flag(allowed.map(|v| !v))} on_click={click}>"Delete permanently"</button>
+        <summary class="text-danger-light cursor-pointer">{ctx.prefs.text(Msg::DeleteProfilePermanently)}</summary>
+        <p class="text-sm text-warning">{ctx.prefs.text(Msg::DeleteProfileWarning)}</p>
+        <label class="text-sm text-white">{prompt}<input class={FIELD} aria-label={ctx.prefs.text(Msg::ConfirmProfileName)} autocomplete="off" value={typed.clone()} on_input={bind!(typed, |v: String| typed.set(v))} /></label>
+        <button type="button" class={BUTTON} disabled={flag(allowed.map(|v| !v))} on_click={click}>{ctx.prefs.text(Msg::DeletePermanently)}</button>
     </details> }
 }
 
-fn profile_form(name: &str, kind: ProfileKind, avatar: &str) -> Result<CreateProfile, String> {
+fn profile_form(name: &str, kind: ProfileKind, avatar: &str) -> Result<CreateProfile, Msg> {
     let name = name.trim();
     if !(1..=50).contains(&name.chars().count()) {
-        return Err("Profile name must be 1 to 50 characters".into());
+        return Err(Msg::ProfileNameLength);
     }
     if !matches!(kind, ProfileKind::Kids | ProfileKind::Standard) {
-        return Err("Invalid profile kind".into());
+        return Err(Msg::InvalidProfileKind);
     }
     if !avatar.is_empty() && !is_avatar_preset(avatar) {
-        return Err("Unknown avatar".into());
+        return Err(Msg::UnknownAvatar);
     }
     Ok(CreateProfile {
         name: name.into(),
         kind,
         avatar: (!avatar.is_empty()).then(|| avatar.into()),
+    })
+}
+
+/// The role label of a profile kind (a future kind the client does not know reads "Unknown").
+fn kind_label(kind: ProfileKind) -> Msg {
+    match kind {
+        ProfileKind::Main => Msg::KindMain,
+        ProfileKind::Kids => Msg::KindKids,
+        ProfileKind::Standard => Msg::KindStandard,
+        ProfileKind::Unknown => Msg::KindUnknown,
+    }
+}
+
+/// The name of an avatar choice: `""` is the profile's initial.
+fn avatar_label(preset: &str) -> Option<Msg> {
+    Some(match preset {
+        "" => Msg::AvatarInitial,
+        "cat" => Msg::AvatarCat,
+        "dog" => Msg::AvatarDog,
+        "fox" => Msg::AvatarFox,
+        "owl" => Msg::AvatarOwl,
+        "bear" => Msg::AvatarBear,
+        "panda" => Msg::AvatarPanda,
+        "rabbit" => Msg::AvatarRabbit,
+        "penguin" => Msg::AvatarPenguin,
+        "robot" => Msg::AvatarRobot,
+        "rocket" => Msg::AvatarRocket,
+        "star" => Msg::AvatarStar,
+        "music" => Msg::AvatarMusic,
+        _ => return None,
     })
 }
 
@@ -248,7 +290,7 @@ fn update_form(
     name: &str,
     kind: ProfileKind,
     avatar: &str,
-) -> Result<aether_api_types::profiles::UpdateProfile, String> {
+) -> Result<aether_api_types::profiles::UpdateProfile, Msg> {
     let body = profile_form(
         name,
         if kind == ProfileKind::Main {
@@ -309,6 +351,38 @@ mod tests {
         let update = update_form("Child", ProfileKind::Kids, "dog").unwrap();
         assert_eq!(update.kind, Some(ProfileKind::Kids));
         assert_eq!(update.avatar, Some(Some("dog".into())));
+    }
+
+    #[test]
+    fn every_avatar_preset_and_kind_has_a_translated_label() {
+        use crate::i18n::Locale;
+        for preset in AVATAR_PRESETS {
+            assert!(avatar_label(preset).is_some(), "{preset} has no label");
+        }
+        assert_eq!(avatar_label("upload"), None);
+        assert_eq!(avatar_label("").unwrap().text(Locale::Pl), "Inicjał");
+        assert_eq!(kind_label(ProfileKind::Kids).text(Locale::Pl), "Dziecięcy");
+        assert_eq!(kind_label(ProfileKind::Main).text(Locale::En), "Main");
+        assert_eq!(
+            kind_label(ProfileKind::Unknown).text(Locale::Pl),
+            "Nieznany"
+        );
+    }
+
+    #[test]
+    fn profile_form_errors_are_catalogue_messages() {
+        assert_eq!(
+            profile_form(" ", ProfileKind::Kids, "").unwrap_err(),
+            Msg::ProfileNameLength
+        );
+        assert_eq!(
+            profile_form("A", ProfileKind::Main, "").unwrap_err(),
+            Msg::InvalidProfileKind
+        );
+        assert_eq!(
+            profile_form("A", ProfileKind::Kids, "upload").unwrap_err(),
+            Msg::UnknownAvatar
+        );
     }
 
     #[test]
