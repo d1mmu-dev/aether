@@ -42,6 +42,12 @@ Na `main` po M5 (`69ed5ee`) weszły: strona vibe w kima-web jako pierwszy wycine
 
 **Pomiar zimnego startu (158 utworów, build release, CLAP na GPU):** CLAP 3,6 min; analiza audio (CPU) 5,6 min przy 1 workerze; mapa vibe 16,5 min, z czego ok. 15 min to oczekiwanie na ponowienie artysty po timeoucie zewnętrznego źródła — naprawione w `0d28f90` (D-254: niedostępne źródło zapisuje `failed` i artysta wraca w następnym cyklu jak w upstreamie, zamiast czekać 15 min). Domyślnie analiza ma teraz 2 workery (D-253).
 
+## Radio — odbiór poprawki szybkiego ładowania (D-290)
+
+Na kodzie `8595557` / `1d3125c` niezależny przegląd nie znalazł Critical ani Important. Zakresowe testy: API `radio_row` 14/14, web 238/238, przeglądarka z opóźnianymi odpowiedziami 10/10. Na izolowanym prawdziwym serwerze sprawdzono spójny release i WASM, odpowiedzi obu wariantów API, kolejność metadane → okładki oraz uruchomienie i zatrzymanie stacji z faktycznym postępem audio. Pierwszy smoke 11/11; drugi 10/11 — sprawdzenie wymagało nowego 206 po kliknięciu, choć ten sam strumień był już pobrany przy przywracaniu playera; audio rzeczywiście postępowało. Nie przedstawiamy drugiego przebiegu jako całkowicie zielonego.
+
+Demo ma tylko trzy stacje bez okładek, więc nie potwierdza przyspieszenia na bibliotece z grafikami. Wynik ~0,11 s zamiast ~3,1 s pochodzi wyłącznie z kontrolowanego opóźnienia odpowiedzi o 3 s. Dla tej poprawki nie powtarzano pełnego workspace ani E2E 102; nowe hosted CI i wdrożenie pozostają otwarte. Znany niski kontrast tekstu kafelków w Daylight pozostaje do osobnej poprawki.
+
 ## Odłożone drobne błędy (do zrobienia później)
 
 - **D-254, pozostałość M2:** artysta, którego niezaufany MBID zostaje ZASTĄPIONY (nie wyczyszczony), a potem źródło zwróci limit zapytań, zachowuje `cover_deferrals` i liczy się jako ukończony — może przestać wstrzymywać mapę vibe za wcześnie (rzadkie, samo się naprawia w następnym przebiegu). Poprawka: zerować `cover_deferrals` przy każdej zmianie niezaufanego MBID + test (`save_artist_outcome_in` w `identity.rs`).
