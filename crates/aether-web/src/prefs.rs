@@ -298,6 +298,14 @@ mod tests {
     }
 
     #[test]
+    fn server_accepts_exactly_these_locale_ids() {
+        let ids: Vec<&str> = Locale::ALL.iter().map(|l| l.id()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(sorted, aether_api_types::settings::UI_LOCALES);
+    }
+
+    #[test]
     fn profile_choice_wins_over_device_browser_and_defaults() {
         let p = Prefs::new(device("en", "graphite"), Some("pl-PL".into()));
         assert_eq!((locale(&p), theme(&p)), (Locale::En, Theme::Graphite));

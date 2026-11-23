@@ -1067,6 +1067,8 @@ mod appearance {
             (json!({ "uiLocale": 1 }), "uiLocale"),
             (json!({ "uiTheme": "url(evil)" }), "uiTheme"),
             (json!({ "uiTheme": "Daylight" }), "uiTheme"),
+            (json!({ "uiTheme": "Abyss" }), "uiTheme"),
+            (json!({ "uiTheme": "abyss-dark" }), "uiTheme"),
             (json!({ "uiTheme": "../../etc/passwd" }), "uiTheme"),
             (json!({ "uiTheme": ["daylight"] }), "uiTheme"),
             (

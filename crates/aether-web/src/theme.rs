@@ -10,17 +10,24 @@ pub const CSS: &str = include_str!("../assets/themes.css");
 pub enum Theme {
     #[default]
     MidnightSlate,
+    Abyss,
     Graphite,
     Daylight,
 }
 
 impl Theme {
-    pub const ALL: [Theme; 3] = [Theme::MidnightSlate, Theme::Graphite, Theme::Daylight];
+    pub const ALL: [Theme; 4] = [
+        Theme::MidnightSlate,
+        Theme::Abyss,
+        Theme::Graphite,
+        Theme::Daylight,
+    ];
 
     /// The stored and `data-theme` identifier.
     pub fn id(self) -> &'static str {
         match self {
             Theme::MidnightSlate => "midnight-slate",
+            Theme::Abyss => "abyss",
             Theme::Graphite => "graphite",
             Theme::Daylight => "daylight",
         }
@@ -34,6 +41,7 @@ impl Theme {
     pub fn name(self) -> &'static str {
         match self {
             Theme::MidnightSlate => "Midnight Slate",
+            Theme::Abyss => "Abyss",
             Theme::Graphite => "Graphite",
             Theme::Daylight => "Daylight",
         }
@@ -43,6 +51,7 @@ impl Theme {
     pub fn swatch(self) -> (&'static str, &'static str, &'static str) {
         match self {
             Theme::MidnightSlate => ("#0d1420", "#8bafd1", "#dfe7ef"),
+            Theme::Abyss => ("#070c12", "#80bcc8", "#e1ebf1"),
             Theme::Graphite => ("#121212", "#a9b8c6", "#e6e6e6"),
             Theme::Daylight => ("#f5f7fa", "#335b85", "#1c2530"),
         }
@@ -190,6 +199,14 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The server validates the same ids (`/api/settings` `uiTheme`), so a theme cannot be offered here
+    /// and then fail to save to the profile.
+    #[test]
+    fn server_accepts_exactly_these_theme_ids() {
+        let ids: Vec<&str> = Theme::ALL.iter().map(|t| t.id()).collect();
+        assert_eq!(ids, aether_api_types::settings::UI_THEMES);
     }
 
     #[test]

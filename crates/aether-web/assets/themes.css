@@ -33,6 +33,29 @@
     --text-muted: #8193a8;
 }
 
+:root[data-theme="abyss"] {
+    color-scheme: dark;
+    --color-black: #070c12;
+    --color-white: #e1ebf1;
+    --color-brand: #80bcc8;
+    --color-brand-hover: #6eabb8;
+    --color-brand-light: #9ccdd7;
+    --color-brand-dark: #5f9aa7;
+    --color-on-brand: #070c12;
+    --color-ambient: #2f5f6e;
+    --color-danger-light: #f87171;
+    --bg-primary: #070c12;
+    --bg-secondary: #0d1722;
+    --bg-tertiary: #142331;
+    --bg-hover: #1b2d3d;
+    --border-subtle: #1b2b3b;
+    --border-interactive: #25384b;
+    --border-focus: #30485f;
+    --text-primary: #e1ebf1;
+    --text-secondary: #a5b9c7;
+    --text-muted: #839bae;
+}
+
 :root[data-theme="graphite"] {
     color-scheme: dark;
     --color-black: #121212;

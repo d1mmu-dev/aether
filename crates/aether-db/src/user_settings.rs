@@ -19,10 +19,8 @@ pub struct UserSettings {
     pub ui_theme: Option<String>,
 }
 
-/// The interface language ids a profile may store.
-pub const UI_LOCALES: [&str; 2] = ["en", "pl"];
-/// The interface theme ids a profile may store.
-pub const UI_THEMES: [&str; 3] = ["midnight-slate", "graphite", "daylight"];
+/// The interface language and theme ids a profile may store (shared with the web client).
+pub use aether_api_types::settings::{UI_LOCALES, UI_THEMES};
 
 impl UserSettings {
     /// What a profile without a row has (the column defaults).

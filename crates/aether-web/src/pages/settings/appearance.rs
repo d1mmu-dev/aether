@@ -94,17 +94,17 @@ fn row(ctx: &Ctx, title: Msg, hint: Msg, controls: DomNode) -> DomNode {
 }
 
 pub fn render(ctx: &Ctx) -> DomNode {
+    let locale_buttons: Vec<DomNode> = Locale::ALL.iter().map(|l| locale_button(ctx, *l)).collect();
     let locales = dom! {
         <div class="flex flex-wrap gap-2" role="group" id="settings-language">
-            {locale_button(ctx, Locale::ALL[0])}
-            {locale_button(ctx, Locale::ALL[1])}
+            {..locale_buttons}
         </div>
     };
+    // Every bundled theme, in `Theme::ALL` order.
+    let theme_buttons: Vec<DomNode> = Theme::ALL.iter().map(|t| theme_button(ctx, *t)).collect();
     let themes = dom! {
         <div class="flex flex-wrap gap-2" role="group" id="settings-theme">
-            {theme_button(ctx, Theme::ALL[0])}
-            {theme_button(ctx, Theme::ALL[1])}
-            {theme_button(ctx, Theme::ALL[2])}
+            {..theme_buttons}
         </div>
     };
     let language_row = row(ctx, Msg::Language, Msg::LanguageHint, locales);

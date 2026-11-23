@@ -3,4 +3,4 @@
 -- defaults. Only enum identifiers are stored, never CSS or paths.
 ALTER TABLE user_settings
     ADD COLUMN ui_locale text CHECK (ui_locale IN ('en', 'pl')),
-    ADD COLUMN ui_theme  text CHECK (ui_theme IN ('midnight-slate', 'graphite', 'daylight'));
+    ADD COLUMN ui_theme  text CHECK (ui_theme IN ('midnight-slate', 'abyss', 'graphite', 'daylight'));

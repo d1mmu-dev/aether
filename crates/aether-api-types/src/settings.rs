@@ -32,6 +32,12 @@ pub struct UserSettings {
     pub ui_theme: Option<String>,
 }
 
+/// Interface language ids a profile may store (`uiLocale`); the web catalogue tests check its `Locale` ids
+/// against this list, the API validates with it and migration 0066 constrains the column to it.
+pub const UI_LOCALES: [&str; 2] = ["en", "pl"];
+/// Interface theme ids a profile may store (`uiTheme`), in selector order; see [`UI_LOCALES`].
+pub const UI_THEMES: [&str; 4] = ["midnight-slate", "abyss", "graphite", "daylight"];
+
 /// `POST /api/settings` body for the interface preferences; absent fields are left alone.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
