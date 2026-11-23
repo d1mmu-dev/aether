@@ -32,9 +32,38 @@ const PERSONAL: [(&str, &str); 13] = [
 /// Tables without an owner column that the seed fills and the upgrade must leave alone.
 const UNTOUCHED: [(&str, &str); 3] = [("playlist_items", "id"), ("jobs", "id"), ("users", "id")];
 
-/// Columns later migrations add to these tables, with the value every existing row gets:
-/// `playlists.mix_id` (0063, M5b) is null on every playlist that is not a saved mix.
-const LATER_COLUMNS: [(&str, &str); 1] = [("playlists", "mix_id")];
+/// Columns later migrations add to these tables, each null on every existing row:
+/// `playlists.mix_id` (0063, M5b) on every playlist that is not a saved mix, and
+/// `user_settings.ui_locale`/`ui_theme` (0066, D-287) because no profile has chosen yet.
+const LATER_COLUMNS: [(&str, &str); 3] = [
+    ("playlists", "mix_id"),
+    ("user_settings", "ui_locale"),
+    ("user_settings", "ui_theme"),
+];
+
+/// After the complete migration set every `LATER_COLUMNS` column exists and stays null on
+/// every row the seed left in its table, so `snapshot` dropping them hides no value.
+async fn assert_later_columns_null(pool: &PgPool) {
+    for (table, column) in LATER_COLUMNS {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+             WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2)",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert!(exists, "{table}.{column} missing");
+        let (rows, set): (i64, i64) =
+            sqlx::query_as(&format!("SELECT count(*), count({column}) FROM {table}"))
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert!(rows > 0, "seed leaves {table} empty");
+        assert_eq!(set, 0, "{table}.{column} set on an existing row");
+    }
+}
 
 fn migrator_upto(version: i64) -> Migrator {
     Migrator {
@@ -341,6 +370,7 @@ async fn upgrade_from_0039_keeps_every_row(pool: PgPool) {
     aether_db::MIGRATOR.run(&pool).await.unwrap();
     let after = snapshot(&pool, "profile_id").await;
     assert_eq!(before, after);
+    assert_later_columns_null(&pool).await;
 
     let accounts: Vec<(Uuid, String)> =
         sqlx::query_as("SELECT id, username FROM users ORDER BY id")
@@ -681,6 +711,7 @@ async fn combined_order_0039_0060_0040(pool: PgPool) {
     assert!(absent, "0040 must not already be applied");
     aether_db::MIGRATOR.run(&pool).await.unwrap();
     assert_eq!(snapshot(&pool, "profile_id").await, rows);
+    assert_later_columns_null(&pool).await;
     assert_combined_migrations(&pool).await;
 }
 
@@ -697,6 +728,7 @@ async fn combined_order_0039_0040_0060(pool: PgPool) {
     assert!(absent, "0060 must not already be applied");
     aether_db::MIGRATOR.run(&pool).await.unwrap();
     assert_eq!(snapshot(&pool, "profile_id").await, rows);
+    assert_later_columns_null(&pool).await;
     assert_combined_migrations(&pool).await;
 }
 
