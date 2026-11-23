@@ -77,8 +77,9 @@ mod tests {
 
     /// The `name: #rrggbb` declarations of one theme block.
     fn tokens(theme: Theme) -> Vec<(String, [f64; 3])> {
-        let head = format!(":root[data-theme=\"{}\"] {{", theme.id());
-        let start = CSS.find(&head).expect("theme block") + head.len();
+        let head = format!(":root[data-theme=\"{}\"]", theme.id());
+        let at = CSS.find(&head).expect("theme block");
+        let start = at + CSS[at..].find('{').unwrap() + 1;
         let body = &CSS[start..start + CSS[start..].find('}').unwrap()];
         body.split(';')
             .filter_map(|decl| {
@@ -118,6 +119,77 @@ mod tests {
     /// `top` at `alpha` over `under` (sRGB source-over; the `#rrggbbaa` fallback the compiled CSS also ships).
     fn over(top: [f64; 3], alpha: f64, under: [f64; 3]) -> [f64; 3] {
         [0, 1, 2].map(|i| top[i] * alpha + under[i] * (1.0 - alpha))
+    }
+
+    fn hex(s: &str) -> [f64; 3] {
+        let c = |i: usize| f64::from(u8::from_str_radix(&s[i..i + 2], 16).unwrap()) / 255.0;
+        [c(1), c(3), c(5)]
+    }
+
+    /// A token as seen inside the Vibe scene: the `.vibe-sky` scene rule's value if it declares one, else the
+    /// theme's.
+    fn in_scene(theme: Theme, name: &str) -> [f64; 3] {
+        let scene = CSS.find(".vibe-sky").map(|at| {
+            let start = at + CSS[at..].find('{').unwrap() + 1;
+            &CSS[start..start + CSS[start..].find('}').unwrap()]
+        });
+        scene
+            .and_then(|body| {
+                body.split(';').find_map(|decl| {
+                    let (n, v) = decl.split_once(':')?;
+                    (n.trim() == name).then(|| hex(v.trim()))
+                })
+            })
+            .unwrap_or_else(|| get(theme, name))
+    }
+
+    /// The Vibe map is a night sky in every theme (`.vibe-sky`/`.vibe-glass` in aether-base.css are fixed dark
+    /// navy), so the text over it must read on those surfaces whatever the app theme is.
+    #[test]
+    fn vibe_scene_text_meets_wcag_aa_on_sky_and_glass_in_every_theme() {
+        const BASE: &str = include_str!("../assets/aether-base.css");
+        // Literal surfaces from aether-base.css; this fails if they drift so the colours below stay real.
+        for decl in [
+            "#16233a 0%, #0d1420 25%, #090e17 48%, #05080e 68%",
+            "background: rgba(9, 14, 23, 0.66);",
+            "background: rgba(13, 20, 32, 0.94);",
+        ] {
+            assert!(BASE.contains(decl), "aether-base.css changed: {decl}");
+        }
+        let sky_light = hex("#16233a");
+        let surfaces = [
+            ("sky", sky_light),
+            ("sky edge", hex("#05080e")),
+            ("glass", over(hex("#090e17"), 0.66, sky_light)),
+            ("solid glass", over(hex("#0d1420"), 0.94, sky_light)),
+        ];
+        for t in Theme::ALL {
+            let white = in_scene(t, "--color-white");
+            for (surface, bg) in surfaces {
+                let texts = [
+                    ("text-white", white),
+                    ("text-white/60", over(white, 0.60, bg)),
+                    ("--text-primary", in_scene(t, "--text-primary")),
+                    ("--text-secondary", in_scene(t, "--text-secondary")),
+                    ("--text-muted", in_scene(t, "--text-muted")),
+                ];
+                for (text, fg) in texts {
+                    let ratio = contrast(fg, bg);
+                    assert!(
+                        ratio >= 4.5,
+                        "{}: {text} on Vibe {surface} is {ratio:.2}",
+                        t.id()
+                    );
+                }
+                // Caret, spinner and active chips use the brand as a non-text indicator.
+                let brand = contrast(in_scene(t, "--color-brand"), bg);
+                assert!(
+                    brand >= 3.0,
+                    "{}: brand on Vibe {surface} is {brand:.2}",
+                    t.id()
+                );
+            }
+        }
     }
 
     #[test]

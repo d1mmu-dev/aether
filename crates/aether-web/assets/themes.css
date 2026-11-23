@@ -2,9 +2,15 @@
  * style.rs, so it needs no Tailwind regeneration: each block re-declares the semantic tokens the compiled
  * utilities read (`bg-black` = ground, `text-white` = primary text, `white/10` overlays, `--bg-*`, `--text-*`,
  * `--border-*`, brand and status). `:root[data-theme=...]` outranks the `:root` defaults. Every theme declares
- * every required token (checked by theme.rs tests, which also measure contrast). No imports, urls or scripts. */
+ * every required token (checked by theme.rs tests, which also measure contrast). No imports, urls or scripts.
+ *
+ * The Vibe map is a fixed night scene in every theme (design decision, localization/themes plan): its sky,
+ * glass panels, white point outlines and inline chip colours are dark-only, so the scene root re-declares the
+ * Midnight Slate tokens (same rule below) and its subtree reads light-on-dark even under Daylight. The rest of
+ * the shell, including the mini player, keeps the selected theme. */
 
-:root[data-theme="midnight-slate"] {
+:root[data-theme="midnight-slate"],
+.vibe-sky {
     color-scheme: dark;
     --color-black: #0d1420;
     --color-white: #dfe7ef;
@@ -71,4 +77,9 @@
     --text-primary: #1c2530;
     --text-secondary: #3e4a58;
     --text-muted: #56636f;
+}
+
+/* Text without its own colour class inherits the body colour already resolved in the page theme. */
+.vibe-sky {
+    color: var(--text-primary);
 }

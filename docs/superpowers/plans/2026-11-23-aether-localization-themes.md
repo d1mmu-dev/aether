@@ -131,10 +131,15 @@ Done:
 - Settings -> Appearance & language (task 5, partial): language buttons (native names) and theme buttons with swatches, `aria-pressed`; Settings header, section nav, section titles and the desktop rail + phone bottom navigation are translated.
 - Verified: `aether-web` lib tests 201/0 (new i18n/theme/prefs tests included), clippy (lib + tests) clean, fmt, `vertigo build` OK; DB-free headless browser smoke on the real WASM (`vertigo serve`, no API, so wiring only, not server acceptance): SSR default `lang=en data-theme=midnight-slate`, immediate switch to Polish + Daylight without reload (computed body background/colour change), Graphite applies, choice stored, login shell picks up stored device prefs after hydration.
 
+Stage 1 review fix (Important, Daylight Vibe unreadable):
+- Design decision: the Vibe map is a **fixed dark night scene** in every theme. Its sky/glass surfaces, white point outlines and inline mood-chip colours are dark-only, so the scene root (`.vibe-sky`) shares the Midnight Slate token rule in `assets/themes.css` (plus `color: var(--text-primary)` for uncoloured text). Inside the map all `text-white`/`--text-*`/brand utilities resolve to Midnight Slate; the shell, sidebar and mini player keep the selected theme. Daylight is not disabled.
+- `<meta name="theme-color">` now follows the selected theme's ground (`Theme::swatch().0`).
+- Verified: RED->GREEN test `vibe_scene_text_meets_wcag_aa_on_sky_and_glass_in_every_theme` (Daylight `text-white` on the sky was 1.02:1); `aether-web` lib tests 203/0; CSS `--check` up to date; `vertigo build`; DB-free browser smoke on the real WASM with a CDP-mocked `/api/*` fixture (120-track map, sound search) in Midnight Slate and Daylight: 11/11, scene text 14.6:1 (primary) and 5.9:1 (`white/60`) on glass in both themes. Not server acceptance.
+
 Remaining (not claimed):
 - Task 4: per-profile persistence through the profile settings API (+ validation, isolation tests on an isolated DB), authenticated-profile precedence, cross-profile switch.
 - First paint: SSR always renders the default; a stored non-default theme/language applies after hydration (possible flash). A CSP-compatible bootstrap is not done.
-- Task 5 remainder: header (search placeholder, profiles), player labels, login/onboarding, dialogs/toasts, settings rows below Appearance (account, profiles, apps) are still English. `vibe-sky`/`vibe-glass` and some status/type colours are not themed yet. `<meta name="theme-color">` stays Midnight Slate.
+- Task 5 remainder: header (search placeholder, profiles), player labels, login/onboarding, dialogs/toasts, settings rows below Appearance (account, profiles, apps) are still English. Some status/type colours are not themed yet.
 - Task 2 remainder: number/date/duration formatters; catalogue CI beyond the unit tests.
 - Playback-preservation check while switching (real track, trusted clicks, silent sink), mobile/desktop screenshots EN/PL x dark/light, independent review.
 - Task 6: remaining screens.

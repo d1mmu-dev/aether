@@ -12,7 +12,7 @@ use vertigo::{Computed, DomNode, Reactive, Value, bind, dom, get_driver};
 
 use crate::api::client::ApiClient;
 use crate::auth::{BrowserStorage, Session, effective_route};
-use crate::brand::{DOCUMENT_TITLE, THEME_COLOR};
+use crate::brand::DOCUMENT_TITLE;
 use crate::pages;
 use crate::player::Player;
 use crate::prefs::Prefs;
@@ -112,12 +112,18 @@ pub fn render() -> DomNode {
 
     let lang = ctx.prefs.locale.to_computed().map(|l| l.id().to_owned());
     let data_theme = ctx.prefs.theme.to_computed().map(|t| t.id().to_owned());
+    // The browser chrome follows the selected theme's page ground.
+    let theme_color = ctx
+        .prefs
+        .theme
+        .to_computed()
+        .map(|t| t.swatch().0.to_owned());
     dom! {
         <html lang={lang} data-theme={data_theme}>
             <head>
                 <meta charset="utf-8" />
                 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-                <meta name="theme-color" content={THEME_COLOR} />
+                <meta name="theme-color" content={theme_color} />
                 <title>{DOCUMENT_TITLE}</title>
                 <style>{stylesheet()}</style>
             </head>

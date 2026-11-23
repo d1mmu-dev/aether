@@ -9,9 +9,6 @@ pub const PRODUCT_NAME: &str = "Aether";
 /// The document title (the body is lowercase, the tab title follows it).
 pub const DOCUMENT_TITLE: &str = "aether";
 
-/// The browser chrome colour (`<meta name="theme-color">`): the Midnight Slate page background.
-pub const THEME_COLOR: &str = "#0D1420";
-
 /// The footer line under the login and onboarding cards.
 pub const FOOTER: &str = "© 2026 Aether. Your music, your way.";
 
@@ -26,6 +23,14 @@ mod tests {
         ("pages/login.rs", include_str!("pages/login.rs")),
         ("pages/onboarding.rs", include_str!("pages/onboarding.rs")),
     ];
+
+    /// `<meta name="theme-color">` follows the selected theme instead of a fixed Midnight Slate value.
+    #[test]
+    fn browser_chrome_colour_follows_the_theme() {
+        let app = include_str!("app.rs");
+        assert!(app.contains(r#"<meta name="theme-color" content={theme_color} />"#));
+        assert!(app.contains("ctx.prefs.theme.to_computed().map(|t| t.swatch().0"));
+    }
 
     #[test]
     fn branded_views_show_no_legacy_product_name() {
