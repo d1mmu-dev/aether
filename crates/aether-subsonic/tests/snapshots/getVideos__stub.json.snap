@@ -1,0 +1,14 @@
+---
+source: crates/aether-subsonic/tests/snapshots.rs
+---
+{
+  "subsonic-response": {
+    "openSubsonic": true,
+    "serverVersion": "[redacted]",
+    "status": "ok",
+    "type": "Aether",
+    "version": "1.16.1",
+    "videos": {},
+    "xmlns": "http://subsonic.org/restapi"
+  }
+}

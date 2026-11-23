@@ -1,0 +1,31 @@
+//! `GET /api/settings`: the signed-in user's own settings. The M9 Settings page only shows the
+//! account slice (`auth::MeResponse`, `auth::ChangePassword`); this shape is the rest of that endpoint.
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserSettings {
+    pub user_id: Uuid,
+    /// Owner profile on M-PROF servers (D-242); `userId` remains the account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<Uuid>,
+    /// `original`, `high`, `medium` or `low`.
+    pub playback_quality: String,
+    pub wifi_only: bool,
+    pub offline_enabled: bool,
+    pub max_cache_size_mb: i32,
+    pub share_live_listening: bool,
+    /// Always `false` in aether.
+    pub has_listenbrainz_token: bool,
+    /// Always `false` in aether.
+    pub live_sharing_available: bool,
+    /// aether-only (D-207): `hide` (default) or `show` AI-labelled podcasts and episodes.
+    #[serde(default = "hide")]
+    pub podcast_ai_content: String,
+}
+
+fn hide() -> String {
+    "hide".into()
+}

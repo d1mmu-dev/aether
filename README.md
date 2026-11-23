@@ -1,16 +1,29 @@
-# kima-rs-hub
+# Aether
 
 This project is a fork of [Chevron7Locked/kima-hub](https://github.com/Chevron7Locked/kima-hub),
 ported to the Rust language.
 
-Kima is a self-hosted music server. kima-rs replaces the Node/TypeScript backend and the Python analyzers with a single Rust
-`kima` binary plus Postgres, and replaces the upstream Next.js frontend with `kima-web`, a Rust/WASM
-frontend (vertigo) that `kima` renders on the server. `kima-web` is the only frontend: no Next.js or Node
+Aether is a self-hosted music server. It replaces the Node/TypeScript backend and the Python analyzers with a single Rust
+`aether` binary plus Postgres, and replaces the upstream Next.js frontend with `aether-web`, a Rust/WASM
+frontend (vertigo) that `aether` renders on the server. `aether-web` is the only frontend: no Next.js or Node
 runs in the Docker image, the production server or CI. The repository does not bundle the upstream Next.js app
 (removed 2026-11-18, D-180): visual/functional comparisons use an external, freshly pulled kima-hub checkout
-(`tools/prepare-kima-hub-reference.sh`, `tools/run-kima-web-visual.sh`, configured by `KIMA_HUB_REFERENCE`). The target look is the upstream kima-hub v1.12.3 UI (after the M-SYNC milestone); `kima-web`
-does not match it yet, see [`crates/kima-web/README.md`](crates/kima-web/README.md). Every difference from upstream is logged in
+(`tools/prepare-kima-hub-reference.sh`, `tools/run-aether-web-visual.sh`, configured by `AETHER_UPSTREAM_REFERENCE`). The target look is the upstream kima-hub v1.12.3 UI (after the M-SYNC milestone); `aether-web`
+does not match it yet, see [`crates/aether-web/README.md`](crates/aether-web/README.md). Every difference from upstream is logged in
 [`docs/DIVERGENCES.md`](docs/DIVERGENCES.md). Licensed under GPL-3.0-only, like upstream.
+
+## Renamed from kima-rs (D-285)
+
+Until 2026-11-23 this project was called kima-rs (repository `kima-rs-hub`). Every own technical name moved to
+Aether in one step, with no compatibility layer: crates `aether-*`, binary `aether`, environment variables
+`AETHER_*` (the old `KIMA_*` names are not read), browser storage `aether-web.*` (users sign in once again),
+the Subsonic server/player identity `Aether`, the `x-aether-ai-hidden` header, Docker service/image/volume
+`aether`/`aether:dev`/`aether_data`, the bundled database role/database `aether`, temporary and private paths
+(`.aether-snapshots`, `.aether-tag-*`, `/opt/aether`). An existing installation therefore needs its environment
+renamed and starts with a fresh Docker volume; nothing migrates old Kima data automatically. Unchanged on purpose:
+the applied database migrations (including the `kima:profile_*` error hints they raise), the settings-encryption
+key derivation label (changing it would make stored secrets unreadable), upstream kima-hub names, paths, pins and
+licences, captured fixtures and the historical plans and ledger.
 
 ## Status
 
@@ -18,7 +31,7 @@ Milestones M1 (library and playback) and M2 (Subsonic) are done. Most M-SYNC bac
 through Task 18 is implemented locally, but M-SYNC is not accepted: Task 15's re-file route,
 the legacy frontend refresh (Task 19), runtime/upgrade checks and hosted CI remain open;
 see the [roadmap](docs/superpowers/plans/2026-10-16-kima-rs-roadmap.md). On top of M0's accounts and
-login, kima-rs now scans and watches a music folder, shows it as Artist, then Year - Album, then songs, and lets you
+login, aether now scans and watches a music folder, shows it as Artist, then Year - Album, then songs, and lets you
 browse, search, stream (with transcodes), keep playlists and resume playback. An admin can also
 preview and apply a tidy on-disk layout. Music apps that speak Subsonic/OpenSubsonic can connect
 with per-app tokens (see [`docs/subsonic.md`](docs/subsonic.md)). Identification and the album
@@ -33,10 +46,10 @@ docker compose up
 ```
 
 Then open <http://localhost:3030> and register. The first account becomes the admin. The image
-bundles Postgres, `ffmpeg` and the `kima` binary; state lives in the `kima_data` volume (`/data`).
+bundles Postgres, `ffmpeg` and the `aether` binary; state lives in the `aether_data` volume (`/data`).
 The bundled Postgres gets a random password on first start (`/data/postgres-password`, readable by
-root only) and kima connects as an unprivileged `kima` role. Put your
-music in `./music` or set `MUSIC_DIR` to its location (mounted read-write at `/music`; embeddings keep a private snapshot directory `/music/.kima-snapshots` on the same mount, see [docs/m4-input-snapshots.md](docs/m4-input-snapshots.md)); the `.kima-snapshots` directory is visible in the library on the host. A read-only library cannot hold the snapshots: either disable embeddings (`DISABLE_CLAP=true`) or use a separate read-write mount with reflink support (Btrfs, XFS `reflink=1`) for the library and the snapshot directory.
+root only) and aether connects as an unprivileged `aether` role. Put your
+music in `./music` or set `MUSIC_DIR` to its location (mounted read-write at `/music`; embeddings keep a private snapshot directory `/music/.aether-snapshots` on the same mount, see [docs/m4-input-snapshots.md](docs/m4-input-snapshots.md)); the `.aether-snapshots` directory is visible in the library on the host. A read-only library cannot hold the snapshots: either disable embeddings (`DISABLE_CLAP=true`) or use a separate read-write mount with reflink support (Btrfs, XFS `reflink=1`) for the library and the snapshot directory.
 
 ## Library
 
@@ -44,12 +57,12 @@ The library is whatever is under `MUSIC_PATH` (`/music` in the image). Tags are 
 files; missing fields fall back to the folder names. Albums are grouped per album artist, title
 and year, so a remaster stays a separate album while CD1/CD2 folders still merge.
 
-**Watching.** kima watches the folder and picks up added, changed, renamed and removed files
+**Watching.** aether watches the folder and picks up added, changed, renamed and removed files
 without a full rescan; a file still being copied is read once it stops changing. A full
 reconcile also runs at startup.
 
-- `KIMA_WATCH_MODE=auto` (default) uses native file events and falls back to polling if they
-  fail. `poll` always polls, every `KIMA_WATCH_POLL_SECS` seconds (default `60`, must be
+- `AETHER_WATCH_MODE=auto` (default) uses native file events and falls back to polling if they
+  fail. `poll` always polls, every `AETHER_WATCH_POLL_SECS` seconds (default `60`, must be
   greater than 0). `off` watches nothing.
 - On Linux, native watching can hit the inotify limit on large libraries (the watcher status,
   `GET /api/library/watch-status`, then
@@ -61,7 +74,7 @@ reconcile also runs at startup.
   same-slot copy exists, history is handed over. `GET /api/library/removals` is an admin-only,
   newest-first audit of retired tracks (`count`, `removals`; optional `limit` and `offset`).
   Restoring a file before retirement clears its missing flag. There is no `RECONCILE_MODE`
-  switch as upstream has: the 7-day grace is fixed, and `KIMA_WATCH_MODE=off` stops the
+  switch as upstream has: the 7-day grace is fixed, and `AETHER_WATCH_MODE=off` stops the
   event-driven scans (D-161).
 - `POST /api/library/scan` (admin) requests a normal reconcile, which skips files whose size and
   modification time are unchanged; it answers with the `jobId` that
@@ -76,8 +89,8 @@ reconcile also runs at startup.
 **Streaming.** `GET /api/library/tracks/:id/stream?quality=...` supports `original` (the file as
 is, with range requests for seeking), `high` (MP3 320 kbps), `medium` (MP3 192 kbps) and `low`
 (MP3 128 kbps). Transcodes need `ffmpeg` on the `PATH` (the Docker image
-bundles it) and are cached under `KIMA_DATA_DIR/transcode`, up to
-`KIMA_TRANSCODE_CACHE_MB`.
+bundles it) and are cached under `AETHER_DATA_DIR/transcode`, up to
+`AETHER_TRANSCODE_CACHE_MB`.
 
 **Needs attention.** Settings > Library Tools > Needs attention (admin) lists albums whose
 details were guessed from folder names or look wrong: missing artist, album or year,
@@ -92,9 +105,9 @@ overwritten, and every step is journaled in Postgres, so a run resumes after a c
 Previews may cover selected albums, and are grouped by album. `.lrc` and `.nfo` sidecars
 travel with their album; a scoped move leaves sidecars in a folder shared with an out-of-scope album.
 
-- **Copy** (default, safe): writes the organized tree to `KIMA_ORGANIZE_TARGET` and leaves the
+- **Copy** (default, safe): writes the organized tree to `AETHER_ORGANIZE_TARGET` and leaves the
   originals alone. Mount a writable folder for it, for example uncomment the `/organized`
-  volume in `docker-compose.yml` and set `KIMA_ORGANIZE_TARGET=/organized`. Without it, copy
+  volume in `docker-compose.yml` and set `AETHER_ORGANIZE_TARGET=/organized`. Without it, copy
   mode is unavailable. Once happy, use **Switch library to the organized copy** to make that
   folder the library root; plays and playlists carry over. A copy that has not been switched
   to can be undone (the copies are deleted).
@@ -105,7 +118,7 @@ travel with their album; a scoped move leaves sidecars in a folder shared with a
 
 Settings > Library Tools > Match albums lets an admin search MusicBrainz for album releases,
 review stored candidates, track mappings and proposed changes, and apply a match. Stored snapshots
-can be applied or undone even with `KIMA_IDENTIFY=off`; searching needs identification enabled.
+can be applied or undone even with `AETHER_IDENTIFY=off`; searching needs identification enabled.
 Choose a target:
 
 - **Database (`db`)** stores overrides without changing music files, including on a read-only library.
@@ -123,7 +136,7 @@ when enabled it targets `db` or writable `files`, never reorganizing automatical
 
 ### Identification
 
-Once a library is scanned, kima identifies it on its own, with no button to press: each track's
+Once a library is scanned, aether identifies it on its own, with no button to press: each track's
 MusicBrainz recording (from file tags first, then an AcoustID fingerprint match), then
 artist photos, biographies, similar artists and genres, album cover fallbacks and synced lyrics.
 Progress shows under Settings > Library Tools; new files are picked up as they arrive. Identification
@@ -134,10 +147,10 @@ dependent answers, where `<step>` is one of upstream's six: `identification`, `a
 `vectors`, `moods`, `similarity` (the clear matrix is upstream's, D-188); the reply includes
 `artists`, `tracks`, `vectors` and `message`, and an unknown step returns 400 (D-112).
 
-- **Switch it off.** `KIMA_IDENTIFY=off` stops every outbound lookup for the whole server. An admin can
+- **Switch it off.** `AETHER_IDENTIFY=off` stops every outbound lookup for the whole server. An admin can
   also turn "Auto enrich metadata" off in Settings > Artwork; the environment switch wins and
   the toggle then says so.
-- **AcoustID key.** No AcoustID key ships with kima-rs. Register an application at
+- **AcoustID key.** No AcoustID key ships with aether. Register an application at
   <https://acoustid.org/new-application> and enter the key in Settings > Artwork (or set
   `ACOUSTID_CLIENT_KEY`). Without one, fingerprints are still made but nothing is asked of AcoustID;
   tracks with usable tags are matched by MusicBrainz id or name. A fanart.tv key is optional and entered
@@ -146,14 +159,14 @@ dependent answers, where `<step>` is one of upstream's six: `identification`, `a
   an untagged track takes one to three requests: about 6-18 hours for 20 000 untagged tracks.
   Tagged files cost nothing, and later runs reuse a cache. Progress survives restarts. For a large library
   point `MUSICBRAINZ_BASE_URL` at a local MusicBrainz mirror.
-- Fingerprinting uses half the CPU cores by default; set `KIMA_FINGERPRINT_WORKERS` to change that.
+- Fingerprinting uses half the CPU cores by default; set `AETHER_FINGERPRINT_WORKERS` to change that.
 
 ## Vibe engine (M5)
 
 The upstream vibe engine is ported (matching formula, library state, map layout, learned moods, similar
 tracks, alchemy, song path, text search, CLAP zero-shot readings, similar-artist re-rank and Subsonic
 `getSimilarSongs`/`getSimilarSongs2`). It runs on the native music CLAP checkpoint (`laion-clap-music-onnx-v1`:
-`music_audio.onnx`, `music_text.onnx` and RoBERTa's `tokenizer.json` in `KIMA_CLAP_MODEL_DIR`, SHA-256-pinned; D-194)
+`music_audio.onnx`, `music_text.onnx` and RoBERTa's `tokenizer.json` in `AETHER_CLAP_MODEL_DIR`, SHA-256-pinned; D-194)
 and the private feel probe below. Without them `/api/system/features` answers `"vibeEmbeddings": false`, nothing is
 eligible, and the routes degrade as spec §4.4 and D-182 describe; the server starts normally. The model files are
 not distributed (noncommercial, private): the Docker image and CI do not contain them.
@@ -174,16 +187,16 @@ combinations that cannot be admitted stop the server with the allowed range in t
 
 | Variable | Default | Range / meaning |
 |---|---|---|
-| `KIMA_ONNX_PROVIDER` | `cpu` | `cpu` or `cuda`; `cuda` needs a CUDA build of ONNX Runtime 1.22 at `ORT_DYLIB_PATH` and falls back to the CPU (logged with `ML capability status`) when CUDA cannot create or run a warm-up inference |
-| `KIMA_CUDA_DEVICE_ID` | 0 | GPU ordinal (CUDA only) |
-| `KIMA_CUDA_LIB_DIR` | unset | absolute directory with the CUDA 12 / cuDNN 9 libraries to preload (CUDA only) |
-| `KIMA_CUDA_MEM_LIMIT_MIB` | unlimited | per-session CUDA memory limit, 1..=1048576 (CUDA only; with `cpu` these three are ignored with a warning) |
-| `KIMA_CLAP_POOL_SIZE` | CPU 1, CUDA 2 | audio ONNX sessions, 1..=8 |
-| `KIMA_CLAP_INTRA_THREADS` | CPU cores/8 (1..=4), CUDA 1 | threads per audio session, 1..=16; pool × threads at most 48 |
-| `KIMA_EMBEDDING_WORKERS` | CPU cores/8 (1..=4), CUDA cores/4 (2..=8) | tracks decoded and embedded at once, 1..=20 |
-| `KIMA_ANALYSIS_WORKERS` | 2 (upstream `NUM_WORKERS`) | tracks decoded and analysed (DSP, MusiCNN) at once, 1..=20, clamped to the cores; each worker adds about 35-60 MiB of memory while it decodes (measured peak RSS, DSP only, 240 s track: one worker +36 MiB Opus, +51 MiB MP3/FLAC; 20 workers 0.6-0.85 GiB in total) and takes one snapshot slot; the MusiCNN models are loaded once and shared, so they do not grow with the count |
-| `KIMA_ONNX_HOST_BUDGET_MIB` | 4096 | host-memory estimate for all ONNX sessions, 1..=65536; each CPU audio session needs ~1100 MiB, the text session ~1940 MiB |
-| `KIMA_SNAPSHOT_MAX_CONCURRENT` | embedding + analysis workers | input snapshots at once; workers beyond it wait for a slot |
+| `AETHER_ONNX_PROVIDER` | `cpu` | `cpu` or `cuda`; `cuda` needs a CUDA build of ONNX Runtime 1.22 at `ORT_DYLIB_PATH` and falls back to the CPU (logged with `ML capability status`) when CUDA cannot create or run a warm-up inference |
+| `AETHER_CUDA_DEVICE_ID` | 0 | GPU ordinal (CUDA only) |
+| `AETHER_CUDA_LIB_DIR` | unset | absolute directory with the CUDA 12 / cuDNN 9 libraries to preload (CUDA only) |
+| `AETHER_CUDA_MEM_LIMIT_MIB` | unlimited | per-session CUDA memory limit, 1..=1048576 (CUDA only; with `cpu` these three are ignored with a warning) |
+| `AETHER_CLAP_POOL_SIZE` | CPU 1, CUDA 2 | audio ONNX sessions, 1..=8 |
+| `AETHER_CLAP_INTRA_THREADS` | CPU cores/8 (1..=4), CUDA 1 | threads per audio session, 1..=16; pool × threads at most 48 |
+| `AETHER_EMBEDDING_WORKERS` | CPU cores/8 (1..=4), CUDA cores/4 (2..=8) | tracks decoded and embedded at once, 1..=20 |
+| `AETHER_ANALYSIS_WORKERS` | 2 (upstream `NUM_WORKERS`) | tracks decoded and analysed (DSP, MusiCNN) at once, 1..=20, clamped to the cores; each worker adds about 35-60 MiB of memory while it decodes (measured peak RSS, DSP only, 240 s track: one worker +36 MiB Opus, +51 MiB MP3/FLAC; 20 workers 0.6-0.85 GiB in total) and takes one snapshot slot; the MusiCNN models are loaded once and shared, so they do not grow with the count |
+| `AETHER_ONNX_HOST_BUDGET_MIB` | 4096 | host-memory estimate for all ONNX sessions, 1..=65536; each CPU audio session needs ~1100 MiB, the text session ~1940 MiB |
+| `AETHER_SNAPSHOT_MAX_CONCURRENT` | embedding + analysis workers | input snapshots at once; workers beyond it wait for a slot |
 
 If CUDA falls back to the CPU, the CPU defaults apply. A CUDA error while embedding (for example another program took
 the GPU memory) turns audio embedding off until a restart without using up any track's attempts.
@@ -193,7 +206,7 @@ gzip when accepted), `GET /api/vibe/mood-summary`, `GET /api/vibe/mood/:trackId`
 `POST /api/vibe/alchemy`, `POST /api/vibe/path`, `POST /api/vibe/search`. Enrichment gains the `mood` and
 `similarity` phases, `moods`/`similarity` progress and the real re-run steps (D-188). Differences: D-181–D-193.
 
-**Assets.** Two files go into the directory named by `KIMA_VIBE_ASSET_DIR`, each opened without following
+**Assets.** Two files go into the directory named by `AETHER_VIBE_ASSET_DIR`, each opened without following
 symlinks, size-bounded and checked against a SHA-256 compiled into the server; the verified bytes are what
 gets parsed. Missing, unpinned or mismatching files never stop startup; they turn off only what depends on them:
 
@@ -203,10 +216,10 @@ gets parsed. Missing, unpinned or mismatching files never stop startup; they tur
 | `mood_heads.json` | `backend/src/services/moods/moodHeads.json` (238 610 bytes) | `335edd4dfe57b3683440367cf0effceec94ad9f5b6dfc36ddafab93dcd427110` | `vibe_mood_heads`: the 22 learned moods, mood summary | No licence statement; training-data licences not checked. Not used until they are (owner decision Q3) |
 
 Take the files from the pinned upstream commit itself (no mirrors), and compare their SHA-256 with the
-values above, which were computed from that commit's Git objects. The pin table compiled into kima-rs
-(`crates/kima-ident/src/stages/vibe_assets.rs`, `VibePins::compiled`) pins `feel_probe.json`; `mood_heads.json`
+values above, which were computed from that commit's Git objects. The pin table compiled into aether
+(`crates/aether-ident/src/stages/vibe_assets.rs`, `VibePins::compiled`) pins `feel_probe.json`; `mood_heads.json`
 stays unpinned, so it is never read and the moods report unavailable until its licences are cleared. The MusicBrainz genre list
-(`mbGenres.json`, CC0) is bundled in `crates/kima-vibe/assets/`.
+(`mbGenres.json`, CC0) is bundled in `crates/aether-vibe/assets/`.
 
 ## Mixes, radio and what's new (M5b)
 
@@ -224,7 +237,7 @@ recommendations are served (22 routes, upstream v1.12.3 shapes; `/api/system/fea
 Everything personal (mix lists, station sessions, saved mixes, release answers) belongs to the profile. Listener
 state that upstream keeps in Redis lives in the server's memory and is lost on a restart (D-260). While the
 mood heads are blocked (see [Vibe engine](#vibe-engine-m5)), recipe and mood mixes fall back or answer empty, and the
-mood and Workout radio tiles stay hidden (D-266). kima-rs ships its own release catalog, empty for now, so the
+mood and Workout radio tiles stay hidden (D-266). Aether ships its own release catalog, empty for now, so the
 what's-new window shows nothing and `/system/features` answers `"changelog": false` until its first entry (D-267).
 
 **Time zone.** A mix day is the server's calendar date, as upstream (owner Q11 = A). The container and the server
@@ -232,23 +245,23 @@ run in UTC unless told otherwise, so mixes would roll over at 01:00/02:00 Polish
 your own zone) in the container's environment or the service unit. The night mix reads the listener's zone from
 the request (`?tz=`).
 
-**Update check.** `GET /api/whats-new/update-status` asks the latest release of `d1mmu-dev/kima-rs-hub` on GitHub at
+**Update check.** `GET /api/whats-new/update-status` asks the latest release of `d1mmu-dev/aether` on GitHub at
 most once a day (shared by concurrent callers, stored in `system_settings`); an admin turns it off with
-`updateChecksEnabled: false` in `POST /api/system-settings`. Like upstream it is not stopped by `KIMA_IDENTIFY=off`;
-with `KIMA_NET_DENY_REAL=1` it answers like a failed check without sending anything (D-270). Differences:
+`updateChecksEnabled: false` in `POST /api/system-settings`. Like upstream it is not stopped by `AETHER_IDENTIFY=off`;
+with `AETHER_NET_DENY_REAL=1` it answers like a failed check without sending anything (D-270). Differences:
 D-260–D-281.
 
 ## Podcasts
 
 Follow shows from Apple's charts, categories and search or by RSS feed URL, play their episodes (with resume and
-"next episode") in `kima-web` or any Subsonic app. Served route groups (upstream v1.12.3 shapes, wire fixtures in
-`crates/kima-api-types/tests/fixtures/podcasts_*`):
+"next episode") in `aether-web` or any Subsonic app. Served route groups (upstream v1.12.3 shapes, wire fixtures in
+`crates/aether-api-types/tests/fixtures/podcasts_*`):
 
 - `/api/podcasts/*`: all 24 upstream routes — the followed list, subscribe/unsubscribe, show detail and episode pages,
   next episode, continue listening, categories, charts, for-you, discover top/genre(s), preview with its sample
   episode and similar shows, manual refresh and refresh-all, episode stream (one range passed through to the host),
   progress save/clear, show and episode covers.
-- kima-only: `PUT /api/podcasts/:id/ai-label` and `PUT /api/podcasts/:podcastId/episodes/:episodeId/ai-label` (admin).
+- aether-only: `PUT /api/podcasts/:id/ai-label` and `PUT /api/podcasts/:podcastId/episodes/:episodeId/ai-label` (admin).
 - Podcast parts of existing groups: `/api/search` (`podcasts`/`episodes`/`all`), `/api/search/discover?type=podcasts`
   (music part empty until M7), `/api/library/recently-listened`, `/api/library/cover-art?url=` (external image proxy),
   `/api/stats` `spoken.podcasts`, `/api/system-settings` `podcastChartCountry`, `/api/enrichment/failures` rows of type
@@ -257,7 +270,7 @@ Follow shows from Apple's charts, categories and search or by RSS feed URL, play
   `getTranscodeDecision` (direct play only) and `getTranscodeStream` (302 to the episode's audio URL on its host, as upstream).
 
 Background work: followed feeds are checked every 15 minutes (a show is refreshed when its last refresh is over an hour
-old; two refreshes at a time, three attempts), independently of `KIMA_IDENTIFY`; cached episodes older than 30 days are
+old; two refreshes at a time, three attempts), independently of `AETHER_IDENTIFY`; cached episodes older than 30 days are
 removed at start and daily at 04:00 UTC. **AI-generated content** is labelled from the feed's Podcasting 2.0
 `podcast:txt purpose="ai-content"` tag (show and episode) or an admin's label and hidden by default; a pill on the pages
 and a Settings switch show it (D-200, D-207). Audiobooks (Audiobookshelf) are M6b and stay off (`"audiobooks": false`).
@@ -268,8 +281,8 @@ M6a's jobs; audiobooks and the stream's CORS headers wait for M6b.
 ## Local development
 
 Requirements: Rust 1.85+ with the `wasm32-unknown-unknown` target, `vertigo-cli` 0.13.4 and `wasm-opt` (for
-`kima-web`, see [`crates/kima-web/README.md`](crates/kima-web/README.md)), Docker (for the dev database). Node.js is
-needed only for the stale-CSS check and the visual comparison tooling, never to run or build the product. Building or testing `kima-ml` (and `kima-ident`, which links it) needs libsoxr development files (Debian/Ubuntu: `libsoxr-dev`; Arch: `soxr`).
+`aether-web`, see [`crates/aether-web/README.md`](crates/aether-web/README.md)), Docker (for the dev database). Node.js is
+needed only for the stale-CSS check and the visual comparison tooling, never to run or build the product. Building or testing `aether-ml` (and `aether-ident`, which links it) needs libsoxr development files (Debian/Ubuntu: `libsoxr-dev`; Arch: `soxr`).
 
 libsoxr is LGPL-2.1-or-later; see [upstream source and license](https://sourceforge.net/projects/soxr/) and the license notices shipped by the OS package. Distributors must provide the applicable notices and corresponding library source and preserve users' ability to replace the shared library, among other LGPL obligations. The Dockerfile prepares for this dependency by installing Debian's shared library package; the resulting image has not been verified here. Check the exact distribution and its obligations separately; this is not legal advice.
 
@@ -280,18 +293,18 @@ libsoxr is LGPL-2.1-or-later; see [upstream source and license](https://sourcefo
 2. Copy the environment file: `cp .env.example .env`
 3. Run the server (nothing loads `.env` for you, so export it into the shell first):
    ```bash
-   set -a; source .env; set +a; cargo run -p kima-server
+   set -a; source .env; set +a; cargo run -p aether-server
    ```
    Migrations run on startup; it listens on port 3030 unless `PORT` is set.
-   `.env.example` sets `KIMA_DATA_DIR=./.data`, so a non-root run doesn't need a writable `/data`.
-4. Frontend dev loop (`kima-web`): `MUSIC_PATH=$HOME/Music tools/run-kima-web-dev.sh` starts the server and the
+   `.env.example` sets `AETHER_DATA_DIR=./.data`, so a non-root run doesn't need a writable `/data`.
+4. Frontend dev loop (`aether-web`): `MUSIC_PATH=$HOME/Music tools/run-aether-web-dev.sh` starts the server and the
    vertigo dev server on <http://127.0.0.1:4444> (`/api` is proxied to the server); `--ssr` instead serves the
    production shape (embedded server-side rendering) on the server's own port. Details and env vars are in
-   [`crates/kima-web/README.md`](crates/kima-web/README.md).
+   [`crates/aether-web/README.md`](crates/aether-web/README.md).
 
 Checks: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
-`cargo test --workspace`; for `kima-web` also
-`cargo clippy -p kima-web --target wasm32-unknown-unknown -- -D warnings` and `cargo test -p kima-web`.
+`cargo test --workspace`; for `aether-web` also
+`cargo clippy -p aether-web --target wasm32-unknown-unknown -- -D warnings` and `cargo test -p aether-web`.
 CI builds with `SQLX_OFFLINE=true`; after changing any `sqlx::query!` macro run
 `cargo sqlx prepare --workspace -- --all-targets` and commit `.sqlx/`.
 
@@ -309,40 +322,40 @@ Upstream's names are kept.
 | `SESSION_SECRET` | generated | JWT signing secret; overrides the generated one. |
 | `SETTINGS_ENCRYPTION_KEY` | generated | Key for encrypted settings; overrides the generated one. |
 
-New in kima-rs:
+New in aether:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KIMA_DATA_DIR` | `/data` | State directory. Holds `secrets.json` (mode 0600), which stores the generated secrets. |
-| `KIMA_WEB_BUILD_DIR` | unset (set to `/srv/kima/web` in the Docker image) | `vertigo build` output of `kima-web`. Setting it turns on the embedded server-side rendering of the web UI; unset means the server serves the API only. |
-| `KIMA_WEB_SSR_PORT` | `3031` | Loopback port of the embedded SSR server (never exposed). |
-| `KIMA_FRONTEND_DIR` | unset | Directory of a legacy static export (Next.js era). Not set in the image and no longer produced by any build (the bundled Next.js app was removed in 2026-11, D-180); the server option itself is unchanged. |
-| `KIMA_BIND_HOST` | `0.0.0.0` | Address to bind. |
-| `KIMA_WATCH_MODE` | `auto` | Library watching: `auto` (native events, fall back to polling), `poll` or `off`. |
-| `KIMA_WATCH_POLL_SECS` | `60` | Poll interval in seconds (must be > 0) for `poll` mode and the `auto` fallback. |
-| `KIMA_ORGANIZE_TARGET` | unset | Writable directory for the organizer's copy mode. Unset means copy mode is unavailable. |
-| `KIMA_LIBRARY_SYNC_CRON` | `0 4 * * *` | Five-field cron (UTC) of the daily safety-net reconcile. `off` disables it. An invalid expression stops startup. |
-| `KIMA_PUBLIC_URL` | unset | Where clients reach this server, such as `https://music.example.com`. Must start with `http://` or `https://`; a trailing `/` is stripped. Used in the `hls` playlist and shown on the settings page. |
-| `KIMA_CONTACT` | `https://github.com/d1mmu-dev/kima-rs-hub` | Contact sent in the User-Agent of every outbound request (`kima-rs/<version> ( <contact> )`), as MusicBrainz asks. |
-| `KIMA_IDENTIFY` | `on` | `off` turns off every outbound lookup (MusicBrainz, AcoustID, Wikidata, fanart.tv, Deezer, ListenBrainz, Cover Art Archive, LRCLIB) and wins over the Settings toggle; fingerprinting still runs. Any other value stops startup. |
+| `AETHER_DATA_DIR` | `/data` | State directory. Holds `secrets.json` (mode 0600), which stores the generated secrets. |
+| `AETHER_WEB_BUILD_DIR` | unset (set to `/srv/aether/web` in the Docker image) | `vertigo build` output of `aether-web`. Setting it turns on the embedded server-side rendering of the web UI; unset means the server serves the API only. |
+| `AETHER_WEB_SSR_PORT` | `3031` | Loopback port of the embedded SSR server (never exposed). |
+| `AETHER_FRONTEND_DIR` | unset | Directory of a legacy static export (Next.js era). Not set in the image and no longer produced by any build (the bundled Next.js app was removed in 2026-11, D-180); the server option itself is unchanged. |
+| `AETHER_BIND_HOST` | `0.0.0.0` | Address to bind. |
+| `AETHER_WATCH_MODE` | `auto` | Library watching: `auto` (native events, fall back to polling), `poll` or `off`. |
+| `AETHER_WATCH_POLL_SECS` | `60` | Poll interval in seconds (must be > 0) for `poll` mode and the `auto` fallback. |
+| `AETHER_ORGANIZE_TARGET` | unset | Writable directory for the organizer's copy mode. Unset means copy mode is unavailable. |
+| `AETHER_LIBRARY_SYNC_CRON` | `0 4 * * *` | Five-field cron (UTC) of the daily safety-net reconcile. `off` disables it. An invalid expression stops startup. |
+| `AETHER_PUBLIC_URL` | unset | Where clients reach this server, such as `https://music.example.com`. Must start with `http://` or `https://`; a trailing `/` is stripped. Used in the `hls` playlist and shown on the settings page. |
+| `AETHER_CONTACT` | `https://github.com/d1mmu-dev/aether` | Contact sent in the User-Agent of every outbound request (`aether/<version> ( <contact> )`), as MusicBrainz asks. |
+| `AETHER_IDENTIFY` | `on` | `off` turns off every outbound lookup (MusicBrainz, AcoustID, Wikidata, fanart.tv, Deezer, ListenBrainz, Cover Art Archive, LRCLIB) and wins over the Settings toggle; fingerprinting still runs. Any other value stops startup. |
 | `MUSICBRAINZ_BASE_URL` | `https://musicbrainz.org/ws/2` | MusicBrainz or a mirror (upstream's name). Must start with `http://` or `https://`; a trailing `/` is stripped. |
-| `KIMA_FINGERPRINT_WORKERS` | half the cores, at least 1 | How many files are fingerprinted at once (ffmpeg decodes, chromaprint runs in-process). Must be a whole number of at least 1. |
+| `AETHER_FINGERPRINT_WORKERS` | half the cores, at least 1 | How many files are fingerprinted at once (ffmpeg decodes, chromaprint runs in-process). Must be a whole number of at least 1. |
 | `ACOUSTID_CLIENT_KEY` | unset | AcoustID client key (upstream's name), used when no key is stored in Settings. A secret: do not commit it. |
 | `FANART_API_KEY` | unset | fanart.tv key (upstream's name), used when no key is stored in Settings. A secret: do not commit it. |
 | `ACOUSTID_DISABLED` | `false` | `true` (any case) turns off fingerprinting and AcoustID lookups (upstream's name); `/api/system/features` then answers `fpcalc: false`. |
-| `KIMA_ITUNES_BASE_URL` | `https://itunes.apple.com` | Apple's iTunes API for podcast charts, categories, search and lookups (upstream `ITUNES_BASE_URL`). Must start with `http://` or `https://`. |
-| `KIMA_NET_ALLOW_LOOPBACK` | unset | Test/capture hook only: `127.0.0.1:<port>[,...]` loopback sockets the podcast feed, audio and image fetches may reach. Refused unless `KIMA_NET_DENY_REAL=1` is also set (D-216). Never set it in production. |
-| `KIMA_NET_DENY_REAL` | unset | `1` makes any outbound request to a host other than this machine panic. Set in CI so no test reaches the network. |
-| `KIMA_TRANSCODE_CACHE_MB` | `2048` | Size cap of the transcode cache under `KIMA_DATA_DIR`, in MB. |
-| `KIMA_ARTWORK_CACHE_MB` | `512` | Size cap of the cover-art cache under `KIMA_DATA_DIR/artwork`, in MB. The oldest albums are dropped first. `0` means nothing is kept, so every request rebuilds. |
-| `KIMA_VIBE_ASSET_DIR` | unset | Directory with the private vibe assets `feel_probe.json` and `mood_heads.json` (see [Vibe engine](#vibe-engine-m5)). Unset, missing or unpinned files turn off only the vibe capabilities. |
+| `AETHER_ITUNES_BASE_URL` | `https://itunes.apple.com` | Apple's iTunes API for podcast charts, categories, search and lookups (upstream `ITUNES_BASE_URL`). Must start with `http://` or `https://`. |
+| `AETHER_NET_ALLOW_LOOPBACK` | unset | Test/capture hook only: `127.0.0.1:<port>[,...]` loopback sockets the podcast feed, audio and image fetches may reach. Refused unless `AETHER_NET_DENY_REAL=1` is also set (D-216). Never set it in production. |
+| `AETHER_NET_DENY_REAL` | unset | `1` makes any outbound request to a host other than this machine panic. Set in CI so no test reaches the network. |
+| `AETHER_TRANSCODE_CACHE_MB` | `2048` | Size cap of the transcode cache under `AETHER_DATA_DIR`, in MB. |
+| `AETHER_ARTWORK_CACHE_MB` | `512` | Size cap of the cover-art cache under `AETHER_DATA_DIR/artwork`, in MB. The oldest albums are dropped first. `0` means nothing is kept, so every request rebuilds. |
+| `AETHER_VIBE_ASSET_DIR` | unset | Directory with the private vibe assets `feel_probe.json` and `mood_heads.json` (see [Vibe engine](#vibe-engine-m5)). Unset, missing or unpinned files turn off only the vibe capabilities. |
 | `TZ` | unset (UTC) | Server time zone (standard C library variable). The day of the daily mixes follows it; set `TZ=Europe/Warsaw` so mixes roll over at local midnight (M5b, owner Q11 = A). |
-| `KIMA_VIBE_EXACT_MAX` | `200000` | Vibe text search scans exactly up to this many eligible tracks and uses the HNSW index above it (D-184). A whole number; `0` always uses the index; anything else stops startup. |
+| `AETHER_VIBE_EXACT_MAX` | `200000` | Vibe text search scans exactly up to this many eligible tracks and uses the HNSW index above it (D-184). A whole number; `0` always uses the index; anything else stops startup. |
 
 Keep `secrets.json` (or the two secret variables) safe: losing it makes stored encrypted settings
 unreadable. A corrupt file stops startup rather than being replaced.
 
 ## Differences from upstream
 
-Every place where kima-rs differs from upstream Kima is logged in
+Every place where aether differs from upstream Kima is logged in
 [`docs/DIVERGENCES.md`](docs/DIVERGENCES.md), with the reason and a status, so each can be revisited.

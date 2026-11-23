@@ -1,0 +1,102 @@
+//! Per-user playback state (what is playing and the queue), for resuming on another device.
+
+use aether_core::profile::ProfileId;
+use serde_json::Value;
+use sqlx::{FromRow, PgPool};
+use time::OffsetDateTime;
+
+/// The longest queue kept. Upstream reads this from an admin setting; M1 has no such setting.
+pub const QUEUE_LIMIT: usize = 10_000;
+
+#[derive(Debug, Clone, FromRow)]
+pub struct PlaybackState {
+    pub profile_id: ProfileId,
+    pub playback_type: String,
+    pub track_id: Option<String>,
+    pub audiobook_id: Option<String>,
+    pub podcast_id: Option<String>,
+    pub queue: Option<Value>,
+    pub current_index: i32,
+    pub is_shuffle: bool,
+    pub position: i32,
+    pub changed_by: Option<String>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}
+
+/// A partial update. `None` leaves a stored field alone; `Some(None)` clears it.
+#[derive(Debug, Clone, Default)]
+pub struct Patch {
+    pub playback_type: String,
+    pub track_id: Option<Option<String>>,
+    pub audiobook_id: Option<Option<String>>,
+    pub podcast_id: Option<Option<String>>,
+    pub queue: Option<Option<Value>>,
+    pub current_index: Option<i32>,
+    pub is_shuffle: Option<bool>,
+    /// Milliseconds into the current track.
+    pub position: Option<i32>,
+    /// Who wrote the state; `Some(None)` clears it.
+    pub changed_by: Option<Option<String>>,
+}
+
+pub async fn get(pool: &PgPool, profile: ProfileId) -> sqlx::Result<Option<PlaybackState>> {
+    sqlx::query_as("SELECT * FROM playback_state WHERE profile_id = $1")
+        .bind(profile)
+        .fetch_optional(pool)
+        .await
+}
+
+/// Inserts the user's state, or applies `patch` to the stored one in a single statement.
+pub async fn upsert(
+    pool: &PgPool,
+    profile: ProfileId,
+    patch: Patch,
+) -> sqlx::Result<PlaybackState> {
+    let flat = |o: &Option<Option<String>>| o.clone().flatten();
+    sqlx::query_as(
+        "INSERT INTO playback_state AS s
+             (profile_id, playback_type, track_id, audiobook_id, podcast_id, queue, current_index, is_shuffle, position, changed_by)
+         VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, 0), COALESCE($8, false), COALESCE($13, 0), $14)
+         ON CONFLICT (profile_id) DO UPDATE SET
+             playback_type = EXCLUDED.playback_type,
+             track_id = CASE WHEN $9 THEN EXCLUDED.track_id ELSE s.track_id END,
+             audiobook_id = CASE WHEN $10 THEN EXCLUDED.audiobook_id ELSE s.audiobook_id END,
+             podcast_id = CASE WHEN $11 THEN EXCLUDED.podcast_id ELSE s.podcast_id END,
+             queue = CASE WHEN $12 THEN EXCLUDED.queue ELSE s.queue END,
+             current_index = CASE WHEN $7 IS NOT NULL THEN EXCLUDED.current_index ELSE s.current_index END,
+             is_shuffle = CASE WHEN $8 IS NOT NULL THEN EXCLUDED.is_shuffle ELSE s.is_shuffle END,
+             position = CASE WHEN $13 IS NOT NULL THEN EXCLUDED.position ELSE s.position END,
+             changed_by = CASE WHEN $15 THEN EXCLUDED.changed_by ELSE s.changed_by END,
+             updated_at = now()
+         RETURNING *",
+    )
+    .bind(profile)
+    .bind(&patch.playback_type)
+    .bind(flat(&patch.track_id))
+    .bind(flat(&patch.audiobook_id))
+    .bind(flat(&patch.podcast_id))
+    .bind(patch.queue.clone().flatten())
+    .bind(patch.current_index)
+    .bind(patch.is_shuffle)
+    .bind(patch.track_id.is_some())
+    .bind(patch.audiobook_id.is_some())
+    .bind(patch.podcast_id.is_some())
+    .bind(patch.queue.is_some())
+    .bind(patch.position)
+    .bind(flat(&patch.changed_by))
+    .bind(patch.changed_by.is_some())
+    .fetch_one(pool)
+    .await
+}
+
+/// Clears the user's state; returns how many rows went (0 when there was none).
+pub async fn delete(pool: &PgPool, profile: ProfileId) -> sqlx::Result<u64> {
+    Ok(
+        sqlx::query("DELETE FROM playback_state WHERE profile_id = $1")
+            .bind(profile)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+    )
+}

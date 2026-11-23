@@ -1,0 +1,71 @@
+//! The network guard (spec §24.1): with `AETHER_NET_DENY_REAL=1` (CI) or a test config, any host
+//! but this machine is a bug in a test, so it panics loudly instead of reaching the internet.
+
+/// Hosts a test may talk to (the replay server).
+fn is_local(url: &reqwest::Url) -> bool {
+    matches!(
+        url.host_str(),
+        Some("127.0.0.1" | "localhost" | "[::1]" | "::1")
+    )
+}
+
+/// Whether [`check`] would refuse `url`.
+pub(crate) fn refuses(url: &reqwest::Url, deny_real: bool) -> bool {
+    deny_real && !is_local(url)
+}
+
+/// Panics when `deny_real` is set and `url` names a real host.
+pub(crate) fn check(url: &reqwest::Url, deny_real: bool) {
+    if refuses(url, deny_real) {
+        // Scheme, host and path only: a query may carry an API key.
+        panic!(
+            "aether-net refused a real host: {}://{}{}",
+            url.scheme(),
+            url.host_str().unwrap_or(""),
+            url.path()
+        );
+    }
+}
+
+/// Panics when `deny_real` is set and `url`'s host was resolved (a test's static host) to an
+/// address that is not this machine.
+pub(crate) fn check_addrs(url: &reqwest::Url, ips: &[std::net::IpAddr], deny_real: bool) {
+    if deny_real && !ips.iter().all(|ip| ip.to_canonical().is_loopback()) {
+        panic!(
+            "aether-net refused a real host: {}://{}{}",
+            url.scheme(),
+            url.host_str().unwrap_or(""),
+            url.path()
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn url(s: &str) -> reqwest::Url {
+        reqwest::Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn local_hosts_pass() {
+        check(&url("http://127.0.0.1:4000/x"), true);
+        check(&url("http://localhost/x"), true);
+        check(&url("http://[::1]:80/x"), true);
+        check(&url("https://musicbrainz.org/ws/2"), false);
+    }
+
+    #[test]
+    fn refuses_matches_check() {
+        assert!(refuses(&url("https://api.github.com/repos"), true));
+        assert!(!refuses(&url("https://api.github.com/repos"), false));
+        assert!(!refuses(&url("http://127.0.0.1:4000/repos"), true));
+    }
+
+    #[test]
+    #[should_panic(expected = "aether-net refused a real host: https://musicbrainz.org/ws/2")]
+    fn real_host_panics_without_query() {
+        check(&url("https://musicbrainz.org/ws/2?api_key=secret"), true);
+    }
+}

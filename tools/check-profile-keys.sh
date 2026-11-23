@@ -2,7 +2,7 @@
 # M-PROF grep gate (D-240): personal data is keyed by `profile_id` since migration 0060.
 # Fails when `user_id` appears inside a string literal (SQL text, runtime or `query!`) in
 # crates/*/src/**/*.rs, outside the allow-list:
-#   - crates/kima-db/src/users.rs, crates/kima-db/src/profiles.rs (account and profile tables);
+#   - crates/aether-db/src/users.rs, crates/aether-db/src/profiles.rs (account and profile tables);
 #   - `pr.user_id` / `profiles.user_id`: the account column of `profiles`, which is how a
 #     query reaches the account of a profile (alias `profiles` as `pr` for that).
 # It also fails on SQL that treats a profile id as an account id, because only a main profile
@@ -16,7 +16,7 @@
 # Second check: the ways around the `AccountId`/`ProfileId` types (`ProfileId::new(..)`,
 # `ProfileId::main_of(..)`, `.main_profile()`) are allowed only where a profile id is ground
 # truth or the main profile is meant by definition (ID_FILES), when decoding a database row in
-# kima-db (`ProfileId::new(r.<col>)`/`row.`), or on a line marked with an `M-PROF Task N:`
+# aether-db (`ProfileId::new(r.<col>)`/`row.`), or on a line marked with an `M-PROF Task N:`
 # comment within the four lines above it (a call site a later task moves to the session's
 # profile). Code after `#[cfg(test)]` is not scanned.
 #
@@ -34,8 +34,8 @@ if sys.argv[1:2] == ["--root"]:
     os.chdir(sys.argv[2])
 
 ALLOWED_FILES = {
-    "crates/kima-db/src/users.rs",
-    "crates/kima-db/src/profiles.rs",
+    "crates/aether-db/src/users.rs",
+    "crates/aether-db/src/profiles.rs",
 }
 WORD = re.compile(r"\buser_id\b")
 ALLOWED_REF = re.compile(r"\b(pr|profiles)\.user_id\b")
@@ -137,26 +137,26 @@ def literals(src):
 # main profile is meant by definition (sign-in and registration land in it; a Subsonic password
 # sign-in lands in it, answer Q7).
 ID_FILES = (
-    "crates/kima-core/src/profile.rs",
-    "crates/kima-core/src/auth.rs",
-    "crates/kima-db/src/users.rs",
-    "crates/kima-db/src/profiles.rs",
-    "crates/kima-api/src/auth.rs",
-    "crates/kima-api/src/routes/auth.rs",
-    "crates/kima-api/src/routes/onboarding.rs",
+    "crates/aether-core/src/profile.rs",
+    "crates/aether-core/src/auth.rs",
+    "crates/aether-db/src/users.rs",
+    "crates/aether-db/src/profiles.rs",
+    "crates/aether-api/src/auth.rs",
+    "crates/aether-api/src/routes/auth.rs",
+    "crates/aether-api/src/routes/onboarding.rs",
     # Test seeds: an account's main profile is what they set up.
-    "crates/kima-test-support/src/profiles.rs",
+    "crates/aether-test-support/src/profiles.rs",
 )
 # Files where only the named functions may name the main profile: a Subsonic password sign-in
 # lands in the main profile (answer Q7); anything else in that file goes through the gate,
 # including items after the function's closing brace (methods, `impl` blocks, nested fns).
 ID_FUNCS = {
-    "crates/kima-subsonic/src/auth.rs": {"main_session"},
+    "crates/aether-subsonic/src/auth.rs": {"main_session"},
 }
 # A function header at any indentation (free functions, methods, nested functions).
 FN_START = re.compile(r"^\s*(?:pub(?:\([^)]*\))? )?(?:const )?(?:async )?(?:unsafe )?fn (\w+)")
 ID_ESCAPE = re.compile(r"ProfileId::new\(|\bmain_of\(|\.main_profile\(\)")
-# A row of a kima-db query decoded into the newtype: the column is ground truth.
+# A row of a aether-db query decoded into the newtype: the column is ground truth.
 ROW_DECODE = re.compile(r"ProfileId::new\((?:r|row)\.\w+\??\)")
 MARKER = re.compile(r"//.*M-PROF Task \d+:")
 # Plan tasks already done (docs/superpowers/plans/2026-11-14-m-prof.md); add each on closing it.
@@ -184,7 +184,7 @@ def id_escapes(rel, src):
             if (opened and depth <= 0) or (not opened and ";" in code):
                 depth = None
             continue
-        if rel.startswith("crates/kima-db/src/"):
+        if rel.startswith("crates/aether-db/src/"):
             code = ROW_DECODE.sub("", code)
         if ID_ESCAPE.search(code) and not any(MARKER.search(r) for r in lines[max(0, k - 4) : k + 1]):
             yield k + 1, row.strip()

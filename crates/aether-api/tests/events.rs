@@ -1,0 +1,392 @@
+mod common;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use aether_api::events::{MAX_STREAMS_PER_PROFILE, SseRegistry, StreamOwner};
+use aether_core::events::{Audience, Event};
+use aether_core::profile::{AccountId, ProfileId};
+use aether_db::PgPool;
+use aether_db::users::User;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
+use tower::ServiceExt;
+use uuid::Uuid;
+
+async fn open_stream(app: &axum::Router, ticket: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::get(format!("/api/events?ticket={ticket}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+async fn next_text(body: &mut Body) -> String {
+    let frame = tokio::time::timeout(Duration::from_secs(2), body.frame())
+        .await
+        .expect("an event within 2 s")
+        .expect("stream still open")
+        .unwrap();
+    String::from_utf8(frame.into_data().unwrap().to_vec()).unwrap()
+}
+
+/// A stream owner that is a profile of its account other than main.
+fn kids() -> StreamOwner {
+    StreamOwner {
+        account: AccountId::new(Uuid::now_v7()),
+        profile: ProfileId::new(Uuid::now_v7()),
+    }
+}
+
+/// The main profile of `user`.
+fn main(user: &User) -> StreamOwner {
+    StreamOwner {
+        account: user.account(),
+        profile: user.main_profile(),
+    }
+}
+
+#[test]
+fn tickets_are_single_use() {
+    let registry = SseRegistry::new();
+    let owner = kids();
+    let ticket = registry.issue_ticket(owner);
+    assert_eq!(registry.redeem_ticket(&ticket), Some(owner));
+    assert_eq!(registry.redeem_ticket(&ticket), None);
+    assert_eq!(registry.redeem_ticket("made-up"), None);
+}
+
+#[test]
+fn tickets_expire() {
+    let registry = SseRegistry::with_ttl(Duration::from_millis(10));
+    let ticket = registry.issue_ticket(kids());
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(registry.redeem_ticket(&ticket), None);
+}
+
+#[test]
+fn account_revoke_forgets_the_tickets_of_all_its_profiles() {
+    let registry = SseRegistry::new();
+    let owner = kids();
+    let main = StreamOwner {
+        account: owner.account,
+        profile: ProfileId::main_of(owner.account),
+    };
+    let other = kids();
+    let (a, b, c) = (
+        registry.issue_ticket(owner),
+        registry.issue_ticket(main),
+        registry.issue_ticket(other),
+    );
+    registry.revoke_account(owner.account);
+    assert_eq!(registry.redeem_ticket(&a), None);
+    assert_eq!(registry.redeem_ticket(&b), None);
+    assert_eq!(registry.redeem_ticket(&c), Some(other));
+}
+
+/// Deleting a profile forgets its pending tickets only: a sibling's (main's included) and
+/// another account's survive.
+#[test]
+fn profile_revoke_forgets_only_that_profiles_tickets() {
+    let registry = SseRegistry::new();
+    let gone = kids();
+    let sibling = StreamOwner {
+        account: gone.account,
+        profile: ProfileId::new(Uuid::now_v7()),
+    };
+    let main = StreamOwner {
+        account: gone.account,
+        profile: ProfileId::main_of(gone.account),
+    };
+    let other = kids();
+    let (a, a2, b, c, d) = (
+        registry.issue_ticket(gone),
+        registry.issue_ticket(gone),
+        registry.issue_ticket(sibling),
+        registry.issue_ticket(main),
+        registry.issue_ticket(other),
+    );
+    registry.revoke_profile(gone.profile);
+    assert_eq!(registry.redeem_ticket(&a), None);
+    assert_eq!(registry.redeem_ticket(&a2), None);
+    assert_eq!(registry.redeem_ticket(&b), Some(sibling));
+    assert_eq!(registry.redeem_ticket(&c), Some(main));
+    assert_eq!(registry.redeem_ticket(&d), Some(other));
+}
+
+#[test]
+fn slots_are_capped_and_freed_on_drop() {
+    let registry = Arc::new(SseRegistry::new());
+    let profile = kids().profile;
+    let slots: Vec<_> = (0..MAX_STREAMS_PER_PROFILE)
+        .map(|_| registry.try_open(profile).unwrap())
+        .collect();
+    assert!(registry.try_open(profile).is_none());
+    assert!(
+        registry.try_open(kids().profile).is_some(),
+        "other profiles unaffected"
+    );
+    drop(slots);
+    assert_eq!(registry.open_streams(profile), 0);
+    assert!(registry.try_open(profile).is_some());
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn ticket_endpoint_requires_auth(pool: PgPool) {
+    let state = common::state(pool);
+    let (_, token) = common::user_with_token(&state, "ana").await;
+    let server = axum_test::TestServer::new(aether_api::router(state)).unwrap();
+    server
+        .post("/api/events/ticket")
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+    let body: Value = server
+        .post("/api/events/ticket")
+        .authorization_bearer(&token)
+        .await
+        .json();
+    assert!(body["ticket"].as_str().unwrap().len() >= 32);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn stream_needs_a_valid_ticket(pool: PgPool) {
+    let app = aether_api::router(common::state(pool));
+    let res = app
+        .clone()
+        .oneshot(Request::get("/api/events").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        open_stream(&app, "made-up").await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn stream_delivers_own_and_broadcast_events_only(pool: PgPool) {
+    let state = common::state(pool);
+    let (ana, _) = common::user_with_token(&state, "ana").await;
+    let app = aether_api::router(state.clone());
+
+    let res = open_stream(&app, &state.sse.issue_ticket(main(&ana))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/event-stream");
+    let mut body = res.into_body();
+    assert_eq!(
+        next_text(&mut body).await,
+        "data: {\"type\":\"connected\"}\n\n"
+    );
+
+    state.events.publish(Event {
+        audience: Audience::Profile(ProfileId::new(Uuid::now_v7())),
+        data: json!({ "type": "not-yours" }),
+    });
+    state.events.publish(Event {
+        audience: Audience::Profile(ana.main_profile()),
+        data: json!({ "type": "yours" }),
+    });
+    state.events.publish(Event {
+        audience: Audience::All,
+        data: json!({ "type": "everyone" }),
+    });
+    assert_eq!(next_text(&mut body).await, "data: {\"type\":\"yours\"}\n\n");
+    assert_eq!(
+        next_text(&mut body).await,
+        "data: {\"type\":\"everyone\"}\n\n"
+    );
+}
+
+/// Review focus 3: closed tabs give their slot back.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn sixth_stream_is_refused_until_one_closes(pool: PgPool) {
+    let state = common::state(pool);
+    let (ana, _) = common::user_with_token(&state, "ana").await;
+    let app = aether_api::router(state.clone());
+
+    let mut open = Vec::new();
+    for _ in 0..MAX_STREAMS_PER_PROFILE {
+        let res = open_stream(&app, &state.sse.issue_ticket(main(&ana))).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        open.push(res);
+    }
+    let res = open_stream(&app, &state.sse.issue_ticket(main(&ana))).await;
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    drop(open.pop());
+    let res = open_stream(&app, &state.sse.issue_ticket(main(&ana))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+/// Open streams must not hold graceful shutdown open.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn stream_ends_when_shutdown_is_cancelled(pool: PgPool) {
+    let state = common::state(pool);
+    let (ana, _) = common::user_with_token(&state, "ana").await;
+    let app = aether_api::router(state.clone());
+
+    let res = open_stream(&app, &state.sse.issue_ticket(main(&ana))).await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let mut body = res.into_body();
+    assert_eq!(
+        next_text(&mut body).await,
+        "data: {\"type\":\"connected\"}\n\n"
+    );
+
+    state.shutdown.cancel();
+    let frame = tokio::time::timeout(Duration::from_secs(2), body.frame())
+        .await
+        .expect("stream ends within 2 s of shutdown");
+    assert!(frame.is_none(), "no further frames after shutdown");
+    drop(body);
+    assert_eq!(
+        state.sse.open_streams(ana.main_profile()),
+        0,
+        "slot released"
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn revoked_user_streams_end(pool: PgPool) {
+    let state = common::state(pool);
+    let (ana, _) = common::user_with_token(&state, "ana").await;
+    let (ben, _) = common::user_with_token(&state, "ben").await;
+    let app = aether_api::router(state.clone());
+
+    let mut ana_body = open_stream(&app, &state.sse.issue_ticket(main(&ana)))
+        .await
+        .into_body();
+    let mut ben_body = open_stream(&app, &state.sse.issue_ticket(main(&ben)))
+        .await
+        .into_body();
+    next_text(&mut ana_body).await;
+    next_text(&mut ben_body).await;
+
+    aether_api::revoke_sessions(&state, ana.account());
+    let end = tokio::time::timeout(Duration::from_secs(2), ana_body.frame())
+        .await
+        .expect("revoked stream ends within 2 s");
+    assert!(end.is_none(), "no revocation frame leaks to the client");
+    drop(ana_body);
+    assert_eq!(state.sse.open_streams(ana.main_profile()), 0);
+
+    state.events.publish(Event {
+        audience: Audience::Profile(ben.main_profile()),
+        data: json!({ "type": "still-here" }),
+    });
+    assert_eq!(
+        next_text(&mut ben_body).await,
+        "data: {\"type\":\"still-here\"}\n\n"
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn lagged_stream_gets_resync(pool: PgPool) {
+    let mut state = common::state(pool);
+    state.events = aether_core::events::EventBus::new(2);
+    let (ana, _) = common::user_with_token(&state, "ana").await;
+    let app = aether_api::router(state.clone());
+
+    let mut body = open_stream(&app, &state.sse.issue_ticket(main(&ana)))
+        .await
+        .into_body();
+    for n in 0..10 {
+        state.events.publish(Event {
+            audience: Audience::All,
+            data: json!({ "type": "x", "n": n }),
+        });
+    }
+    let mut seen = String::new();
+    for _ in 0..4 {
+        seen.push_str(&next_text(&mut body).await);
+    }
+    assert!(seen.contains("data: {\"type\":\"resync\"}\n\n"), "{seen}");
+}
+
+/// Review: a revoke event skipped by lag must still end the stream, via the DB check.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn revocation_survives_lag(pool: PgPool) {
+    let mut state = common::state(pool);
+    state.events = aether_core::events::EventBus::new(2);
+    let (ana, _) = common::user_with_token(&state, "ana").await;
+    let app = aether_api::router(state.clone());
+
+    let mut body = open_stream(&app, &state.sse.issue_ticket(main(&ana)))
+        .await
+        .into_body();
+    next_text(&mut body).await;
+
+    sqlx::query("UPDATE users SET token_version = token_version + 1 WHERE id = $1")
+        .bind(ana.id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    aether_api::revoke_sessions(&state, ana.account());
+    for n in 0..10 {
+        state.events.publish(Event {
+            audience: Audience::All,
+            data: json!({ "type": "x", "n": n }),
+        });
+    }
+    let end = tokio::time::timeout(Duration::from_secs(2), body.frame())
+        .await
+        .expect("stream ends within 2 s");
+    assert!(end.is_none(), "no frames after revocation");
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn revoked_users_pending_ticket_is_rejected(pool: PgPool) {
+    let state = common::state(pool);
+    let (ana, _) = common::user_with_token(&state, "ana").await;
+    let app = aether_api::router(state.clone());
+    let ticket = state.sse.issue_ticket(main(&ana));
+    aether_api::revoke_sessions(&state, ana.account());
+    assert_eq!(
+        open_stream(&app, &ticket).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// Spec §17 (D-112): a control route announces its change to every open stream.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn pause_route_emits_event(pool: PgPool) {
+    let state = common::state(pool.clone());
+    let (ana, token) = common::user_with_token(&state, "ana").await;
+    let app = aether_api::router(state.clone());
+    sqlx::query("UPDATE enrichment_state SET status = 'running', halted = false")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mut body = open_stream(&app, &state.sse.issue_ticket(main(&ana)))
+        .await
+        .into_body();
+    assert_eq!(
+        next_text(&mut body).await,
+        "data: {\"type\":\"connected\"}\n\n"
+    );
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::post("/api/enrichment/pause")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let text = next_text(&mut body).await;
+    let data: Value = serde_json::from_str(text.strip_prefix("data: ").unwrap().trim()).unwrap();
+    assert_eq!(
+        data,
+        json!({"type": "enrichment:progress", "phase": null, "status": "paused"})
+    );
+}

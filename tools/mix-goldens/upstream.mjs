@@ -1,8 +1,8 @@
-// Regenerates crates/kima-mixes/tests/fixtures/draw_goldens.json from upstream's pure mix helpers.
+// Regenerates crates/aether-mixes/tests/fixtures/draw_goldens.json from upstream's pure mix helpers.
 //
 //   node tools/mix-goldens/upstream.mjs [outFile]
 //
-// Environment: UPSTREAM = path of a kima-hub git checkout that CONTAINS the pin (default KIMA_HUB_REFERENCE,
+// Environment: UPSTREAM = path of a kima-hub git checkout that CONTAINS the pin (default AETHER_UPSTREAM_REFERENCE,
 // environment or private tools config). Every module is read from the pin's git objects
 // (../vibe-goldens/upstream.mjs `readPinned`), never from a working tree. Node >= 23.6 (native type stripping).
 //
@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
 import { PIN, readPinned } from "../vibe-goldens/upstream.mjs";
 
 const here = path.dirname(new URL(import.meta.url).pathname);
-const out = path.resolve(process.argv[2] ?? path.join(here, "../../crates/kima-mixes/tests/fixtures/draw_goldens.json"));
+const out = path.resolve(process.argv[2] ?? path.join(here, "../../crates/aether-mixes/tests/fixtures/draw_goldens.json"));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mix-goldens-"));
 
 const files = {

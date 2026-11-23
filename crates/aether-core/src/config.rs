@@ -1,0 +1,1322 @@
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+#[derive(Clone, PartialEq)]
+pub struct Config {
+    pub database_url: String,
+    pub data_dir: PathBuf,
+    pub music_path: PathBuf,
+    pub bind_addr: SocketAddr,
+    pub frontend_dir: Option<PathBuf>,
+    /// `AETHER_WEB_BUILD_DIR`: the `vertigo build` output of `aether-web`. Set means the embedded SSR
+    /// server runs and `aether-web`'s routes are proxied to it; unset (the default) means neither.
+    pub web_build_dir: Option<PathBuf>,
+    /// `AETHER_WEB_SSR_PORT`: the loopback port of the embedded SSR server.
+    pub web_ssr_port: u16,
+    pub allowed_origins: Vec<String>,
+    pub log_level: String,
+    pub session_secret: Option<String>,
+    pub settings_encryption_key: Option<String>,
+    pub watch_mode: WatchMode,
+    pub watch_poll_secs: u64,
+    pub organize_target: Option<PathBuf>,
+    pub transcode_cache_mb: u64,
+    /// `AETHER_ARTWORK_CACHE_MB`: size cap of the cover-art cache.
+    pub artwork_cache_mb: u64,
+    /// `AETHER_PUBLIC_URL`: where clients reach this server, without a trailing slash.
+    pub public_url: Option<String>,
+    /// `AETHER_LIBRARY_SYNC_CRON`: 5-field cron (UTC) of the safety-net reconcile; `None` when `off`.
+    /// The expression is validated where it is parsed (startup in `aether-server`).
+    pub library_sync_cron: Option<String>,
+    /// `AETHER_IDENTIFY=off`: no outbound lookups, whatever the admin setting says (D-111).
+    pub identify_env_off: bool,
+    /// `AETHER_CONTACT`: the contact in the outbound User-Agent (spec §7.1).
+    pub contact: String,
+    /// `MUSICBRAINZ_BASE_URL`: MusicBrainz or a mirror, without a trailing slash.
+    pub musicbrainz_base_url: String,
+    /// `AETHER_ITUNES_BASE_URL` (upstream `ITUNES_BASE_URL`): Apple's iTunes API, without a
+    /// trailing slash; tests and fixture capture point it at a replay.
+    pub itunes_base_url: String,
+    /// `AETHER_FINGERPRINT_WORKERS`: fingerprint pool size; half the cores, at least 1 (spec §9.3).
+    pub fingerprint_workers: usize,
+    /// `AETHER_CLAP_MODEL_DIR`: directory containing the pinned CLAP audio model.
+    pub clap_model_dir: Option<PathBuf>,
+    /// `DISABLE_CLAP=true` skips CLAP initialization.
+    pub disable_clap: bool,
+    /// `AETHER_MUSICNN_MODEL_DIR`: directory containing the pinned MusiCNN analysis models
+    /// (core + 10 heads).
+    pub musicnn_model_dir: Option<PathBuf>,
+    /// `DISABLE_MUSICNN=true` skips MusiCNN initialization (DSP-only analysis).
+    pub disable_musicnn: bool,
+    /// `AETHER_ANALYSIS_WORKERS`: concurrent blocking analysis workers (1..=[`MAX_ANALYSIS_WORKERS`],
+    /// upstream `NUM_WORKERS`); unset resolves to upstream's default of 2, and any value is
+    /// clamped to the machine's cores (`aether_ident::AnalysisConfig::resolve_workers`).
+    pub analysis_workers: Option<usize>,
+    /// `AETHER_SNAPSHOT_DIR`: absolute, private (0700, server-owned) directory for unnamed input
+    /// snapshots. It must be on the SAME mount as the library, which therefore must be mounted
+    /// read-write for the server. Unset: embeddings fail closed with `SNAPSHOT_UNAVAILABLE`.
+    pub snapshot_dir: Option<PathBuf>,
+    /// `AETHER_SNAPSHOT_MAX_BYTES`: largest input snapshotted; `None` is the `aether-ml` default.
+    pub snapshot_max_bytes: Option<u64>,
+    /// `AETHER_SNAPSHOT_MAX_CONCURRENT`: live snapshots at once; `None` is the `aether-ml` default.
+    pub snapshot_max_concurrent: Option<usize>,
+    /// `AETHER_VIBE_ASSET_DIR`: directory with the private vibe assets (feel probe, mood heads, SHA-256 pinned).
+    /// Unset: the vibe capabilities are `unavailable`; the server still boots.
+    pub vibe_asset_dir: Option<PathBuf>,
+    /// `AETHER_VIBE_EXACT_MAX`: text search scans exactly up to this many eligible tracks, then uses the HNSW
+    /// index; 0 always uses the index. Default [`DEFAULT_VIBE_EXACT_MAX`].
+    pub vibe_exact_max: u64,
+    /// `ACOUSTID_DISABLED=true` (any case): no AcoustID rung, `fpcalc: false` (upstream's name).
+    pub acoustid_disabled: bool,
+    /// `ACOUSTID_CLIENT_KEY`: the AcoustID client key after the stored setting (spec §8.4). A
+    /// secret: never printed.
+    pub acoustid_client_key: Option<String>,
+    /// `FANART_API_KEY`: the fanart.tv key when no enabled key is stored (spec §15.1). A secret:
+    /// never printed.
+    pub fanart_api_key: Option<String>,
+    /// CLAP audio ONNX execution and parallelism (`AETHER_ONNX_PROVIDER`, `AETHER_CLAP_*`).
+    pub clap_runtime: ClapRuntimeEnv,
+}
+
+/// `AETHER_ONNX_PROVIDER`: execution provider requested for the CLAP audio encoder. This is
+/// the only parser of the variable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OnnxProvider {
+    #[default]
+    Cpu,
+    Cuda,
+}
+
+impl std::str::FromStr for OnnxProvider {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "cpu" => Ok(Self::Cpu),
+            "cuda" => Ok(Self::Cuda),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Upper bounds of the CLAP runtime settings (inclusive; every lower bound is 1).
+pub const MAX_CLAP_POOL_SIZE: usize = 8;
+pub const MAX_CLAP_INTRA_THREADS: usize = 16;
+/// Embedding claims are taken in batches of 20 (`aether_ident::stages::embedding::BATCH`):
+/// more workers than that never run at once.
+pub const MAX_EMBEDDING_WORKERS: usize = 20;
+/// Analysis claims are taken in batches of 20 (`aether_ident::stages::analysis::BATCH`) as well.
+pub const MAX_ANALYSIS_WORKERS: usize = 20;
+/// 64 GiB, the cap `aether_ml::onnx::set_host_budget_bytes` applies as well.
+pub const MAX_ONNX_HOST_BUDGET_MIB: u64 = 64 * 1024;
+pub const DEFAULT_ONNX_HOST_BUDGET_MIB: u64 = 4096;
+/// 1 TiB; far above any GPU, low enough that the byte value never overflows.
+pub const MAX_CUDA_MEM_LIMIT_MIB: u64 = 1024 * 1024;
+/// ONNX intra-op thread slots of the process (`aether_ml::onnx::MAX_THREAD_SLOTS`) minus the
+/// slots kept for the CLAP text encoder and the MusiCNN sessions.
+pub const MAX_CLAP_AUDIO_THREAD_SLOTS: usize = 64 - 16;
+/// Host-budget estimates of the pinned music CLAP exports on the CPU (D-194: 4 × encoded
+/// bytes + 16 MiB per session): ~1.06 GiB per audio session, ~1.88 GiB for the text session.
+pub const CLAP_AUDIO_CPU_SESSION_MIB: u64 = 1100;
+pub const CLAP_TEXT_CPU_SESSION_MIB: u64 = 1940;
+
+/// CLAP audio ONNX runtime settings; unset values are resolved from the machine's cores and
+/// the active provider by `aether_ident::EmbeddingParallelism::resolve`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClapRuntimeEnv {
+    /// `AETHER_ONNX_PROVIDER` (`cpu` default, or `cuda`): `cuda` runs the CLAP audio encoder
+    /// on the CUDA execution provider, falling back to the CPU when it cannot be used.
+    pub provider: OnnxProvider,
+    /// `AETHER_CUDA_DEVICE_ID` (default 0).
+    pub cuda_device_id: Option<i32>,
+    /// `AETHER_CUDA_LIB_DIR`: absolute directory with the CUDA 12 / cuDNN 9 libraries to preload.
+    pub cuda_lib_dir: Option<PathBuf>,
+    /// `AETHER_CUDA_MEM_LIMIT_MIB`: per-session CUDA arena limit (1..=[`MAX_CUDA_MEM_LIMIT_MIB`]).
+    pub cuda_mem_limit_mib: Option<u64>,
+    /// `AETHER_CLAP_POOL_SIZE`: audio ONNX sessions (1..=[`MAX_CLAP_POOL_SIZE`]).
+    pub pool_size: Option<usize>,
+    /// `AETHER_CLAP_INTRA_THREADS`: ORT intra-op threads per audio session
+    /// (1..=[`MAX_CLAP_INTRA_THREADS`]).
+    pub intra_threads: Option<usize>,
+    /// `AETHER_EMBEDDING_WORKERS`: concurrent blocking embedding workers
+    /// (1..=[`MAX_EMBEDDING_WORKERS`]).
+    pub workers: Option<usize>,
+    /// `AETHER_ONNX_HOST_BUDGET_MIB`: process-wide ONNX host-memory admission budget
+    /// (default [`DEFAULT_ONNX_HOST_BUDGET_MIB`], 1..=[`MAX_ONNX_HOST_BUDGET_MIB`]).
+    pub host_budget_mib: Option<u64>,
+}
+
+impl ClapRuntimeEnv {
+    /// CUDA settings that are set although the provider is the CPU (they have no effect);
+    /// the server logs a warning naming them.
+    pub fn ignored_cuda_settings(&self) -> Vec<&'static str> {
+        if self.provider == OnnxProvider::Cuda {
+            return Vec::new();
+        }
+        [
+            ("AETHER_CUDA_DEVICE_ID", self.cuda_device_id.is_some()),
+            ("AETHER_CUDA_LIB_DIR", self.cuda_lib_dir.is_some()),
+            (
+                "AETHER_CUDA_MEM_LIMIT_MIB",
+                self.cuda_mem_limit_mib.is_some(),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, set)| set.then_some(name))
+        .collect()
+    }
+
+    /// Combinations that cannot be admitted, checked when explicitly configured: the audio
+    /// thread slots, and the host budget a CPU (or CPU-fallback) pool needs next to the text
+    /// encoder. Values left unset are resolved within these limits.
+    fn validate(&self) -> Result<(), ConfigError> {
+        if let (Some(pool), Some(threads)) = (self.pool_size, self.intra_threads)
+            && pool * threads > MAX_CLAP_AUDIO_THREAD_SLOTS
+        {
+            return Err(ConfigError::Combination(format!(
+                "AETHER_CLAP_POOL_SIZE × AETHER_CLAP_INTRA_THREADS = {pool} × {threads} = {} \
+                 exceeds the {MAX_CLAP_AUDIO_THREAD_SLOTS} ONNX thread slots available to the \
+                 CLAP audio encoder (64 per process, 16 kept for the text encoder and MusiCNN)",
+                pool * threads
+            )));
+        }
+        if self.pool_size.is_some() || self.host_budget_mib.is_some() {
+            let pool = self.pool_size.unwrap_or(1) as u64;
+            let budget = self.host_budget_mib.unwrap_or(DEFAULT_ONNX_HOST_BUDGET_MIB);
+            let need = pool * CLAP_AUDIO_CPU_SESSION_MIB + CLAP_TEXT_CPU_SESSION_MIB;
+            if need > budget {
+                return Err(ConfigError::Combination(format!(
+                    "{pool} CLAP audio session(s) on the CPU (AETHER_CLAP_POOL_SIZE; also the CUDA \
+                     fallback) need ~{need} MiB of ONNX host budget ({pool} × \
+                     ~{CLAP_AUDIO_CPU_SESSION_MIB} MiB audio + ~{CLAP_TEXT_CPU_SESSION_MIB} MiB \
+                     text), but AETHER_ONNX_HOST_BUDGET_MIB is {budget} (allowed \
+                     1..={MAX_ONNX_HOST_BUDGET_MIB}, default {DEFAULT_ONNX_HOST_BUDGET_MIB})"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+// Never prints a secret.
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hidden = |v: &Option<String>| v.as_ref().map(|_| "..");
+        f.debug_struct("Config")
+            .field("database_url", &self.database_url)
+            .field("data_dir", &self.data_dir)
+            .field("music_path", &self.music_path)
+            .field("bind_addr", &self.bind_addr)
+            .field("frontend_dir", &self.frontend_dir)
+            .field("web_build_dir", &self.web_build_dir)
+            .field("web_ssr_port", &self.web_ssr_port)
+            .field("allowed_origins", &self.allowed_origins)
+            .field("log_level", &self.log_level)
+            .field("session_secret", &hidden(&self.session_secret))
+            .field(
+                "settings_encryption_key",
+                &hidden(&self.settings_encryption_key),
+            )
+            .field("watch_mode", &self.watch_mode)
+            .field("watch_poll_secs", &self.watch_poll_secs)
+            .field("organize_target", &self.organize_target)
+            .field("transcode_cache_mb", &self.transcode_cache_mb)
+            .field("artwork_cache_mb", &self.artwork_cache_mb)
+            .field("public_url", &self.public_url)
+            .field("library_sync_cron", &self.library_sync_cron)
+            .field("identify_env_off", &self.identify_env_off)
+            .field("contact", &self.contact)
+            .field("musicbrainz_base_url", &self.musicbrainz_base_url)
+            .field("itunes_base_url", &self.itunes_base_url)
+            .field("fingerprint_workers", &self.fingerprint_workers)
+            .field("clap_model_dir", &self.clap_model_dir)
+            .field("disable_clap", &self.disable_clap)
+            .field("musicnn_model_dir", &self.musicnn_model_dir)
+            .field("disable_musicnn", &self.disable_musicnn)
+            .field("analysis_workers", &self.analysis_workers)
+            .field("snapshot_dir", &self.snapshot_dir)
+            .field("snapshot_max_bytes", &self.snapshot_max_bytes)
+            .field("snapshot_max_concurrent", &self.snapshot_max_concurrent)
+            .field("vibe_asset_dir", &self.vibe_asset_dir)
+            .field("vibe_exact_max", &self.vibe_exact_max)
+            .field("acoustid_disabled", &self.acoustid_disabled)
+            .field("acoustid_client_key", &hidden(&self.acoustid_client_key))
+            .field("fanart_api_key", &hidden(&self.fanart_api_key))
+            .field("clap_runtime", &self.clap_runtime)
+            .finish()
+    }
+}
+
+/// `AETHER_VIBE_EXACT_MAX` when unset (design 11.3, chosen from a 0.17-0.4 s exact scan at 100k tracks).
+pub const DEFAULT_VIBE_EXACT_MAX: u64 = 200_000;
+
+/// `AETHER_CONTACT` when unset.
+/// Loopback port of the embedded `aether-web` SSR server when `AETHER_WEB_SSR_PORT` is unset.
+pub const DEFAULT_WEB_SSR_PORT: u16 = 3031;
+
+pub const DEFAULT_CONTACT: &str = "https://github.com/d1mmu-dev/aether";
+/// `MUSICBRAINZ_BASE_URL` when unset.
+pub const DEFAULT_MUSICBRAINZ_BASE_URL: &str = "https://musicbrainz.org/ws/2";
+
+/// `AETHER_ITUNES_BASE_URL` when unset (`podcastCatalog.ts:64`).
+pub const DEFAULT_ITUNES_BASE_URL: &str = "https://itunes.apple.com";
+
+/// `raw` without trailing slashes, when it is an `http://` or `https://` URL with a host.
+fn http_base(raw: &str) -> Option<String> {
+    let trimmed = raw.trim_end_matches('/');
+    let rest = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))?;
+    let host = rest.split('/').next().unwrap_or("");
+    (!host.is_empty()).then(|| trimmed.to_string())
+}
+
+/// How the library folder is watched for changes (`AETHER_WATCH_MODE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchMode {
+    /// Filesystem events, falling back to polling where they are unavailable.
+    Auto,
+    /// Periodic scans only.
+    Poll,
+    /// No watching.
+    Off,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum ConfigError {
+    #[error("missing required environment variable {0}")]
+    Missing(&'static str),
+    #[error("invalid value for {name}: {value:?}")]
+    Invalid { name: &'static str, value: String },
+    #[error("invalid value for {name}: {value:?} (allowed: {allowed})")]
+    OutOfRange {
+        name: &'static str,
+        value: String,
+        allowed: String,
+    },
+    #[error("invalid combination: {0}")]
+    Combination(String),
+}
+
+impl Config {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        Self::from_lookup(|key| std::env::var(key).ok())
+    }
+
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
+        let value = |key: &str| {
+            get(key)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+
+        let database_url = value("DATABASE_URL").ok_or(ConfigError::Missing("DATABASE_URL"))?;
+
+        let port_raw = value("PORT").unwrap_or_else(|| "3030".into());
+        let port: u16 = port_raw.parse().map_err(|_| ConfigError::Invalid {
+            name: "PORT",
+            value: port_raw.clone(),
+        })?;
+        let host_raw = value("AETHER_BIND_HOST").unwrap_or_else(|| "0.0.0.0".into());
+        let host: std::net::IpAddr = host_raw.parse().map_err(|_| ConfigError::Invalid {
+            name: "AETHER_BIND_HOST",
+            value: host_raw.clone(),
+        })?;
+
+        let allowed_origins = value("ALLOWED_ORIGINS")
+            .map(|v| {
+                v.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let watch_mode = match value("AETHER_WATCH_MODE") {
+            None => WatchMode::Auto,
+            Some(raw) => match raw.to_ascii_lowercase().as_str() {
+                "auto" => WatchMode::Auto,
+                "poll" => WatchMode::Poll,
+                "off" => WatchMode::Off,
+                _ => {
+                    return Err(ConfigError::Invalid {
+                        name: "AETHER_WATCH_MODE",
+                        value: raw,
+                    });
+                }
+            },
+        };
+        let watch_poll_secs = match value("AETHER_WATCH_POLL_SECS") {
+            None => 60,
+            Some(raw) => match raw.parse::<u64>() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    return Err(ConfigError::Invalid {
+                        name: "AETHER_WATCH_POLL_SECS",
+                        value: raw,
+                    });
+                }
+            },
+        };
+        let transcode_cache_mb = match value("AETHER_TRANSCODE_CACHE_MB") {
+            None => 2048,
+            Some(raw) => raw.parse::<u64>().map_err(|_| ConfigError::Invalid {
+                name: "AETHER_TRANSCODE_CACHE_MB",
+                value: raw,
+            })?,
+        };
+
+        let artwork_cache_mb = match value("AETHER_ARTWORK_CACHE_MB") {
+            None => 512,
+            Some(raw) => raw.parse::<u64>().map_err(|_| ConfigError::Invalid {
+                name: "AETHER_ARTWORK_CACHE_MB",
+                value: raw,
+            })?,
+        };
+
+        let musicbrainz_base_url = match value("MUSICBRAINZ_BASE_URL") {
+            None => DEFAULT_MUSICBRAINZ_BASE_URL.to_string(),
+            Some(raw) => http_base(&raw).ok_or(ConfigError::Invalid {
+                name: "MUSICBRAINZ_BASE_URL",
+                value: raw,
+            })?,
+        };
+
+        let itunes_base_url = match value("AETHER_ITUNES_BASE_URL") {
+            None => DEFAULT_ITUNES_BASE_URL.to_string(),
+            Some(raw) => http_base(&raw).ok_or(ConfigError::Invalid {
+                name: "AETHER_ITUNES_BASE_URL",
+                value: raw,
+            })?,
+        };
+
+        let public_url = match value("AETHER_PUBLIC_URL") {
+            None => None,
+            Some(raw) => {
+                let trimmed = raw.trim_end_matches('/');
+                let host = trimmed
+                    .strip_prefix("https://")
+                    .or_else(|| trimmed.strip_prefix("http://"));
+                match host {
+                    Some(host) if !host.is_empty() => Some(trimmed.to_string()),
+                    _ => {
+                        return Err(ConfigError::Invalid {
+                            name: "AETHER_PUBLIC_URL",
+                            value: raw,
+                        });
+                    }
+                }
+            }
+        };
+
+        let library_sync_cron = match value("AETHER_LIBRARY_SYNC_CRON") {
+            None => Some("0 4 * * *".to_string()),
+            Some(raw) if raw.eq_ignore_ascii_case("off") => None,
+            Some(raw) => Some(raw),
+        };
+
+        let identify_env_off = match value("AETHER_IDENTIFY") {
+            None => false,
+            Some(raw) => match raw.to_ascii_lowercase().as_str() {
+                "on" => false,
+                "off" => true,
+                _ => {
+                    return Err(ConfigError::Invalid {
+                        name: "AETHER_IDENTIFY",
+                        value: raw,
+                    });
+                }
+            },
+        };
+
+        let web_ssr_port = match value("AETHER_WEB_SSR_PORT") {
+            None => DEFAULT_WEB_SSR_PORT,
+            Some(raw) => match raw.parse::<u16>() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    return Err(ConfigError::Invalid {
+                        name: "AETHER_WEB_SSR_PORT",
+                        value: raw,
+                    });
+                }
+            },
+        };
+
+        let fingerprint_workers = match value("AETHER_FINGERPRINT_WORKERS") {
+            None => std::thread::available_parallelism()
+                .map_or(1, |n| n.get() / 2)
+                .max(1),
+            Some(raw) => match raw.parse::<usize>() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    return Err(ConfigError::Invalid {
+                        name: "AETHER_FINGERPRINT_WORKERS",
+                        value: raw,
+                    });
+                }
+            },
+        };
+        let positive = |name: &'static str| -> Result<Option<u64>, ConfigError> {
+            match value(name) {
+                None => Ok(None),
+                Some(raw) => match raw.parse::<u64>() {
+                    Ok(n) if n > 0 => Ok(Some(n)),
+                    _ => Err(ConfigError::Invalid { name, value: raw }),
+                },
+            }
+        };
+        let snapshot_max_bytes = positive("AETHER_SNAPSHOT_MAX_BYTES")?;
+        let snapshot_max_concurrent = positive("AETHER_SNAPSHOT_MAX_CONCURRENT")?
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| ConfigError::Invalid {
+                name: "AETHER_SNAPSHOT_MAX_CONCURRENT",
+                value: "too large".into(),
+            })?;
+        let vibe_exact_max = match value("AETHER_VIBE_EXACT_MAX") {
+            None => DEFAULT_VIBE_EXACT_MAX,
+            Some(raw) => raw.parse::<u64>().map_err(|_| ConfigError::Invalid {
+                name: "AETHER_VIBE_EXACT_MAX",
+                value: raw,
+            })?,
+        };
+        let bounded = |name: &'static str, max: u64| -> Result<Option<u64>, ConfigError> {
+            let Some(raw) = value(name) else {
+                return Ok(None);
+            };
+            match raw.parse::<u64>() {
+                Ok(n) if (1..=max).contains(&n) => Ok(Some(n)),
+                _ => Err(ConfigError::OutOfRange {
+                    name,
+                    value: raw,
+                    allowed: format!("an integer in 1..={max}"),
+                }),
+            }
+        };
+        let bounded_usize = |name: &'static str, max: usize| {
+            bounded(name, max as u64).map(|n| n.map(|n| n as usize))
+        };
+        let clap_runtime = ClapRuntimeEnv {
+            provider: match value("AETHER_ONNX_PROVIDER") {
+                None => OnnxProvider::Cpu,
+                Some(raw) => raw.parse().map_err(|()| ConfigError::OutOfRange {
+                    name: "AETHER_ONNX_PROVIDER",
+                    value: raw,
+                    allowed: "cpu or cuda".into(),
+                })?,
+            },
+            cuda_device_id: match value("AETHER_CUDA_DEVICE_ID") {
+                None => None,
+                Some(raw) => match raw.parse::<i32>() {
+                    Ok(n) if n >= 0 => Some(n),
+                    _ => {
+                        return Err(ConfigError::OutOfRange {
+                            name: "AETHER_CUDA_DEVICE_ID",
+                            value: raw,
+                            allowed: format!("an integer in 0..={}", i32::MAX),
+                        });
+                    }
+                },
+            },
+            cuda_lib_dir: match value("AETHER_CUDA_LIB_DIR") {
+                None => None,
+                Some(raw) if std::path::Path::new(&raw).is_absolute() => Some(raw.into()),
+                Some(raw) => {
+                    return Err(ConfigError::OutOfRange {
+                        name: "AETHER_CUDA_LIB_DIR",
+                        value: raw,
+                        allowed: "an absolute directory".into(),
+                    });
+                }
+            },
+            cuda_mem_limit_mib: bounded("AETHER_CUDA_MEM_LIMIT_MIB", MAX_CUDA_MEM_LIMIT_MIB)?,
+            pool_size: bounded_usize("AETHER_CLAP_POOL_SIZE", MAX_CLAP_POOL_SIZE)?,
+            intra_threads: bounded_usize("AETHER_CLAP_INTRA_THREADS", MAX_CLAP_INTRA_THREADS)?,
+            workers: bounded_usize("AETHER_EMBEDDING_WORKERS", MAX_EMBEDDING_WORKERS)?,
+            host_budget_mib: bounded("AETHER_ONNX_HOST_BUDGET_MIB", MAX_ONNX_HOST_BUDGET_MIB)?,
+        };
+        clap_runtime.validate()?;
+        let analysis_workers = bounded_usize("AETHER_ANALYSIS_WORKERS", MAX_ANALYSIS_WORKERS)?;
+        // Upstream compares with `'true'`; any other value leaves AcoustID on.
+        let acoustid_disabled =
+            value("ACOUSTID_DISABLED").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+
+        Ok(Self {
+            database_url,
+            data_dir: value("AETHER_DATA_DIR")
+                .unwrap_or_else(|| "/data".into())
+                .into(),
+            music_path: value("MUSIC_PATH")
+                .unwrap_or_else(|| "/music".into())
+                .into(),
+            bind_addr: SocketAddr::new(host, port),
+            frontend_dir: value("AETHER_FRONTEND_DIR").map(PathBuf::from),
+            web_build_dir: value("AETHER_WEB_BUILD_DIR").map(PathBuf::from),
+            web_ssr_port,
+            allowed_origins,
+            log_level: value("LOG_LEVEL").unwrap_or_else(|| "info".into()),
+            session_secret: value("SESSION_SECRET"),
+            settings_encryption_key: value("SETTINGS_ENCRYPTION_KEY"),
+            watch_mode,
+            watch_poll_secs,
+            organize_target: value("AETHER_ORGANIZE_TARGET").map(PathBuf::from),
+            transcode_cache_mb,
+            artwork_cache_mb,
+            public_url,
+            library_sync_cron,
+            identify_env_off,
+            contact: value("AETHER_CONTACT").unwrap_or_else(|| DEFAULT_CONTACT.into()),
+            musicbrainz_base_url,
+            itunes_base_url,
+            fingerprint_workers,
+            clap_model_dir: value("AETHER_CLAP_MODEL_DIR").map(PathBuf::from),
+            disable_clap: value("DISABLE_CLAP").is_some_and(|v| v.eq_ignore_ascii_case("true")),
+            musicnn_model_dir: value("AETHER_MUSICNN_MODEL_DIR").map(PathBuf::from),
+            disable_musicnn: value("DISABLE_MUSICNN")
+                .is_some_and(|v| v.eq_ignore_ascii_case("true")),
+            analysis_workers,
+            snapshot_dir: value("AETHER_SNAPSHOT_DIR").map(PathBuf::from),
+            snapshot_max_bytes,
+            snapshot_max_concurrent,
+            vibe_asset_dir: value("AETHER_VIBE_ASSET_DIR").map(PathBuf::from),
+            vibe_exact_max,
+            acoustid_disabled,
+            acoustid_client_key: value("ACOUSTID_CLIENT_KEY"),
+            fanart_api_key: value("FANART_API_KEY"),
+            clap_runtime,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |key| map.get(key).cloned()
+    }
+
+    #[test]
+    fn database_url_is_required() {
+        assert_eq!(
+            Config::from_lookup(lookup(&[])),
+            Err(ConfigError::Missing("DATABASE_URL"))
+        );
+        assert_eq!(
+            Config::from_lookup(lookup(&[("DATABASE_URL", "  ")])),
+            Err(ConfigError::Missing("DATABASE_URL"))
+        );
+    }
+
+    #[test]
+    fn disable_clap_is_case_insensitive_true_only() {
+        for (value, expected) in [
+            ("true", true),
+            ("TRUE", true),
+            ("false", false),
+            ("1", false),
+        ] {
+            let config = Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("DISABLE_CLAP", value),
+            ]))
+            .unwrap();
+            assert_eq!(config.disable_clap, expected);
+        }
+    }
+
+    #[test]
+    fn vibe_settings_parse_and_default_to_unset() {
+        let base = [("DATABASE_URL", "postgres://x")];
+        let config = Config::from_lookup(lookup(&base)).unwrap();
+        assert_eq!(
+            config.vibe_asset_dir, None,
+            "the server boots without vibe assets"
+        );
+        assert_eq!(config.vibe_exact_max, DEFAULT_VIBE_EXACT_MAX);
+        assert_eq!(DEFAULT_VIBE_EXACT_MAX, 200_000);
+        let config = Config::from_lookup(lookup(&[
+            base[0],
+            ("AETHER_VIBE_ASSET_DIR", "/models/vibe"),
+            ("AETHER_VIBE_EXACT_MAX", " 0 "),
+        ]))
+        .unwrap();
+        assert_eq!(config.vibe_asset_dir, Some(PathBuf::from("/models/vibe")));
+        assert_eq!(config.vibe_exact_max, 0, "0 forces the index path");
+        for bad in ["-1", "lots", "1.5"] {
+            assert_eq!(
+                Config::from_lookup(lookup(&[base[0], ("AETHER_VIBE_EXACT_MAX", bad)])),
+                Err(ConfigError::Invalid {
+                    name: "AETHER_VIBE_EXACT_MAX",
+                    value: bad.into()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_settings_parse_and_default_to_unset() {
+        let base = [("DATABASE_URL", "postgres://x")];
+        let config = Config::from_lookup(lookup(&base)).unwrap();
+        assert_eq!(config.snapshot_dir, None);
+        assert_eq!(config.snapshot_max_bytes, None);
+        assert_eq!(config.snapshot_max_concurrent, None);
+        let config = Config::from_lookup(lookup(&[
+            base[0],
+            ("AETHER_SNAPSHOT_DIR", "/music/.aether-snapshots"),
+            ("AETHER_SNAPSHOT_MAX_BYTES", " 1048576 "),
+            ("AETHER_SNAPSHOT_MAX_CONCURRENT", "3"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            config.snapshot_dir,
+            Some(PathBuf::from("/music/.aether-snapshots"))
+        );
+        assert_eq!(config.snapshot_max_bytes, Some(1_048_576));
+        assert_eq!(config.snapshot_max_concurrent, Some(3));
+        for name in [
+            "AETHER_SNAPSHOT_MAX_BYTES",
+            "AETHER_SNAPSHOT_MAX_CONCURRENT",
+        ] {
+            for bad in ["0", "-1", "lots", "1.5"] {
+                assert_eq!(
+                    Config::from_lookup(lookup(&[base[0], (name, bad)])),
+                    Err(ConfigError::Invalid {
+                        name,
+                        value: bad.into()
+                    })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn analysis_workers_parse_and_default_to_unset() {
+        let base = ("DATABASE_URL", "postgres://x");
+        let config = Config::from_lookup(lookup(&[base])).unwrap();
+        assert_eq!(config.analysis_workers, None);
+        for (raw, want) in [("1", 1), (" 4 ", 4), ("20", MAX_ANALYSIS_WORKERS)] {
+            let config =
+                Config::from_lookup(lookup(&[base, ("AETHER_ANALYSIS_WORKERS", raw)])).unwrap();
+            assert_eq!(config.analysis_workers, Some(want), "{raw}");
+        }
+        assert_eq!(MAX_ANALYSIS_WORKERS, 20);
+        for bad in ["0", "-1", "21", "two", "1.5"] {
+            let err =
+                Config::from_lookup(lookup(&[base, ("AETHER_ANALYSIS_WORKERS", bad)])).unwrap_err();
+            assert!(
+                matches!(
+                    &err,
+                    ConfigError::OutOfRange {
+                        name: "AETHER_ANALYSIS_WORKERS",
+                        ..
+                    }
+                ),
+                "{bad}: {err:?}"
+            );
+            assert!(err.to_string().contains("1..=20"), "{err}");
+        }
+    }
+
+    #[test]
+    fn clap_model_directory_is_configurable() {
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("AETHER_CLAP_MODEL_DIR", "/models/clap"),
+        ]))
+        .unwrap();
+        assert!(format!("{config:?}").contains("/models/clap"));
+    }
+
+    #[test]
+    fn musicnn_model_directory_is_configurable() {
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("AETHER_MUSICNN_MODEL_DIR", "/models/musicnn"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            config.musicnn_model_dir,
+            Some(PathBuf::from("/models/musicnn"))
+        );
+        assert!(format!("{config:?}").contains("/models/musicnn"));
+    }
+
+    #[test]
+    fn disable_musicnn_is_case_insensitive_true_only() {
+        for (value, expected) in [
+            ("true", true),
+            ("TRUE", true),
+            ("false", false),
+            ("1", false),
+        ] {
+            let config = Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("DISABLE_MUSICNN", value),
+            ]))
+            .unwrap();
+            assert_eq!(config.disable_musicnn, expected);
+        }
+    }
+
+    #[test]
+    fn musicnn_settings_default_to_unset() {
+        let config = Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://x")])).unwrap();
+        assert_eq!(config.musicnn_model_dir, None);
+        assert!(!config.disable_musicnn);
+    }
+
+    #[test]
+    fn defaults_match_upstream() {
+        let config = Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://x")])).unwrap();
+        assert_eq!(config.bind_addr, "0.0.0.0:3030".parse().unwrap());
+        assert_eq!(config.data_dir, PathBuf::from("/data"));
+        assert_eq!(config.music_path, PathBuf::from("/music"));
+        assert_eq!(config.log_level, "info");
+        assert_eq!(config.frontend_dir, None);
+        assert!(config.allowed_origins.is_empty());
+        assert_eq!(config.session_secret, None);
+    }
+
+    #[test]
+    fn watch_and_organize_defaults() {
+        let config = Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://x")])).unwrap();
+        assert_eq!(config.watch_mode, WatchMode::Auto);
+        assert_eq!(config.watch_poll_secs, 60);
+        assert_eq!(config.organize_target, None);
+        assert_eq!(config.transcode_cache_mb, 2048);
+    }
+
+    #[test]
+    fn artwork_cache_default_512() {
+        let config = Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://x")])).unwrap();
+        assert_eq!(config.artwork_cache_mb, 512);
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("AETHER_ARTWORK_CACHE_MB", "64"),
+        ]))
+        .unwrap();
+        assert_eq!(config.artwork_cache_mb, 64);
+        assert!(matches!(
+            Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("AETHER_ARTWORK_CACHE_MB", "lots"),
+            ])),
+            Err(ConfigError::Invalid {
+                name: "AETHER_ARTWORK_CACHE_MB",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn config_default_and_off() {
+        let cron = |extra: &[(&str, &str)]| {
+            let mut pairs = vec![("DATABASE_URL", "postgres://x")];
+            pairs.extend_from_slice(extra);
+            Config::from_lookup(lookup(&pairs))
+                .unwrap()
+                .library_sync_cron
+        };
+        assert_eq!(cron(&[]), Some("0 4 * * *".to_string()));
+        assert_eq!(cron(&[("AETHER_LIBRARY_SYNC_CRON", "off")]), None);
+        assert_eq!(cron(&[("AETHER_LIBRARY_SYNC_CRON", " OFF ")]), None);
+        assert_eq!(
+            cron(&[("AETHER_LIBRARY_SYNC_CRON", "*/15 * * * *")]),
+            Some("*/15 * * * *".to_string())
+        );
+    }
+
+    #[test]
+    fn identify_default_on_and_off() {
+        let off = |extra: &[(&str, &str)]| {
+            let mut pairs = vec![("DATABASE_URL", "postgres://x")];
+            pairs.extend_from_slice(extra);
+            Config::from_lookup(lookup(&pairs))
+                .unwrap()
+                .identify_env_off
+        };
+        assert!(!off(&[]));
+        assert!(!off(&[("AETHER_IDENTIFY", "on")]));
+        assert!(!off(&[("AETHER_IDENTIFY", " ON ")]));
+        assert!(off(&[("AETHER_IDENTIFY", "off")]));
+        assert!(off(&[("AETHER_IDENTIFY", "Off")]));
+    }
+
+    #[test]
+    fn contact_default() {
+        let config = Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://x")])).unwrap();
+        assert_eq!(config.contact, "https://github.com/d1mmu-dev/aether");
+        assert_eq!(config.musicbrainz_base_url, "https://musicbrainz.org/ws/2");
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("AETHER_CONTACT", " ops@example.org "),
+        ]))
+        .unwrap();
+        assert_eq!(config.contact, "ops@example.org");
+    }
+
+    #[test]
+    fn musicbrainz_base_trailing_slash_stripped() {
+        let base = |v: &str| {
+            Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("MUSICBRAINZ_BASE_URL", v),
+            ]))
+            .map(|c| c.musicbrainz_base_url)
+        };
+        assert_eq!(
+            base("http://mb.lan:5000/ws/2/"),
+            Ok("http://mb.lan:5000/ws/2".into())
+        );
+        assert_eq!(
+            base("https://musicbrainz.org/ws/2"),
+            Ok("https://musicbrainz.org/ws/2".into())
+        );
+        for bad in ["mb.lan/ws/2", "ftp://mb.lan", "https://", "http:///"] {
+            assert_eq!(
+                base(bad),
+                Err(ConfigError::Invalid {
+                    name: "MUSICBRAINZ_BASE_URL",
+                    value: bad.into()
+                })
+            );
+        }
+    }
+
+    /// `AETHER_ITUNES_BASE_URL` (upstream `ITUNES_BASE_URL`, `podcastCatalog.ts:58-66`).
+    #[test]
+    fn itunes_base_default_and_override() {
+        let base = |pairs: &[(&str, &str)]| {
+            let mut all = vec![("DATABASE_URL", "postgres://x")];
+            all.extend_from_slice(pairs);
+            Config::from_lookup(lookup(&all)).map(|c| c.itunes_base_url)
+        };
+        assert_eq!(base(&[]), Ok("https://itunes.apple.com".into()));
+        assert_eq!(
+            base(&[("AETHER_ITUNES_BASE_URL", "http://127.0.0.1:4100/")]),
+            Ok("http://127.0.0.1:4100".into())
+        );
+        assert_eq!(
+            base(&[("AETHER_ITUNES_BASE_URL", "itunes.lan")]),
+            Err(ConfigError::Invalid {
+                name: "AETHER_ITUNES_BASE_URL",
+                value: "itunes.lan".into()
+            })
+        );
+    }
+
+    #[test]
+    fn fingerprint_workers_default_half_cores() {
+        let config = Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://x")])).unwrap();
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        assert_eq!(config.fingerprint_workers, (cores / 2).max(1));
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("AETHER_FINGERPRINT_WORKERS", " 3 "),
+        ]))
+        .unwrap();
+        assert_eq!(config.fingerprint_workers, 3);
+    }
+
+    #[test]
+    fn fingerprint_workers_zero_invalid() {
+        for bad in ["0", "-1", "two", "1.5"] {
+            assert_eq!(
+                Config::from_lookup(lookup(&[
+                    ("DATABASE_URL", "postgres://x"),
+                    ("AETHER_FINGERPRINT_WORKERS", bad)
+                ])),
+                Err(ConfigError::Invalid {
+                    name: "AETHER_FINGERPRINT_WORKERS",
+                    value: bad.into()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn acoustid_disabled_parses() {
+        let disabled = |extra: &[(&str, &str)]| {
+            let mut pairs = vec![("DATABASE_URL", "postgres://x")];
+            pairs.extend_from_slice(extra);
+            Config::from_lookup(lookup(&pairs))
+                .unwrap()
+                .acoustid_disabled
+        };
+        assert!(!disabled(&[]));
+        assert!(disabled(&[("ACOUSTID_DISABLED", "true")]));
+        assert!(disabled(&[("ACOUSTID_DISABLED", " TRUE ")]));
+        assert!(!disabled(&[("ACOUSTID_DISABLED", "false")]));
+        assert!(!disabled(&[("ACOUSTID_DISABLED", "1")]));
+        assert!(!disabled(&[("ACOUSTID_DISABLED", "yes")]));
+    }
+
+    #[test]
+    fn acoustid_client_key_is_read_trimmed_and_never_printed() {
+        let key = |extra: &[(&str, &str)]| {
+            let mut pairs = vec![("DATABASE_URL", "postgres://x")];
+            pairs.extend_from_slice(extra);
+            Config::from_lookup(lookup(&pairs)).unwrap()
+        };
+        assert_eq!(key(&[]).acoustid_client_key, None);
+        assert_eq!(
+            key(&[("ACOUSTID_CLIENT_KEY", "  ")]).acoustid_client_key,
+            None
+        );
+        let config = key(&[
+            ("ACOUSTID_CLIENT_KEY", " abc123XYZ "),
+            ("SESSION_SECRET", "sess-secret-value"),
+            ("SETTINGS_ENCRYPTION_KEY", "enc-secret-value"),
+        ]);
+        assert_eq!(config.acoustid_client_key.as_deref(), Some("abc123XYZ"));
+        let shown = format!("{config:?}");
+        for secret in ["abc123XYZ", "sess-secret-value", "enc-secret-value"] {
+            assert!(!shown.contains(secret), "{shown}");
+        }
+        assert!(
+            shown.contains("acoustid_client_key: Some(\"..\")"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn fanart_api_key_is_read_trimmed_and_never_printed() {
+        let key = |extra: &[(&str, &str)]| {
+            let mut pairs = vec![("DATABASE_URL", "postgres://x")];
+            pairs.extend_from_slice(extra);
+            Config::from_lookup(lookup(&pairs)).unwrap()
+        };
+        assert_eq!(key(&[]).fanart_api_key, None);
+        assert_eq!(key(&[("FANART_API_KEY", " ")]).fanart_api_key, None);
+        let config = key(&[("FANART_API_KEY", " fanart-secret-value ")]);
+        assert_eq!(
+            config.fanart_api_key.as_deref(),
+            Some("fanart-secret-value")
+        );
+        let shown = format!("{config:?} {config:#?}");
+        assert!(!shown.contains("fanart-secret-value"), "{shown}");
+        assert!(shown.contains("fanart_api_key: Some(\"..\")"), "{shown}");
+    }
+
+    #[test]
+    fn identify_invalid_fails() {
+        assert_eq!(
+            Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("AETHER_IDENTIFY", "maybe")
+            ])),
+            Err(ConfigError::Invalid {
+                name: "AETHER_IDENTIFY",
+                value: "maybe".into()
+            })
+        );
+    }
+
+    #[test]
+    fn watch_mode_parses() {
+        let mode = |v: &str| {
+            Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("AETHER_WATCH_MODE", v),
+            ]))
+            .unwrap()
+            .watch_mode
+        };
+        assert_eq!(mode("poll"), WatchMode::Poll);
+        assert_eq!(mode("off"), WatchMode::Off);
+        assert_eq!(mode("AUTO"), WatchMode::Auto);
+    }
+
+    #[test]
+    fn bad_watch_mode_is_invalid() {
+        assert_eq!(
+            Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("AETHER_WATCH_MODE", "sometimes")
+            ])),
+            Err(ConfigError::Invalid {
+                name: "AETHER_WATCH_MODE",
+                value: "sometimes".into()
+            })
+        );
+    }
+
+    #[test]
+    fn poll_secs_must_be_positive() {
+        for bad in ["0", "-1", "soon"] {
+            assert_eq!(
+                Config::from_lookup(lookup(&[
+                    ("DATABASE_URL", "postgres://x"),
+                    ("AETHER_WATCH_POLL_SECS", bad)
+                ])),
+                Err(ConfigError::Invalid {
+                    name: "AETHER_WATCH_POLL_SECS",
+                    value: bad.into()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn organize_target_and_cache_are_read() {
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("AETHER_ORGANIZE_TARGET", "/organized"),
+            ("AETHER_TRANSCODE_CACHE_MB", "512"),
+        ]))
+        .unwrap();
+        assert_eq!(config.organize_target, Some(PathBuf::from("/organized")));
+        assert_eq!(config.transcode_cache_mb, 512);
+    }
+
+    #[test]
+    fn public_url_trailing_slash_stripped() {
+        let url = |v: &str| {
+            Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("AETHER_PUBLIC_URL", v),
+            ]))
+            .unwrap()
+            .public_url
+        };
+        assert_eq!(
+            url("https://aether.example/"),
+            Some("https://aether.example".into())
+        );
+        assert_eq!(
+            url("http://10.0.0.2:3030//"),
+            Some("http://10.0.0.2:3030".into())
+        );
+        assert_eq!(
+            url("https://k.example/base"),
+            Some("https://k.example/base".into())
+        );
+        let unset = Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://x")])).unwrap();
+        assert_eq!(unset.public_url, None);
+    }
+
+    #[test]
+    fn public_url_without_scheme_invalid() {
+        for bad in ["aether.example", "ftp://aether.example", "/", "https://"] {
+            assert_eq!(
+                Config::from_lookup(lookup(&[
+                    ("DATABASE_URL", "postgres://x"),
+                    ("AETHER_PUBLIC_URL", bad)
+                ])),
+                Err(ConfigError::Invalid {
+                    name: "AETHER_PUBLIC_URL",
+                    value: bad.into()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn port_must_be_a_number() {
+        assert_eq!(
+            Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("PORT", "eighty")
+            ])),
+            Err(ConfigError::Invalid {
+                name: "PORT",
+                value: "eighty".into()
+            })
+        );
+    }
+
+    #[test]
+    fn allowed_origins_are_split_and_trimmed() {
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("ALLOWED_ORIGINS", " https://a.example , ,https://b.example"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            config.allowed_origins,
+            vec!["https://a.example", "https://b.example"]
+        );
+    }
+
+    #[test]
+    fn explicit_values_override_defaults() {
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("PORT", "3111"),
+            ("AETHER_BIND_HOST", "127.0.0.1"),
+            ("AETHER_DATA_DIR", "/srv/aether"),
+            ("AETHER_FRONTEND_DIR", "/srv/web"),
+            ("SESSION_SECRET", "s3cret"),
+        ]))
+        .unwrap();
+        assert_eq!(config.bind_addr, "127.0.0.1:3111".parse().unwrap());
+        assert_eq!(config.data_dir, PathBuf::from("/srv/aether"));
+        assert_eq!(config.frontend_dir, Some(PathBuf::from("/srv/web")));
+        assert_eq!(config.session_secret.as_deref(), Some("s3cret"));
+    }
+
+    #[test]
+    fn web_ssr_is_off_unless_a_build_dir_is_set() {
+        let config = Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://x")])).unwrap();
+        assert_eq!(config.web_build_dir, None);
+        assert_eq!(config.web_ssr_port, DEFAULT_WEB_SSR_PORT);
+
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("AETHER_WEB_BUILD_DIR", "/srv/aether/web-ssr/build"),
+            ("AETHER_WEB_SSR_PORT", "4555"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            config.web_build_dir,
+            Some(PathBuf::from("/srv/aether/web-ssr/build"))
+        );
+        assert_eq!(config.web_ssr_port, 4555);
+    }
+
+    #[test]
+    fn web_ssr_port_must_be_a_real_port() {
+        for bad in ["0", "70000", "x", "-1"] {
+            assert_eq!(
+                Config::from_lookup(lookup(&[
+                    ("DATABASE_URL", "postgres://x"),
+                    ("AETHER_WEB_SSR_PORT", bad),
+                ])),
+                Err(ConfigError::Invalid {
+                    name: "AETHER_WEB_SSR_PORT",
+                    value: bad.into()
+                }),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn clap_runtime_defaults_to_cpu_and_parses_overrides() {
+        let base = ("DATABASE_URL", "postgres://x");
+        let config = Config::from_lookup(lookup(&[base])).unwrap();
+        assert_eq!(config.clap_runtime, ClapRuntimeEnv::default());
+        assert_eq!(config.clap_runtime.provider, OnnxProvider::Cpu);
+        let config = Config::from_lookup(lookup(&[
+            base,
+            ("AETHER_ONNX_PROVIDER", " CUDA "),
+            ("AETHER_CUDA_DEVICE_ID", "1"),
+            ("AETHER_CUDA_LIB_DIR", "/opt/cuda12"),
+            ("AETHER_CUDA_MEM_LIMIT_MIB", "2048"),
+            ("AETHER_CLAP_POOL_SIZE", "2"),
+            ("AETHER_CLAP_INTRA_THREADS", "4"),
+            ("AETHER_EMBEDDING_WORKERS", "8"),
+            ("AETHER_ONNX_HOST_BUDGET_MIB", "8192"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            config.clap_runtime,
+            ClapRuntimeEnv {
+                provider: OnnxProvider::Cuda,
+                cuda_device_id: Some(1),
+                cuda_lib_dir: Some("/opt/cuda12".into()),
+                cuda_mem_limit_mib: Some(2048),
+                pool_size: Some(2),
+                intra_threads: Some(4),
+                workers: Some(8),
+                host_budget_mib: Some(8192),
+            }
+        );
+        assert!(config.clap_runtime.ignored_cuda_settings().is_empty());
+        for (name, bad) in [
+            ("AETHER_ONNX_PROVIDER", "rocm"),
+            ("AETHER_CUDA_DEVICE_ID", "-1"),
+            ("AETHER_CUDA_LIB_DIR", "relative/dir"),
+            ("AETHER_CUDA_MEM_LIMIT_MIB", "0"),
+            ("AETHER_CUDA_MEM_LIMIT_MIB", "1048577"),
+            ("AETHER_CUDA_MEM_LIMIT_MIB", "18446744073709551615"),
+            ("AETHER_CLAP_POOL_SIZE", "9"),
+            ("AETHER_CLAP_POOL_SIZE", "0"),
+            ("AETHER_CLAP_INTRA_THREADS", "17"),
+            ("AETHER_EMBEDDING_WORKERS", "21"),
+            ("AETHER_ONNX_HOST_BUDGET_MIB", "x"),
+            ("AETHER_ONNX_HOST_BUDGET_MIB", "65537"),
+        ] {
+            let err = Config::from_lookup(lookup(&[base, (name, bad)])).unwrap_err();
+            assert!(
+                matches!(&err, ConfigError::OutOfRange { name: n, .. } if *n == name),
+                "{name}={bad}: {err:?}"
+            );
+            assert!(err.to_string().contains("allowed"), "{err}");
+        }
+    }
+
+    #[test]
+    fn clap_runtime_rejects_combinations_that_cannot_be_admitted() {
+        let base = ("DATABASE_URL", "postgres://x");
+        let err = |pairs: &[(&str, &str)]| {
+            let mut all = vec![base];
+            all.extend_from_slice(pairs);
+            match Config::from_lookup(lookup(&all)) {
+                Err(ConfigError::Combination(message)) => message,
+                other => panic!("{pairs:?}: {other:?}"),
+            }
+        };
+        let threads = err(&[
+            ("AETHER_CLAP_POOL_SIZE", "4"),
+            ("AETHER_CLAP_INTRA_THREADS", "16"),
+            ("AETHER_ONNX_HOST_BUDGET_MIB", "16384"),
+        ]);
+        assert!(
+            threads.contains("4 × 16 = 64") && threads.contains("48"),
+            "{threads}"
+        );
+        let budget = err(&[("AETHER_CLAP_POOL_SIZE", "2")]);
+        assert!(
+            budget.contains("4140") && budget.contains("4096"),
+            "{budget}"
+        );
+        assert!(budget.contains("1..=65536"), "{budget}");
+        let budget = err(&[("AETHER_ONNX_HOST_BUDGET_MIB", "2048")]);
+        assert!(budget.contains("3040"), "{budget}");
+        // Admissible combinations pass.
+        for ok in [
+            vec![
+                ("AETHER_CLAP_POOL_SIZE", "3"),
+                ("AETHER_CLAP_INTRA_THREADS", "16"),
+                ("AETHER_ONNX_HOST_BUDGET_MIB", "8192"),
+            ],
+            vec![
+                ("AETHER_CLAP_POOL_SIZE", "2"),
+                ("AETHER_ONNX_HOST_BUDGET_MIB", "4140"),
+            ],
+            vec![("AETHER_CLAP_INTRA_THREADS", "16")],
+        ] {
+            let mut all = vec![base];
+            all.extend(ok.iter().copied());
+            assert!(Config::from_lookup(lookup(&all)).is_ok(), "{ok:?}");
+        }
+    }
+
+    #[test]
+    fn cuda_settings_with_the_cpu_provider_are_reported_as_ignored() {
+        let base = ("DATABASE_URL", "postgres://x");
+        let config = Config::from_lookup(lookup(&[
+            base,
+            ("AETHER_CUDA_LIB_DIR", "/opt/cuda12"),
+            ("AETHER_CUDA_MEM_LIMIT_MIB", "512"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            config.clap_runtime.ignored_cuda_settings(),
+            ["AETHER_CUDA_LIB_DIR", "AETHER_CUDA_MEM_LIMIT_MIB"]
+        );
+        let config = Config::from_lookup(lookup(&[base, ("AETHER_CUDA_DEVICE_ID", "0")])).unwrap();
+        assert_eq!(
+            config.clap_runtime.ignored_cuda_settings(),
+            ["AETHER_CUDA_DEVICE_ID"]
+        );
+    }
+}

@@ -1,0 +1,434 @@
+use std::future::IntoFuture;
+use std::time::Duration;
+
+use aether_api::AppState;
+use aether_core::config::Config;
+use aether_core::secrets;
+use anyhow::Context;
+use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
+use tracing_subscriber::EnvFilter;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let config = Config::from_env()?;
+    // Upstream's `silent` has no EnvFilter equivalent; `off` is the same thing.
+    let level = if config.log_level == "silent" {
+        "off"
+    } else {
+        &config.log_level
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::new(format!("{level},tower_http=info")))
+        .init();
+
+    // Before anything starts: a bad expression must fail startup, not the first fire.
+    let sync_cron = config
+        .library_sync_cron
+        .as_deref()
+        .map(|expr| {
+            aether_jobs::schedule::Cron::parse(expr).map_err(|e| {
+                anyhow::anyhow!(
+                    "invalid AETHER_LIBRARY_SYNC_CRON {expr:?}: expected 5 cron fields or `off` ({e})"
+                )
+            })
+        })
+        .transpose()?;
+
+    let stop = CancellationToken::new();
+    // First, so a bad build or a busy port fails the start with nothing else running. The
+    // server and the SSR task are one unit: see `web_ssr` for the crash-and-restart policy.
+    let mut web_ssr = match &config.web_build_dir {
+        Some(dir) => Some(
+            aether_server::web_ssr::WebSsr::start(
+                dir,
+                config.web_ssr_port,
+                format!("http://127.0.0.1:{}", config.bind_addr.port()),
+                stop.clone(),
+            )
+            .await
+            .context("starting the embedded aether-web SSR server")?,
+        ),
+        None => None,
+    };
+
+    let secrets = secrets::load_or_generate(
+        &config.data_dir,
+        config.session_secret.clone(),
+        config.settings_encryption_key.clone(),
+    )?;
+    let pool = aether_db::connect(&config.database_url)
+        .await
+        .context("connecting to Postgres")?;
+    aether_db::MIGRATOR
+        .run(&pool)
+        .await
+        .context("running migrations")?;
+
+    let library_root = aether_library::scan::effective_root(&pool, &config.music_path)
+        .await
+        .context("reading the library root from system settings")?;
+    info!(root = %library_root.display(), "library root");
+    let shutdown = stop;
+    // One handle for the HTTP side, the job worker and the watcher: switching the library to
+    // an organized copy changes it for all three.
+    let snapshot_root = library_root.clone();
+    let library_root = aether_library::scan::LibraryRoot::new(library_root);
+    let cipher = aether_core::cipher::Cipher::from_secret(&secrets.settings_encryption_key);
+    let kv = aether_db::settings_kv::load(&pool, &cipher)
+        .await
+        .context("reading the key-value settings")?;
+    let identify = aether_core::identify::IdentifySwitch::new(
+        config.identify_env_off,
+        kv.auto_enrich_metadata,
+    );
+    // The one outbound HTTP client (spec §5): pauses survive restarts.
+    let mut net_config = aether_net::NetConfig::production(
+        env!("CARGO_PKG_VERSION"),
+        &config.contact,
+        &config.musicbrainz_base_url,
+    );
+    net_config.bases.itunes = config.itunes_base_url.clone();
+    // Capture runs only (`tools/capture-api-fixtures.sh`): loopback feed/Apple stand-ins.
+    net_config.private_image_allow = aether_net::loopback_allow(
+        net_config.deny_real,
+        std::env::var("AETHER_NET_ALLOW_LOOPBACK").ok().as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    let net = aether_net::Net::new(net_config, pool.clone(), identify.clone());
+    net.load_pauses()
+        .await
+        .context("reading the source pauses")?;
+    net.set_concurrency(kv.enrichment_concurrency);
+    // Fingerprinting needs ffmpeg; AcoustID can be switched off by env (spec §9.4).
+    let ffmpeg = aether_ident::chromaprint::ffmpeg_available().await;
+    if !ffmpeg {
+        warn!("ffmpeg not found: fingerprinting is unavailable");
+    }
+    let fpcalc = ffmpeg && !config.acoustid_disabled;
+    let state = AppState::with_shutdown(pool.clone(), &secrets.session_secret, shutdown.clone())
+        .with_cipher(cipher)
+        .with_identify(identify)
+        .with_net(std::sync::Arc::new(net))
+        .with_data_dir(config.data_dir.clone())
+        .with_shared_library_root(library_root.clone())
+        .with_organize_target(config.organize_target.clone())
+        .with_public_url(config.public_url.clone())
+        .with_fpcalc(fpcalc)
+        .with_fanart_env_key(config.fanart_api_key.clone())
+        .with_artwork_cache_mb(config.artwork_cache_mb)
+        .with_transcoder(aether_library::transcode::Transcoder::new(
+            config.data_dir.join("transcode"),
+            config.transcode_cache_mb * 1024 * 1024,
+        ))
+        .with_library_services(
+            aether_api::LibraryServices::new(config.watch_mode).with_sync_cron(sync_cron.clone()),
+        );
+    let library_ctx = aether_library::scan::LibraryCtx {
+        pool: pool.clone(),
+        root: library_root,
+        events: state.events.clone(),
+        data_dir: config.data_dir.clone(),
+        ignore: state.library.ignore.clone(),
+    };
+    let clap = &config.clap_runtime;
+    if let Some(mib) = clap.host_budget_mib {
+        aether_ml::onnx::set_host_budget_bytes(mib * 1024 * 1024);
+    }
+    let ignored = clap.ignored_cuda_settings();
+    if !ignored.is_empty() {
+        warn!(
+            ?ignored,
+            "CUDA settings have no effect with AETHER_ONNX_PROVIDER=cpu"
+        );
+    }
+    let provider = match clap.provider {
+        aether_core::config::OnnxProvider::Cpu => aether_ml::onnx::ExecutionProvider::Cpu,
+        aether_core::config::OnnxProvider::Cuda => aether_ml::onnx::ExecutionProvider::Cuda,
+    };
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let resolve = |provider| {
+        aether_ident::EmbeddingParallelism::resolve(
+            provider,
+            cores,
+            clap.pool_size,
+            clap.intra_threads,
+            clap.workers,
+        )
+    };
+    let parallelism = resolve(provider);
+    // A CUDA request that falls back runs with the CPU's parallelism (the CUDA shape does not
+    // fit the CPU host budget).
+    let cpu_fallback = (provider == aether_ml::onnx::ExecutionProvider::Cuda)
+        .then(|| resolve(aether_ml::onnx::ExecutionProvider::Cpu));
+    let analysis = aether_ident::AnalysisConfig {
+        model_dir: config.musicnn_model_dir.clone(),
+        disabled: config.disable_musicnn,
+        workers: aether_ident::AnalysisConfig::resolve_workers(config.analysis_workers, cores),
+        ..Default::default()
+    };
+    if config
+        .analysis_workers
+        .is_some_and(|asked| asked > analysis.workers)
+    {
+        warn!(
+            asked = config.analysis_workers,
+            cores,
+            analysis_workers = analysis.workers,
+            "AETHER_ANALYSIS_WORKERS is above the machine's cores; clamped"
+        );
+    }
+    // Every embedding and analysis worker holds one input snapshot while it decodes.
+    let max_workers = parallelism
+        .workers
+        .max(cpu_fallback.map_or(0, |p| p.workers));
+    let snapshot_concurrent = aether_ident::snapshot_concurrency(
+        config.snapshot_max_concurrent,
+        max_workers,
+        analysis.workers,
+    );
+    if snapshot_concurrent < max_workers + analysis.workers {
+        warn!(
+            snapshot_concurrent,
+            embedding_workers = max_workers,
+            analysis_workers = analysis.workers,
+            "AETHER_SNAPSHOT_MAX_CONCURRENT is below the worker count; workers wait for snapshot slots"
+        );
+    }
+    info!(
+        ?provider,
+        ?parallelism,
+        ?cpu_fallback,
+        snapshot_concurrent,
+        analysis_workers = analysis.workers,
+        "CLAP audio runtime configuration"
+    );
+    let mut embedding = aether_ident::EmbeddingConfig {
+        model_dir: config.clap_model_dir.clone(),
+        pool_size: parallelism.pool_size,
+        intra_threads: Some(parallelism.intra_threads),
+        workers: parallelism.workers,
+        cpu_fallback,
+        provider: aether_ml::onnx::ProviderConfig {
+            provider,
+            cuda_device_id: clap.cuda_device_id.unwrap_or(0),
+            cuda_lib_dir: clap.cuda_lib_dir.clone(),
+            // Bounded to 1 TiB by the configuration, so this never overflows on 64-bit.
+            cuda_mem_limit_bytes: clap
+                .cuda_mem_limit_mib
+                .map(|mib| {
+                    usize::try_from(mib * 1024 * 1024)
+                        .context("AETHER_CUDA_MEM_LIMIT_MIB does not fit this platform")
+                })
+                .transpose()?,
+            cpu_fallback: None,
+        },
+        disabled: config.disable_clap,
+        snapshot_dir: config.snapshot_dir.clone(),
+        snapshot_limits: aether_ident::SnapshotLimits {
+            max_bytes: config
+                .snapshot_max_bytes
+                .unwrap_or(aether_ident::SnapshotLimits::default().max_bytes),
+            max_concurrent: snapshot_concurrent,
+        },
+        ..Default::default()
+    };
+    // Fail fast on a bad snapshot directory (absent, not private, `..`, other mount than the
+    // library root): the server still starts, but audio embedding is blocked (CLAP text is not) and the
+    // capability status says why, instead of every attempt failing later.
+    match &config.snapshot_dir {
+        Some(dir) => {
+            if let Err(error) = aether_ident::stages::embedding::check_snapshot_setup(
+                &mut embedding,
+                &snapshot_root,
+            ) {
+                error!(
+                    snapshot_dir = %dir.display(),
+                    root = %snapshot_root.display(),
+                    %error,
+                    "invalid snapshot setup; audio embedding blocked (CLAP text unaffected)"
+                );
+            } else {
+                info!(snapshot_dir = %dir.display(), "snapshot directory validated");
+            }
+        }
+        None => {
+            warn!("AETHER_SNAPSHOT_DIR is not set: audio embedding is off and reported unavailable")
+        }
+    }
+    // Built from the same pieces the HTTP side holds (spec §10.6). `fingerprinting` is the
+    // `fpcalc` feature (ffmpeg present, AcoustID not disabled, spec §9.4).
+    let ident_ctx = aether_ident::IdentCtx {
+        pool: pool.clone(),
+        net: state.net.clone(),
+        cipher: state.cipher.clone(),
+        events: state.events.clone(),
+        library: library_ctx.clone(),
+        settings: state.settings.clone(),
+        config: aether_ident::IdentConfig {
+            fingerprinting: state.fpcalc,
+            fingerprint_workers: config.fingerprint_workers,
+            acoustid_disabled: config.acoustid_disabled,
+            acoustid_env_key: config.acoustid_client_key.clone(),
+            fanart_env_key: state.fanart_env_key.clone(),
+            artist_timeout: aether_ident::artist::ARTIST_TIMEOUT,
+            embedding,
+            analysis,
+            vibe: aether_ident::VibeConfig {
+                asset_dir: config.vibe_asset_dir.clone(),
+                exact_max: config.vibe_exact_max,
+            },
+        },
+        last_cycle: Default::default(),
+        progress_events: state.progress_events.clone(),
+        embedding_runtime: Default::default(),
+        analysis_runtime: Default::default(),
+        acoustid_hold: Default::default(),
+    };
+    info!(config = ?ident_ctx.config, "identification");
+    let clap_status = aether_ident::stages::embedding::initialize(&ident_ctx)
+        .await
+        .context("initializing CLAP blocking worker")?;
+    info!(
+        capabilities = ?clap_status.capabilities,
+        clap_audio_provider = ?aether_ident::stages::embedding::audio_provider(&ident_ctx),
+        clap_audio_workers = aether_ident::stages::embedding::effective_workers(&ident_ctx),
+        "ML capability status"
+    );
+    // The vibe assets are optional: a missing or unpinned file turns the dependent capability off, never the server.
+    let vibe = aether_ident::stages::vibe_assets::initialize(&ident_ctx)
+        .await
+        .context("loading the vibe assets")?;
+    info!(capabilities = ?vibe.report.capabilities, "vibe asset status");
+    let mut registry = aether_server::jobs::Registry::new();
+    registry.register_library(library_ctx.clone());
+    let state = state.with_ident(ident_ctx.clone());
+    // A moods change drops the cached mixes that depend on the moods (upstream `dropCachedMixes(moodsOnly)`). No
+    // receiver while the mood heads are unavailable: then the moods never change. Stopped by the shutdown token.
+    if let Some(changes) = aether_ident::stages::moods::subscribe_changes(&ident_ctx).await {
+        aether_mixes::store::spawn_mood_drop(state.listeners.clone(), changes, shutdown.clone());
+    }
+    // Core and then full enrichment complete drop every cached mix, once each per process (upstream `clearMixCache`,
+    // D-260). Subscribed before the enrich worker starts, so no signal is missed. Stopped by the shutdown token.
+    aether_mixes::store::spawn_full_drop(
+        state.listeners.clone(),
+        ident_ctx.progress_events.subscribe_mix_clears(),
+        shutdown.clone(),
+    );
+    // The day's radio covers are picked ahead for recent listeners (upstream's `radio-covers` cycle: first after 60 s,
+    // then 5 min after each run); stopped by the shutdown token.
+    aether_api::radio::spawn_radio_covers(state.clone(), shutdown.clone());
+    registry.register_autotag(ident_ctx.clone());
+    // The mood snapshot follows the statistics between cycles (every 30 s); stopped by the shutdown token.
+    let mood_snapshots =
+        aether_ident::stages::moods::spawn_refresher(ident_ctx.clone(), shutdown.clone());
+    registry.register_enrich(ident_ctx);
+    let podcast_ctx = aether_podcast::ctx::PodcastCtx {
+        pool: pool.clone(),
+        net: state.net.clone(),
+        data_dir: config.data_dir.clone(),
+    };
+    registry.register_podcast_cache(podcast_ctx.clone());
+    registry.register_podcast_refresh(podcast_ctx.clone());
+    // Before any worker starts: recover library jobs a dead process left running, then queue
+    // the safety-net reconcile (spec §4.4).
+    aether_server::jobs::prepare_library_queue(&pool)
+        .await
+        .context("preparing the library job queue")?;
+    // Likewise for the coordinator: requeue its cycle, reset `enriching` artists, kick.
+    aether_ident::coordinator::prepare(&pool)
+        .await
+        .context("preparing the enrichment queue")?;
+    // And for the autotagger: requeue its searches, settle albums left `searching`.
+    aether_server::jobs::prepare_autotag_queue(&pool)
+        .await
+        .context("preparing the autotag queue")?;
+    // Podcast startup work (upstream `index.ts:553-569`), in the background so it never holds
+    // up the start: the episode-cache cleanup and then the one-off length measuring, and the
+    // category fill-in for shows Apple knows that have none yet.
+    // A panic in it is logged rather than lost with a dropped handle.
+    let podcast_startup = aether_server::jobs::spawn_podcast_startup(podcast_ctx.clone());
+    tokio::spawn(async move {
+        if let Err(error) = podcast_startup.await {
+            error!(%error, "podcast startup work did not finish");
+        }
+    });
+    let workers = aether_server::jobs::spawn_all(&pool, registry, shutdown.clone());
+    // Stopped by the shutdown token. With `AETHER_WATCH_MODE=off` this only records the status.
+    let watcher = aether_library::watch::spawn(
+        library_ctx,
+        config.watch_mode,
+        config.watch_poll_secs,
+        state.library.ignore.clone(),
+        state.library.watch_status.clone(),
+        shutdown.clone(),
+    );
+    // Always runs: the safety-net reconcile when enabled (D-091), the cache prune, the
+    // enrichment backstop kick, and daily podcast-cache cleanup (04:00 UTC). Stopped by the
+    // shutdown token.
+    let mut schedule = aether_server::schedule_entries(&config, sync_cron);
+    schedule.extend(aether_server::podcast_schedule_entries(podcast_ctx));
+    let scheduler = schedule
+        .into_iter()
+        .fold(
+            aether_jobs::schedule::Scheduler::new(),
+            |s, (name, cron, f)| s.add(name, cron, f),
+        )
+        .spawn(pool.clone(), shutdown.clone());
+    let app = aether_server::app_with_web(
+        state,
+        &config,
+        web_ssr.as_ref().map(|ssr| ssr.proxy.clone()),
+    );
+    let listener = TcpListener::bind(config.bind_addr)
+        .await
+        .with_context(|| format!("binding {}", config.bind_addr))?;
+    info!(addr = %config.bind_addr, frontend = ?config.frontend_dir, "aether listening");
+    let signalled = shutdown.clone();
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        // Ends SSE streams and anything else holding a connection open.
+        signalled.cancel();
+    })
+    .into_future();
+    tokio::pin!(server);
+    let served =
+        aether_server::web_ssr::serve(&mut server, web_ssr.as_mut(), &shutdown, SHUTDOWN_GRACE)
+            .await;
+    // Runs whether serving ended by signal or by error, before the error is returned.
+    shutdown.cancel();
+    watcher.join().await;
+    let _ = scheduler.await;
+    let _ = mood_snapshots.await;
+    aether_server::jobs::drain(workers, SHUTDOWN_GRACE).await;
+    served?;
+    Ok(())
+}
+
+/// How long in-flight requests get to finish after a shutdown signal.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("SIGTERM handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    info!("shutting down");
+}

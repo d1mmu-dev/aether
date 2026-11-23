@@ -80,11 +80,11 @@ After separate authorization and per-artifact rights approval:
 4. Run the ignored test (no SQLx setup and no database connections/writes):
 
    ```sh
-   KIMA_CLAP_MODEL_DIR=<private-music-model-dir> \
-   KIMA_ZERO_SHOT_REFERENCE=<private-reference.json> \
-   KIMA_ZERO_SHOT_TOKENIZER_MANIFEST=<trusted-tokenizer-manifest.json> \
-   KIMA_ZERO_SHOT_LICENSED_PRIVATE_USE=1 \
-   cargo test -j2 -p kima-ident --test readings_real \
+   AETHER_CLAP_MODEL_DIR=<private-music-model-dir> \
+   AETHER_ZERO_SHOT_REFERENCE=<private-reference.json> \
+   AETHER_ZERO_SHOT_TOKENIZER_MANIFEST=<trusted-tokenizer-manifest.json> \
+   AETHER_ZERO_SHOT_LICENSED_PRIVATE_USE=1 \
+   cargo test -j2 -p aether-ident --test readings_real \
      real_music_readings_match_upstream_python_on_twenty_tracks -- --ignored --exact
    ```
 

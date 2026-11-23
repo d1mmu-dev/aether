@@ -47,6 +47,6 @@ for seed in [1,7,23,49,101]:
 fixture = dict(synthetic=synthetic, provenance='c7527577:services/audio-analyzer-clap/analyzer.py; independent stdlib math transcription',
     source_sha256=hashlib.sha256(src.encode()).hexdigest(), groups=groups,
     prompt_text_sha256=hashlib.sha256(text.encode()).hexdigest(), softmax=cases, platt=platt)
-path = pathlib.Path(__file__).resolve().parents[1] / 'crates/kima-vibe/tests/fixtures/zero-shot-reference.json'
+path = pathlib.Path(__file__).resolve().parents[1] / 'crates/aether-vibe/tests/fixtures/zero-shot-reference.json'
 path.write_text(json.dumps(fixture, indent=2) + '\n')
 print(path, fixture['prompt_text_sha256'])

@@ -1,9 +1,9 @@
-// Regenerates crates/kima-vibe/tests/fixtures/ts-golden-*.json from upstream's pure TypeScript modules.
+// Regenerates crates/aether-vibe/tests/fixtures/ts-golden-*.json from upstream's pure TypeScript modules.
 //
 //   node tools/vibe-goldens/run.mjs [outDir]
 //
 // Environment: UPSTREAM = path of a kima-hub git checkout that CONTAINS c7527577d925b20f5adf410c7fd4e0c8ac250f69
-// (default KIMA_HUB_REFERENCE, environment or private tools config). The modules are read from that commit's git
+// (default AETHER_UPSTREAM_REFERENCE, environment or private tools config). The modules are read from that commit's git
 // objects (./upstream.mjs), never from the checkout's working tree, so a freshly pulled reference cannot move the
 // goldens off the pin. Node >= 23.6 (native TypeScript type stripping; no tsx).
 //
@@ -18,7 +18,7 @@ import { pathToFileURL } from "node:url";
 import { readPinned } from "./upstream.mjs";
 
 const here = path.dirname(new URL(import.meta.url).pathname);
-const out = path.resolve(process.argv[2] ?? path.join(here, "../../crates/kima-vibe/tests/fixtures"));
+const out = path.resolve(process.argv[2] ?? path.join(here, "../../crates/aether-vibe/tests/fixtures"));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-goldens-"));
 
 for (const name of ["exactMath", "formula", "mapLayout", "mapCompute", "neighbours"]) {

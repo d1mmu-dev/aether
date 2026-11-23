@@ -7,32 +7,32 @@ jobs:
       postgres:
         image: pgvector/pgvector:pg17
         env:
-          POSTGRES_USER: kima
-          POSTGRES_PASSWORD: kima
-          POSTGRES_DB: kima
+          POSTGRES_USER: aether
+          POSTGRES_PASSWORD: aether
+          POSTGRES_DB: aether
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U kima"
+          --health-cmd "pg_isready -U aether"
           --health-interval 5s --health-timeout 5s --health-retries 10
       # Same image under the C locale: the fold tests must hold under both.
       postgres-c:
         image: pgvector/pgvector:pg17
         env:
-          POSTGRES_USER: kima
-          POSTGRES_PASSWORD: kima
-          POSTGRES_DB: kima
+          POSTGRES_USER: aether
+          POSTGRES_PASSWORD: aether
+          POSTGRES_DB: aether
           POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
         ports: ["5433:5432"]
         options: >-
-          --health-cmd "pg_isready -U kima"
+          --health-cmd "pg_isready -U aether"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      DATABASE_URL: postgres://kima:kima@localhost:5432/kima
+      DATABASE_URL: postgres://aether:aether@localhost:5432/aether
       SQLX_OFFLINE: "true"
-      ORT_DYLIB_PATH: /opt/kima/ort/libonnxruntime.so.1.22.0
+      ORT_DYLIB_PATH: /opt/aether/ort/libonnxruntime.so.1.22.0
       CI: "true"
-      # No test reaches the real network: kima-net panics on any host but this machine.
-      KIMA_NET_DENY_REAL: "1"
+      # No test reaches the real network: aether-net panics on any host but this machine.
+      AETHER_NET_DENY_REAL: "1"
       # The workspace test build outgrew the runner's free disk (run 44370344775 died with
       # "No space left on device"). Full debuginfo is the bulk of target/; line tables keep backtraces.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -51,29 +51,29 @@ jobs:
       - name: Reflink filesystem for the input-snapshot tests
         run: |
           sudo apt-get install -y xfsprogs
-          img="$RUNNER_TEMP/kima-reflink.img"
+          img="$RUNNER_TEMP/aether-reflink.img"
           truncate -s 2G "$img"
           mkfs.xfs -q -m reflink=1 "$img"
-          sudo mkdir -p /mnt/kima-reflink
-          sudo mount -o loop "$img" /mnt/kima-reflink
-          sudo chown "$(id -u):$(id -g)" /mnt/kima-reflink
-          echo probe > /mnt/kima-reflink/probe
-          cp --reflink=always /mnt/kima-reflink/probe /mnt/kima-reflink/probe.clone
-          rm /mnt/kima-reflink/probe /mnt/kima-reflink/probe.clone
-          findmnt /mnt/kima-reflink
-          echo "KIMA_TEST_REFLINK_DIR=/mnt/kima-reflink" >> "$GITHUB_ENV"
+          sudo mkdir -p /mnt/aether-reflink
+          sudo mount -o loop "$img" /mnt/aether-reflink
+          sudo chown "$(id -u):$(id -g)" /mnt/aether-reflink
+          echo probe > /mnt/aether-reflink/probe
+          cp --reflink=always /mnt/aether-reflink/probe /mnt/aether-reflink/probe.clone
+          rm /mnt/aether-reflink/probe /mnt/aether-reflink/probe.clone
+          findmnt /mnt/aether-reflink
+          echo "AETHER_TEST_REFLINK_DIR=/mnt/aether-reflink" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - name: Build pinned patched dynamic libsoxr (private prefix)
         run: |
           sudo apt-get install -y gcc make cmake patch curl xz-utils binutils libgomp1
-          sh scripts/build-soxr.sh "$RUNNER_TEMP/kima-soxr"
-          printf 'LIBRARY_PATH=%s/lib\nLD_LIBRARY_PATH=%s/lib\n' "$RUNNER_TEMP/kima-soxr" "$RUNNER_TEMP/kima-soxr" >> "$GITHUB_ENV"
+          sh scripts/build-soxr.sh "$RUNNER_TEMP/aether-soxr"
+          printf 'LIBRARY_PATH=%s/lib\nLD_LIBRARY_PATH=%s/lib\n' "$RUNNER_TEMP/aether-soxr" "$RUNNER_TEMP/aether-soxr" >> "$GITHUB_ENV"
       - name: Provision verified CPU ONNX Runtime (linux/amd64)
         run: |
-          sudo install -d -o root -g root -m 755 /opt/kima
-          sudo sh scripts/acquire-ort.sh /opt/kima/ort
+          sudo install -d -o root -g root -m 755 /opt/aether
+          sudo sh scripts/acquire-ort.sh /opt/aether/ort
           python3 scripts/test-ort-packaging.py
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
@@ -86,15 +86,15 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Native cold-process and independent waveform regressions, both feature sets
         run: |
-          cargo test --locked -p kima-ml --test clap_cold_start --test clap_prepare
-          cargo test --locked -p kima-ml --features pg-publish --test clap_cold_start --test clap_prepare
+          cargo test --locked -p aether-ml --test clap_cold_start --test clap_prepare
+          cargo test --locked -p aether-ml --features pg-publish --test clap_cold_start --test clap_prepare
           python3 - <<'PY'
           import json, os, subprocess
           # Ask Cargo where the test binaries are: since Cargo's build-dir layout (stable 2026-11) they
           # are no longer under target/debug/deps.
           for features in ([], ['--features', 'pg-publish']):
               out = subprocess.run(
-                  ['cargo', 'test', '--locked', '-p', 'kima-ml', *features, '--test', 'clap_cold_start',
+                  ['cargo', 'test', '--locked', '-p', 'aether-ml', *features, '--test', 'clap_cold_start',
                    '--test', 'clap_prepare', '--no-run', '--message-format=json'],
                   check=True, capture_output=True, text=True).stdout
               found = {}
@@ -104,7 +104,7 @@ jobs:
                       found[msg['target']['name']] = msg['executable']
               assert set(found) == {'clap_cold_start', 'clap_prepare'}, found
               for binary in found.values():
-                  subprocess.run(['sh', 'scripts/check-soxr-linkage.sh', binary, os.environ['RUNNER_TEMP'] + '/kima-soxr'], check=True)
+                  subprocess.run(['sh', 'scripts/check-soxr-linkage.sh', binary, os.environ['RUNNER_TEMP'] + '/aether-soxr'], check=True)
           PY
       # Failing test lines also go out as annotations, readable without log access.
       - run: |
@@ -113,61 +113,61 @@ jobs:
             grep -A2 -E 'panicked at|FAILED|^---- |left:|right:|Error' test.log | head -80 | sed 's/^/::error::/'
             exit 1
           }
-      - run: DATABASE_URL=postgres://kima:kima@localhost:5433/kima cargo test -p kima-api --test login_limit
-      - run: DATABASE_URL=postgres://kima:kima@localhost:5433/kima cargo test -p kima-subsonic --test auth
-  # kima-web is the only frontend. Next.js is in no CI path and the repository no longer bundles it: visual
-  # comparisons use an external kima-hub checkout through tools/run-kima-web-visual.sh (D-180).
-  kima-web:
+      - run: DATABASE_URL=postgres://aether:aether@localhost:5433/aether cargo test -p aether-api --test login_limit
+      - run: DATABASE_URL=postgres://aether:aether@localhost:5433/aether cargo test -p aether-subsonic --test auth
+  # aether-web is the only frontend. Next.js is in no CI path and the repository no longer bundles it: visual
+  # comparisons use an external kima-hub checkout through tools/run-aether-web-visual.sh (D-180).
+  aether-web:
     runs-on: ubuntu-latest
     services:
       postgres:
         image: pgvector/pgvector:pg17
         env:
-          POSTGRES_USER: kima
-          POSTGRES_PASSWORD: kima
-          POSTGRES_DB: kima
+          POSTGRES_USER: aether
+          POSTGRES_PASSWORD: aether
+          POSTGRES_DB: aether
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U kima"
+          --health-cmd "pg_isready -U aether"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      DATABASE_URL: postgres://kima:kima@localhost:5432/kima
+      DATABASE_URL: postgres://aether:aether@localhost:5432/aether
       SQLX_OFFLINE: "true"
-      KIMA_NET_DENY_REAL: "1"
+      AETHER_NET_DENY_REAL: "1"
     steps:
       - uses: actions/checkout@v5
-      # kima-web builds on stable and nightly (see crates/kima-web/README.md); nightly keeps parity with dev.
+      # aether-web builds on stable and nightly (see crates/aether-web/README.md); nightly keeps parity with dev.
       - uses: dtolnay/rust-toolchain@nightly
         with:
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # kima-server links kima-ml (via kima-ident), which needs the pinned dynamic libsoxr.
+      # aether-server links aether-ml (via aether-ident), which needs the pinned dynamic libsoxr.
       - name: Build pinned patched dynamic libsoxr (private prefix)
         run: |
           sudo apt-get install -y gcc make cmake patch curl xz-utils binutils libgomp1
-          sh scripts/build-soxr.sh "$RUNNER_TEMP/kima-soxr"
-          printf 'LIBRARY_PATH=%s/lib\nLD_LIBRARY_PATH=%s/lib\n' "$RUNNER_TEMP/kima-soxr" "$RUNNER_TEMP/kima-soxr" >> "$GITHUB_ENV"
+          sh scripts/build-soxr.sh "$RUNNER_TEMP/aether-soxr"
+          printf 'LIBRARY_PATH=%s/lib\nLD_LIBRARY_PATH=%s/lib\n' "$RUNNER_TEMP/aether-soxr" "$RUNNER_TEMP/aether-soxr" >> "$GITHUB_ENV"
       # wasm-opt (binaryen) is required by `vertigo build`; apt's binaryen is too old, use the release.
       - name: Install wasm-opt
         run: |
           curl -sL https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz | tar xz -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/binaryen-version_133/bin" >> "$GITHUB_PATH"
       - run: tools/verify-wasm-toolchain.sh
-      - run: cargo fmt -p kima-web --check
-      # Proves kima-api-types stays wasm-buildable.
-      - run: cargo build -p kima-api-types --target wasm32-unknown-unknown
-      - run: cargo clippy -p kima-web --all-targets -- -D warnings
-      - run: cargo clippy -p kima-web --target wasm32-unknown-unknown -- -D warnings
-      - run: cargo test -p kima-web
-      # Node is used ONLY here: kima.css is a checked-in Tailwind output, so a stale one must fail. The three
+      - run: cargo fmt -p aether-web --check
+      # Proves aether-api-types stays wasm-buildable.
+      - run: cargo build -p aether-api-types --target wasm32-unknown-unknown
+      - run: cargo clippy -p aether-web --all-targets -- -D warnings
+      - run: cargo clippy -p aether-web --target wasm32-unknown-unknown -- -D warnings
+      - run: cargo test -p aether-web
+      # Node is used ONLY here: aether.css is a checked-in Tailwind output, so a stale one must fail. The three
       # packages are installed at exact versions in an isolated dir by the same script local runs use; the build
       # and runtime paths never use Node.
-      - name: Stale kima.css guard
+      - name: Stale aether.css guard
         run: |
-          tools/install-kima-web-css-deps.sh "$RUNNER_TEMP/tailwind"
-          KIMA_CSS_DEPS="$RUNNER_TEMP/tailwind" node tools/gen-kima-web-css.mjs --check
+          tools/install-aether-web-css-deps.sh "$RUNNER_TEMP/tailwind"
+          AETHER_CSS_DEPS="$RUNNER_TEMP/tailwind" node tools/gen-aether-web-css.mjs --check
       - run: cargo install vertigo-cli --version 0.13.4 --locked
-      - run: tools/verify-kima-web-build.sh
+      - run: tools/verify-aether-web-build.sh
       # The embedded SSR tests render the real build; a missing build is a failure here, not a skip.
-      - run: KIMA_WEB_REQUIRE_BUILD=1 cargo test -p kima-server --test web_ssr_embed
+      - run: AETHER_WEB_REQUIRE_BUILD=1 cargo test -p aether-server --test web_ssr_embed

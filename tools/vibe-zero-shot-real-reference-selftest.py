@@ -30,10 +30,10 @@ if spec is None or spec.loader is None:
 ref = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ref)
 
-# The roberta-base revision kima-ml's text tokenizer is pinned to (`text_tokenizer.rs`).
+# The roberta-base revision aether-ml's text tokenizer is pinned to (`text_tokenizer.rs`).
 REVISION = 'e2da8e2f811d1448a5b465c236feacd80ffbac7b'
 FILES = {'vocab.json', 'merges.txt', 'tokenizer.json', 'tokenizer_config.json'}
-# kima-ml's compiled tokenizer.json pin (`text_tokenizer.rs::expected_sha256`).
+# aether-ml's compiled tokenizer.json pin (`text_tokenizer.rs::expected_sha256`).
 TOKENIZER_JSON = '847bbeab6174d66a88898f729d52fa8d355fafe1bea101cf960dd404581df70e'
 
 
@@ -70,10 +70,10 @@ def main():
     pins = ref.upstream_tokenizer_pins(dockerfile)
     check(pins['revision'] == REVISION, 'pinned Dockerfile revision')
     check(set(pins['files']) == FILES, f"pinned Dockerfile files {sorted(pins['files'])}")
-    check(pins['files']['tokenizer.json'] == TOKENIZER_JSON, 'tokenizer.json pin agrees with kima-ml')
+    check(pins['files']['tokenizer.json'] == TOKENIZER_JSON, 'tokenizer.json pin agrees with aether-ml')
     check(refuses(ref.upstream_tokenizer_pins, 'no pins here'), 'Dockerfile without pins')
 
-    with tempfile.TemporaryDirectory(prefix='kima-reference-selftest-') as td:
+    with tempfile.TemporaryDirectory(prefix='aether-reference-selftest-') as td:
         good = dict(repository='roberta-base', revision=REVISION, files=dict(pins['files']))
         check(ref.load_tokenizer_manifest(manifest_file(td, good)) == pins, 'good manifest loads')
         bad = [

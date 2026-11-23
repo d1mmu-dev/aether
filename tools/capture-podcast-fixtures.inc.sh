@@ -3,12 +3,12 @@
 # tools/capture-api-fixtures.sh after its M-STATS part (the stats plays give
 # /library/recently-listened its artist rows). Expects: base (API root), token, stage (staging
 # dir), mock (loopback root of tools/podcast-capture-mock.py, already serving and configured as
-# KIMA_ITUNES_BASE_URL + KIMA_NET_ALLOW_LOOPBACK for the server), request() from the caller.
+# AETHER_ITUNES_BASE_URL + AETHER_NET_ALLOW_LOOPBACK for the server), request() from the caller.
 #
 # Real flow, no SQL seeding: both shows are followed through POST /podcasts/subscribe, which
 # fetches the loopback feeds; Apple answers come from the loopback mock (synthetic, not a
 # recording). Captures stop at the first non-2xx answer. Every capture is recorded with its
-# upstream route template, status and X-Kima-Ai-Hidden header in podcasts_capture_manifest.json.
+# upstream route template, status and X-Aether-Ai-Hidden header in podcasts_capture_manifest.json.
 
 podcast_manifest="$stage/podcasts_manifest.tsv"
 : > "$podcast_manifest"
@@ -25,7 +25,7 @@ pcall() {
     exit 1
   fi
   jq -eS . "$stage/.body" > "$stage/podcasts_${name}_response.json"
-  hidden="$(tr -d '\r' < "$stage/.headers" | awk -F': ' 'tolower($1) == "x-kima-ai-hidden" {print $2}')"
+  hidden="$(tr -d '\r' < "$stage/.headers" | awk -F': ' 'tolower($1) == "x-aether-ai-hidden" {print $2}')"
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$route" "$method" "$path" "$status" "$hidden" >> "$podcast_manifest"
   echo "podcasts_$name $method $path $status hidden=${hidden:-none}" >&2
 }
@@ -107,7 +107,7 @@ pcall unsubscribe 'DELETE /podcasts/:id/unsubscribe' DELETE "/podcasts/$robot/un
 jq -Rn --arg head "$(git rev-parse HEAD)" '
   {source: {head: $head,
             apple: "tools/podcast-capture-mock.py on loopback (synthetic data, not an Apple recording)",
-            feeds: "tools/podcast-capture-mock.py on loopback, fetched by the server (KIMA_NET_ALLOW_LOOPBACK)"},
+            feeds: "tools/podcast-capture-mock.py on loopback, fetched by the server (AETHER_NET_ALLOW_LOOPBACK)"},
    captures: [inputs | split("\t") | {name: (if .[0] == "" then null else .[0] end), route: .[1],
               method: .[2], path: .[3], status: (.[4] | tonumber),
               aiHidden: (if .[5] == "" then null else .[5] end)}]}' \

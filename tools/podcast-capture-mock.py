@@ -3,7 +3,7 @@
 
 One HTTP server on 127.0.0.1 (OS-assigned port, printed on stdout before serving) answers:
 
-* Apple's iTunes API as kima-podcast's catalogue asks it (crates/kima-podcast/src/catalog.rs):
+* Apple's iTunes API as aether-podcast's catalogue asks it (crates/aether-podcast/src/catalog.rs):
   `/WebObjects/MZStoreServices.woa/ws/genres`, `/<cc>/rss/toppodcasts/limit=N[/genre=G]/json`,
   `/lookup?id=a,b`, `/search?term=...`. Synthetic data only; no real Apple recording.
 * Three RSS feeds (`/feeds/race.xml`, `/feeds/robot.xml`, `/feeds/preview.xml`), their audio

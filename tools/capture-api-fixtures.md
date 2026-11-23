@@ -1,15 +1,15 @@
 # M-SYNC API fixture capture (Task 18, steps 1–3)
 
-Run `env -u DATABASE_URL -u PGDATABASE KIMA_CAPTURE_SET=<sets> tools/capture-api-fixtures.sh`
-from this checkout. `KIMA_CAPTURE_SET` (required since M6 Task 19) is a comma list of
+Run `env -u DATABASE_URL -u PGDATABASE AETHER_CAPTURE_SET=<sets> tools/capture-api-fixtures.sh`
+from this checkout. `AETHER_CAPTURE_SET` (required since M6 Task 19) is a comma list of
 `msync`, `mstats`, `m6`: every capture runs, but only the named sets are copied into
-`crates/kima-api-types/tests/fixtures/`, and the run refuses to start when one of those
+`crates/aether-api-types/tests/fixtures/`, and the run refuses to start when one of those
 files has uncommitted changes. The original M-SYNC run below predates the variable.
 The script rejects caller DB variables, starts a **new** labelled pgvector:pg17 container
-with Docker-assigned loopback port and ephemeral data, verifies `kima|kima` over the
-host connection, builds this checkout's `kima-server`, generates the sine-tone library
+with Docker-assigned loopback port and ephemeral data, verifies `aether|aether` over the
+host connection, builds this checkout's `aether-server`, generates the sine-tone library
 with `tools/make-fixture-library.sh`, and starts an HTTP server on loopback with
-`KIMA_NET_DENY_REAL=1`, `KIMA_IDENTIFY=off`, `SQLX_OFFLINE=true`. It registers and signs
+`AETHER_NET_DENY_REAL=1`, `AETHER_IDENTIFY=off`, `SQLX_OFFLINE=true`. It registers and signs
 in `fixtureadmin`, scans the library, creates a playlist with two scanned tracks,
 updates `reverseOrder=true`, and captures the actual HTTP JSON using `jq -eS`.
 Only after all requests succeed are the nine staged responses copied into fixtures.
@@ -19,7 +19,7 @@ server's actual values, so repeated runs need not yield byte-identical files.
 
 Captured against `feature/m-sync-e` source HEAD `6a89022e8149df6709bbeb82e5704d12ec0ed092`
 (before this task's commit), from run-owned `msync18-capture-1794235846-2466375`,
-`127.0.0.1:32776`, database/role `kima|kima` (removed on exit; verified with `docker ps -a`):
+`127.0.0.1:32776`, database/role `aether|aether` (removed on exit; verified with `docker ps -a`):
 
 | Fixture | HTTP route | Capture condition |
 | --- | --- | --- |
@@ -37,11 +37,11 @@ All nine listed routes exist; **no unavailable route was substituted with a
 fabricated success**. The create/list/detail fixtures have unrelated dynamic id/time
 diffs versus the prior capture; their contents are not independent upstream parity
 claims. Subsonic snapshots were checked on a different fresh isolated pgvector
-container (`msync18-snap-1794235452-2455319`, port 32773, `kima|kima`, removed)
+container (`msync18-snap-1794235452-2455319`, port 32773, `aether|aether`, removed)
 with `INSTA_UPDATE=no`; all 32 tests passed and **zero snapshots changed**. The
 expected plan diffs were aspirational, not observed on this fixture and source.
 
-AcoustID examples under `crates/kima-ident/tests/fixtures/acoustid/` are
+AcoustID examples under `crates/aether-ident/tests/fixtures/acoustid/` are
 hand-written synthetic shapes, **not** these live API captures; see their README.
 Task 18 step 4's double full-workspace test gate is explicitly outside this slice.
 
@@ -53,7 +53,7 @@ After the M-SYNC captures the script records the stats history and captures the 
 1. `POST /api/plays` for `First` (900 s, `secondsListened: 900`, recorded `heard = true`)
    and for `Second` (6 s, `secondsListened: 6`; the listen rule records **no** play for it,
    observed).
-2. Two `heard = false` rows by SQL (`gen_random_uuid()` ids; no kima-rs writer produces
+2. Two `heard = false` rows by SQL (`gen_random_uuid()` ids; no aether writer produces
    `heard = false`, and only such rows can be a provable skip): `First` one day ago and
    `Third` (6 s) 60 s later, so `First`'s listen is `skipped` and `Third`'s is too short.
 3. `POST /stats/false-starts/ignore` for `Second`, then the audit, `collapse`, `remove`
@@ -72,7 +72,7 @@ After the M-SYNC captures the script records the stats history and captures the 
 | stats_remove_response | POST /api/stats/false-starts/remove | `First`: one row of one track |
 | stats_restore_response | POST /api/stats/false-starts/restore | `Second` |
 
-`crates/kima-api-types/tests/stats.rs` round-trips them through `kima_api_types::stats`,
+`crates/aether-api-types/tests/stats.rs` round-trips them through `aether_api_types::stats`,
 compares each fixture's key paths and JSON types with `stats_upstream_keys.json`
 (hand-written from the v1.12.3 TypeScript interfaces; sub-keys under an empty array or
 `null` are not observable and not required) and rejects integral floats such as `120.0`.
@@ -81,21 +81,21 @@ Captured against `feature/m-stats` source HEAD `d72195db44e5943b45a76853d9c3f979
 (before this task's commit). The capturing delegate could not create Docker containers, so
 the script was run from a scratch copy whose only change is the database: a run-owned
 database `mstats_capture_1794466228_340749` created in the parent-provided isolated cluster
-`mstats-pg-58795` (`127.0.0.1:58795`, identity `kima_verify` checked first) and dropped on
+`mstats-pg-58795` (`127.0.0.1:58795`, identity `aether_verify` checked first) and dropped on
 exit. Only the ten stats fixtures were committed; the nine M-SYNC fixtures from the same run
 differed from the committed ones only in dynamic ids and timestamps and were left as they
 were.
 
 ## M6 podcast fixtures (plan `2026-11-12-m6-podcasts.md`, Task 19)
 
-`KIMA_CAPTURE_SET=m6` copies 30 `podcasts_<name>_response.json` files and
+`AETHER_CAPTURE_SET=m6` copies 30 `podcasts_<name>_response.json` files and
 `podcasts_capture_manifest.json`. The M6 part (`tools/capture-podcast-fixtures.inc.sh`,
 sourced after M-STATS so `/library/recently-listened` also has artist rows) is a **real
 loopback flow**, not SQL seeding: `tools/podcast-capture-mock.py` serves synthetic Apple
 answers (genres, charts, lookup, search; **not** an Apple recording), three RSS feeds with
 Podcasting 2.0 `ai-content` tags, range-aware audio and a PNG cover on one loopback port. The
-server reaches exactly that socket through `KIMA_NET_ALLOW_LOOPBACK` (D-216; refused unless
-`KIMA_NET_DENY_REAL=1`) and Apple through `KIMA_ITUNES_BASE_URL`.
+server reaches exactly that socket through `AETHER_NET_ALLOW_LOOPBACK` (D-216; refused unless
+`AETHER_NET_DENY_REAL=1`) and Apple through `AETHER_ITUNES_BASE_URL`.
 
 Scenario: `POST /podcasts/subscribe` follows Race Show (Apple 555; no channel tag = unknown;
 "Sprint" tagged human, "Race Recap" tagged AI) and Robot Radio (777, channel tagged AI) from
@@ -127,26 +127,26 @@ manual refresh finds exactly it. Admin label overrides and the unsubscribe run l
 | unsubscribe | DELETE /podcasts/{robot}/unsubscribe | |
 
 The manifest records, per request, the upstream route template, path, HTTP status and
-`X-Kima-Ai-Hidden`; it also holds the status-only checks of the four non-JSON routes (episode
+`X-Aether-Ai-Hidden`; it also holds the status-only checks of the four non-JSON routes (episode
 stream and preview snippet with `Range`, show and episode cover redirects). The script fails
 before copying unless 30 named captures exist and all 24 upstream `routes/podcasts.ts`
-registrations answered 2xx/3xx. `crates/kima-api-types/tests/podcasts.rs` then checks the DTOs,
+registrations answered 2xx/3xx. `crates/aether-api-types/tests/podcasts.rs` then checks the DTOs,
 key paths against `podcasts_upstream_keys.json` (upstream keys from the backend handlers, each
-kima-only key with its DIVERGENCES row: D-207 AI keys, D-059 `trackCount`), populated nested
+aether-only key with its DIVERGENCES row: D-207 AI keys, D-059 `trackCount`), populated nested
 shapes, cross-response ids, `toISOString` timestamps, the header/body hidden counts and the
 route count. `tools/check-podcast-upstream-keys.py <kima-hub checkout>` re-checks the key file
 against the cited upstream source lines at `c7527577`, independently of the key file's claims.
 
-Status (2026-11-13): fixtures captured with `KIMA_CAPTURE_SET=m6` from `b204515` (container `msync18-capture-1794611746-3183913`, loopback host port 32788, Apple/feed/audio mock on loopback; not an Apple recording, not SQL seeding). 31 files copied (30 responses + manifest); fixture tests un-ignored, 10/10 pass; `tools/check-podcast-upstream-keys.py` reports 0 problems on 255 upstream key names. Dynamic UUIDs, timestamps and the mock's port in feed/cover URLs are kept as observed.
+Status (2026-11-13): fixtures captured with `AETHER_CAPTURE_SET=m6` from `b204515` (container `msync18-capture-1794611746-3183913`, loopback host port 32788, Apple/feed/audio mock on loopback; not an Apple recording, not SQL seeding). 31 files copied (30 responses + manifest); fixture tests un-ignored, 10/10 pass; `tools/check-podcast-upstream-keys.py` reports 0 problems on 255 upstream key names. Dynamic UUIDs, timestamps and the mock's port in feed/cover URLs are kept as observed.
 
 ## M5b mixes, radio, what's-new and recommendations (plan `2026-11-19-m5b-mixes-radio.md`, Task 19)
 
-`env -u DATABASE_URL -u PGDATABASE -u CARGO_TARGET_DIR KIMA_CAPTURE_SET=m5b tools/capture-api-fixtures.sh`
+`env -u DATABASE_URL -u PGDATABASE -u CARGO_TARGET_DIR AETHER_CAPTURE_SET=m5b tools/capture-api-fixtures.sh`
 (m5b runs alone) adds 40 tagged 35 s songs to the synthetic library (two decades, eight artists, five songs each,
 genres Rock/Electronic), scans, plays six of them, then sources `tools/capture-m5b-fixtures.inc.sh`:
 
-1. **Seed** (`crates/kima-api/tests/m5b_capture.rs` `m5b_capture_seed`, plain SQL; refuses any database but the
-   run's own loopback `kima` with the single `fixtureadmin` account): sound vectors of the engine's identity, mood
+1. **Seed** (`crates/aether-api/tests/m5b_capture.rs` `m5b_capture_seed`, plain SQL; refuses any database but the
+   run's own loopback `aether` with the single `fixtureadmin` account): sound vectors of the engine's identity, mood
    scores in four groups (calm, upbeat, intense, melancholic), CLAP readings, DSP tempo/key, mood tags, the mood
    statistics, album/artist cover tokens, owner genres of the M5b artists and two similar artists (one held as an
    artist row without songs). The same seed is exercised by the default test
@@ -160,10 +160,10 @@ genres Rock/Electronic), scans, plays six of them, then sources `tools/capture-m
 
 The script fails before copying unless all 45 captures exist, all 22 upstream routes answered 2xx, no body holds a
 token-like string and the cross-ids hold (mix list/detail/save, saved mood mix on Home and in the what's-new
-question and its playlist, artist radio, heads mood page). `crates/kima-api-types/tests/m5b.rs` checks key paths
+question and its playlist, artist radio, heads mood page). `crates/aether-api-types/tests/m5b.rs` checks key paths
 against `m5b_upstream_keys.json` (upstream shapes at the M5b reference `9450c94b`; mix track rows = every Prisma
 `Track`/`Album` column, owner Q6 = B), the DTOs, cross-ids, populated values and integral floats; its fixture tests
 run against the committed capture. `tools/check-m5b-upstream-keys.py <kima-hub checkout>` re-checks the
 key file against the cited upstream lines and the reference's Prisma models.
 
-Status (2026-11-22): captured at `62e1b7a` (deterministic checks; the first capture at `81ee883` failed one cross-id check and the second only passed by chance, see the history), committed in `b526202`; `cargo test -p kima-api-types --all-targets` passes with no ignored m5b tests and `tools/check-m5b-upstream-keys.py` reports 0 problems for 475 key names.
+Status (2026-11-22): captured at `62e1b7a` (deterministic checks; the first capture at `81ee883` failed one cross-id check and the second only passed by chance, see the history), committed in `b526202`; `cargo test -p aether-api-types --all-targets` passes with no ignored m5b tests and `tools/check-m5b-upstream-keys.py` reports 0 problems for 475 key names.

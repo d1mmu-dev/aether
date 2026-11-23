@@ -1,5 +1,5 @@
 // Times upstream's own layoutLibrary (TypeScript, single thread, Node type stripping) stage by stage on the synthetic
-// 512-d library of crates/kima-vibe/examples/layout_bench.rs (same generator, same draw order), for the Q7 comparison.
+// 512-d library of crates/aether-vibe/examples/layout_bench.rs (same generator, same draw order), for the Q7 comparison.
 //
 //   node tools/vibe-goldens/bench-layout.mjs [N=10000]
 //

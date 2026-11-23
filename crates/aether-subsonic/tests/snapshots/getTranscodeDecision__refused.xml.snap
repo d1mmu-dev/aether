@@ -1,0 +1,9 @@
+---
+source: crates/aether-subsonic/tests/snapshots.rs
+---
+<?xml version="1.0" encoding="UTF-8"?>
+<subsonic-response xmlns="http://subsonic.org/restapi" status="ok" version="1.16.1" type="Aether" serverVersion="[redacted]" openSubsonic="true">
+  <transcodeDecision canDirectPlay="false" canTranscode="false" errorReason="Aether transcodes only to mp3; it cannot make opus">
+    <transcodeReason>source is flac, client asked for opus</transcodeReason>
+  </transcodeDecision>
+</subsonic-response>

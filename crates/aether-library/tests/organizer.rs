@@ -1,0 +1,2374 @@
+//! Organizer apply, resume, undo and switch root (spec §5.2, Review Focus 4), against real
+//! files and a real database.
+
+mod common;
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
+use aether_core::config::WatchMode;
+use aether_core::events::EventBus;
+use aether_db::PgPool;
+use aether_db::organizer as db;
+use aether_library::organize::apply::{self, Action, Hooks, OrganizeError};
+use aether_library::scan::{self, LibraryCtx};
+use aether_library::watch::{self, IgnoreSet, WatchStatus};
+use common::{Tags, make_audio, require_ffmpeg};
+use sha2::{Digest, Sha256};
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+
+struct Lib {
+    ctx: LibraryCtx,
+    root: PathBuf,
+    target: PathBuf,
+    _dirs: (tempfile::TempDir, tempfile::TempDir),
+}
+
+fn tags(artist: &str, album: &str, date: &str, track: &str, title: &str) -> Tags {
+    Tags {
+        album_artist: Some(artist.into()),
+        artist: Some(artist.into()),
+        album: Some(album.into()),
+        title: Some(title.into()),
+        date: Some(date.into()),
+        track: Some(track.into()),
+        ..Default::default()
+    }
+}
+
+/// (relative path, tags) of a small messy library, and the targets the organizer gives them.
+fn messy() -> Vec<(&'static str, Tags, &'static str)> {
+    vec![
+        (
+            "messy/a.flac",
+            tags("Alpha", "First", "2001", "1", "One"),
+            "Alpha/2001 - First/01 - One.flac",
+        ),
+        (
+            "messy/b.flac",
+            tags("Alpha", "First", "2001", "2", "Two"),
+            "Alpha/2001 - First/02 - Two.flac",
+        ),
+        (
+            "other/c.mp3",
+            tags("Beta", "Second", "2005", "1", "Three"),
+            "Beta/2005 - Second/01 - Three.mp3",
+        ),
+        (
+            "other/deep/d.mp3",
+            tags("Beta", "Second", "2005", "2", "Four"),
+            "Beta/2005 - Second/02 - Four.mp3",
+        ),
+    ]
+}
+
+async fn library(pool: &PgPool, files: &[(&str, Tags, &str)]) -> Lib {
+    let dir = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let target = out.path().canonicalize().unwrap().join("organized");
+    for (rel, t, _) in files {
+        make_audio(&root, rel, t.clone());
+    }
+    let ctx = LibraryCtx {
+        pool: pool.clone(),
+        root: root.clone().into(),
+        events: EventBus::new(256),
+        data_dir: root.join(".aether-data"),
+        ignore: IgnoreSet::new(),
+    };
+    let report = scan::reconcile(&ctx).await.unwrap();
+    assert_eq!(report.added, files.len(), "{report:?}");
+    Lib {
+        ctx,
+        root,
+        target,
+        _dirs: (dir, out),
+    }
+}
+
+fn sha(p: &Path) -> Vec<u8> {
+    Sha256::digest(std::fs::read(p).unwrap()).to_vec()
+}
+
+/// Every non-hidden file under `root`: relative path -> SHA-256.
+fn tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    if !root.exists() {
+        return BTreeMap::new();
+    }
+    walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| e.depth() == 0 || !e.file_name().to_string_lossy().starts_with('.'))
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .map(|e| {
+            let rel = e.path().strip_prefix(root).unwrap();
+            (rel.to_string_lossy().replace('\\', "/"), sha(e.path()))
+        })
+        .collect()
+}
+
+/// Every file, hidden ones included (staging names, `.aether-part`), except aether's data folder.
+fn all_files(root: &Path) -> Vec<String> {
+    walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| e.file_name() != ".aether-data")
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .map(|e| {
+            e.path()
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
+}
+
+async fn new_run(lib: &Lib, mode: &str) -> Uuid {
+    let target = if mode == "copy" {
+        &lib.target
+    } else {
+        &lib.root
+    };
+    std::fs::create_dir_all(target).unwrap();
+    let run = db::create_run(
+        &lib.ctx.pool,
+        Uuid::now_v7(),
+        mode,
+        &lib.root.display().to_string(),
+        &target.display().to_string(),
+        None,
+    )
+    .await
+    .unwrap();
+    apply::run_action(&lib.ctx, run.id, Action::Preview, &Hooks::default())
+        .await
+        .unwrap();
+    assert_eq!(state(lib, run.id).await, "previewed");
+    run.id
+}
+
+async fn state(lib: &Lib, run: Uuid) -> String {
+    db::get_run(&lib.ctx.pool, run)
+        .await
+        .unwrap()
+        .unwrap()
+        .state
+}
+
+async fn start(lib: &Lib, run: Uuid, from: &[&str], to: &str) {
+    assert!(db::transition(&lib.ctx.pool, run, from, to).await.unwrap());
+}
+
+async fn apply_with(lib: &Lib, run: Uuid, hooks: &Hooks) -> Result<(), OrganizeError> {
+    apply::run_action(&lib.ctx, run, Action::Apply, hooks).await
+}
+
+async fn apply_run(lib: &Lib, run: Uuid) {
+    start(lib, run, &["previewed"], "applying").await;
+    apply_with(lib, run, &Hooks::default()).await.unwrap();
+}
+
+async fn undo_run(lib: &Lib, run: Uuid) {
+    start(lib, run, &["done", "failed"], "undoing").await;
+    apply::run_action(&lib.ctx, run, Action::Undo, &Hooks::default())
+        .await
+        .unwrap();
+}
+
+async fn rows(lib: &Lib, run: Uuid) -> Vec<db::JournalRow> {
+    db::all_rows(&lib.ctx.pool, run).await.unwrap()
+}
+
+/// Track id -> path.
+async fn track_paths(pool: &PgPool) -> HashMap<Uuid, String> {
+    sqlx::query_as::<_, (Uuid, String)>("SELECT id, path FROM tracks")
+        .fetch_all(pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .collect()
+}
+
+fn targets(files: &[(&str, Tags, &str)]) -> Vec<String> {
+    let mut t: Vec<String> = files.iter().map(|(_, _, to)| to.to_string()).collect();
+    t.sort();
+    t
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn preview_touches_nothing(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    std::fs::write(lib.root.join("messy/cover.jpg"), b"jpeg").unwrap();
+    let before = tree(&lib.root);
+    let before_files = all_files(&lib.root);
+    let run = new_run(&lib, "move").await;
+    assert_eq!(tree(&lib.root), before);
+    assert_eq!(all_files(&lib.root), before_files);
+
+    let rows = rows(&lib, run).await;
+    let mut planned: Vec<(String, String)> = rows
+        .iter()
+        .map(|r| (r.from_path.clone(), r.to_path.clone()))
+        .collect();
+    planned.sort();
+    let mut want: Vec<(String, String)> = files
+        .iter()
+        .map(|(f, _, t)| (f.to_string(), t.to_string()))
+        .collect();
+    want.push((
+        "messy/cover.jpg".into(),
+        "Alpha/2001 - First/cover.jpg".into(),
+    ));
+    want.sort();
+    assert_eq!(planned, want);
+    assert!(
+        rows.iter()
+            .all(|r| r.state == "planned" && r.sha256.is_none())
+    );
+    let sidecar = rows
+        .iter()
+        .find(|r| r.from_path.ends_with("cover.jpg"))
+        .unwrap();
+    assert_eq!(sidecar.track_id, None);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn copy_apply_creates_tree_and_keeps_source(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let before = tree(&lib.root);
+    let paths_before = track_paths(&pool).await;
+    let run = new_run(&lib, "copy").await;
+    apply_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "done");
+
+    // The library is untouched, files and rows alike.
+    assert_eq!(tree(&lib.root), before);
+    assert_eq!(track_paths(&pool).await, paths_before);
+    // The copy has the organized layout, the same content, and the source mtimes.
+    let copied = tree(&lib.target);
+    assert_eq!(copied.keys().cloned().collect::<Vec<_>>(), targets(&files));
+    for (from, _, to) in &files {
+        assert_eq!(copied[*to], before[*from], "{to}");
+        let (a, b) = (
+            std::fs::metadata(lib.root.join(from)).unwrap(),
+            std::fs::metadata(lib.target.join(to)).unwrap(),
+        );
+        assert_eq!(a.modified().unwrap(), b.modified().unwrap());
+    }
+    assert!(
+        rows(&lib, run)
+            .await
+            .iter()
+            .all(|r| r.state == "done" && r.sha256.is_some())
+    );
+    assert!(
+        all_files(&lib.target)
+            .iter()
+            .all(|f| !f.contains(".aether-"))
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn copy_verify_detects_corruption(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let before = tree(&lib.root);
+    let run = new_run(&lib, "copy").await;
+    start(&lib, run, &["previewed"], "applying").await;
+    let hooks = Hooks {
+        after_copy: Some(Arc::new(|part: &Path| {
+            if part.to_string_lossy().contains("02 - Two") {
+                let mut bytes = std::fs::read(part).unwrap();
+                bytes[100] ^= 0xff;
+                std::fs::write(part, bytes).unwrap();
+            }
+        })),
+        ..Default::default()
+    };
+    apply_with(&lib, run, &hooks).await.unwrap();
+
+    let rows = rows(&lib, run).await;
+    let bad = rows
+        .iter()
+        .find(|r| r.to_path.contains("02 - Two"))
+        .unwrap();
+    assert_eq!(bad.state, "failed");
+    assert_eq!(bad.note.as_deref(), Some("the copy did not verify"));
+    let to = lib.target.join(&bad.to_path);
+    assert!(!to.exists());
+    let part = format!("{}.aether-part", to.display());
+    assert!(!Path::new(&part).exists());
+    assert_eq!(
+        rows.iter().filter(|r| r.state == "done").count(),
+        files.len() - 1
+    );
+    assert_eq!(tree(&lib.root), before);
+}
+
+async fn add_play(pool: &PgPool, track: Uuid) {
+    sqlx::query("UPDATE system_settings SET registration_open = true")
+        .execute(pool)
+        .await
+        .unwrap();
+    let user = Uuid::now_v7();
+    let aether_db::users::Registration::Created(_) =
+        aether_db::users::register(pool, user, "ana", "hash")
+            .await
+            .unwrap()
+    else {
+        panic!("registration failed")
+    };
+    sqlx::query("INSERT INTO plays (id, profile_id, track_id) VALUES ($1, $2, $3)")
+        .bind(Uuid::now_v7())
+        .bind(user)
+        .bind(track)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn move_apply_updates_paths_and_keeps_plays(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    // `other/` keeps a file that is neither audio nor a sidecar: it must stay, with its folder.
+    std::fs::write(lib.root.join("other/notes.txt"), b"keep me").unwrap();
+    let before = tree(&lib.root);
+    let ids: HashMap<String, Uuid> = track_paths(&pool)
+        .await
+        .into_iter()
+        .map(|(id, p)| (p, id))
+        .collect();
+    let played = ids["messy/a.flac"];
+    add_play(&pool, played).await;
+
+    let run = new_run(&lib, "move").await;
+    apply_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "done");
+
+    let after = tree(&lib.root);
+    let paths = track_paths(&pool).await;
+    for (from, _, to) in &files {
+        assert_eq!(after[*to], before[*from], "{to}");
+        assert!(!lib.root.join(from).exists(), "{from} still there");
+        assert_eq!(&paths[&ids[*from]], to, "track row of {from}");
+    }
+    assert_eq!(after.len(), before.len());
+    // Emptied folders are gone; the one with notes.txt stays.
+    assert!(!lib.root.join("messy").exists());
+    assert!(!lib.root.join("other/deep").exists());
+    assert_eq!(
+        std::fs::read(lib.root.join("other/notes.txt")).unwrap(),
+        b"keep me"
+    );
+    // Same track id, so the play is still attached.
+    let plays: i64 = sqlx::query_scalar("SELECT count(*) FROM plays WHERE track_id = $1")
+        .bind(played)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(plays, 1);
+    // A reconcile agrees with the rows: nothing added, nothing missing.
+    let report = scan::reconcile(&lib.ctx).await.unwrap();
+    assert_eq!(
+        (report.added, report.missing, report.repointed),
+        (0, 0, 0),
+        "{report:?}"
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn move_across_filesystems_copies_verifies_and_deletes_source(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let before = tree(&lib.root);
+    let run = new_run(&lib, "move").await;
+    start(&lib, run, &["previewed"], "applying").await;
+    let hooks = Hooks {
+        force_cross_fs: true,
+        ..Default::default()
+    };
+    apply_with(&lib, run, &hooks).await.unwrap();
+    let after = tree(&lib.root);
+    for (from, _, to) in &files {
+        assert_eq!(after[*to], before[*from]);
+        assert!(!lib.root.join(from).exists());
+    }
+    assert_eq!(after.len(), before.len());
+    assert!(all_files(&lib.root).iter().all(|f| !f.contains(".aether-")));
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn cross_fs_move_keeps_the_source_when_the_copy_is_bad(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let before = tree(&lib.root);
+    let run = new_run(&lib, "move").await;
+    start(&lib, run, &["previewed"], "applying").await;
+    let hooks = Hooks {
+        force_cross_fs: true,
+        after_copy: Some(Arc::new(|part: &Path| {
+            let mut bytes = std::fs::read(part).unwrap();
+            bytes[10] ^= 1;
+            std::fs::write(part, bytes).unwrap();
+        })),
+        ..Default::default()
+    };
+    apply_with(&lib, run, &hooks).await.unwrap();
+    assert_eq!(tree(&lib.root), before);
+    assert!(rows(&lib, run).await.iter().all(|r| r.state == "failed"));
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn never_overwrites(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let run = new_run(&lib, "move").await;
+    // Something appears at a planned target after the preview.
+    let squatter = lib.root.join("Alpha/2001 - First/01 - One.flac");
+    std::fs::create_dir_all(squatter.parent().unwrap()).unwrap();
+    std::fs::write(&squatter, b"not yours").unwrap();
+    let source = sha(&lib.root.join("messy/a.flac"));
+
+    apply_run(&lib, run).await;
+    assert_eq!(std::fs::read(&squatter).unwrap(), b"not yours");
+    assert_eq!(sha(&lib.root.join("messy/a.flac")), source);
+    let rows = rows(&lib, run).await;
+    let row = rows.iter().find(|r| r.from_path == "messy/a.flac").unwrap();
+    assert_eq!(row.state, "skipped");
+    assert_eq!(row.note.as_deref(), Some("target exists"));
+    assert_eq!(
+        rows.iter().filter(|r| r.state == "done").count(),
+        files.len() - 1
+    );
+    let paths = track_paths(&pool).await;
+    assert!(paths.values().any(|p| p == "messy/a.flac"));
+
+    // Copy mode too.
+    let copy = new_run(&lib, "copy").await;
+    let taken = lib.target.join("Beta/2005 - Second/01 - Three.mp3");
+    std::fs::create_dir_all(taken.parent().unwrap()).unwrap();
+    std::fs::write(&taken, b"mine").unwrap();
+    apply_run(&lib, copy).await;
+    assert_eq!(std::fs::read(&taken).unwrap(), b"mine");
+    let rows = db::all_rows(&pool, copy).await.unwrap();
+    let row = rows.iter().find(|r| r.to_path.ends_with("01 - Three.mp3"));
+    // The preview saw the file was there and planned around it, or the row was skipped.
+    assert!(row.is_none_or(|r| r.state == "skipped"));
+}
+
+/// A library of `n` tracks across a few albums, all in one messy folder.
+fn many(n: usize) -> Vec<(String, Tags, String)> {
+    (0..n)
+        .map(|i| {
+            let album = format!("Album {}", i % 3);
+            let no = i / 3 + 1;
+            let title = format!("Song {i}");
+            (
+                format!("dump/{i:02}.flac"),
+                tags("Gamma", &album, "1999", &no.to_string(), &title),
+                format!("Gamma/1999 - {album}/{no:02} - {title}.flac"),
+            )
+        })
+        .collect()
+}
+
+fn as_refs(files: &[(String, Tags, String)]) -> Vec<(&str, Tags, &str)> {
+    files
+        .iter()
+        .map(|(a, t, b)| (a.as_str(), t.clone(), b.as_str()))
+        .collect()
+}
+
+/// Review Focus 4: aether dies part-way through a move. A restart resumes from the journal;
+/// nothing is moved twice, overwritten or lost, and undo restores every original path.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn crash_mid_move_resumes_cleanly(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let owned = many(10);
+    let files = as_refs(&owned);
+    let lib = library(&pool, &files).await;
+    let original = tree(&lib.root);
+    let original_paths = track_paths(&pool).await;
+
+    // Two crashes: one at a clean row boundary, one after a rename but before its commit.
+    for (stop_after, mid_row) in [(4usize, false), (6usize, true)] {
+        let run = new_run(&lib, "move").await;
+        start(&lib, run, &["previewed"], "applying").await;
+        let hooks = Hooks {
+            stop_after: Some(stop_after),
+            stop_mid_row: mid_row,
+            ..Default::default()
+        };
+        let err = apply_with(&lib, run, &hooks).await.unwrap_err();
+        assert!(matches!(err, OrganizeError::Interrupted));
+        assert_eq!(state(&lib, run).await, "applying");
+
+        // Mid-way: every file still exists exactly once, somewhere.
+        let mid = tree(&lib.root);
+        assert_eq!(mid.len(), original.len());
+        let mut mid_sums: Vec<_> = mid.values().cloned().collect();
+        let mut sums: Vec<_> = original.values().cloned().collect();
+        mid_sums.sort();
+        sums.sort();
+        assert_eq!(mid_sums, sums, "a file was lost or duplicated mid-way");
+
+        // Restart: the job runs again from the journal.
+        apply_with(&lib, run, &Hooks::default()).await.unwrap();
+        assert_eq!(state(&lib, run).await, "done");
+        let after = tree(&lib.root);
+        assert_eq!(after.len(), original.len(), "file count changed");
+        for (from, _, to) in &files {
+            assert_eq!(after.get(*to), original.get(*from), "{from} -> {to}");
+            assert!(!lib.root.join(from).exists());
+        }
+        let rows = rows(&lib, run).await;
+        assert_eq!(rows.len(), files.len());
+        assert!(rows.iter().all(|r| r.state == "done"), "{rows:?}");
+        let paths = track_paths(&pool).await;
+        for (id, from) in &original_paths {
+            let to = files.iter().find(|(f, _, _)| f == from).unwrap().2;
+            assert_eq!(paths[id], to);
+        }
+        assert!(all_files(&lib.root).iter().all(|f| !f.contains(".aether-")));
+
+        // Undo, also interrupted once, restores every original path.
+        start(&lib, run, &["done"], "undoing").await;
+        let hooks = Hooks {
+            stop_after: Some(3),
+            stop_mid_row: true,
+            ..Default::default()
+        };
+        let err = apply::run_action(&lib.ctx, run, Action::Undo, &hooks)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, OrganizeError::Interrupted));
+        apply::run_action(&lib.ctx, run, Action::Undo, &Hooks::default())
+            .await
+            .unwrap();
+        assert_eq!(state(&lib, run).await, "undone");
+        assert_eq!(tree(&lib.root), original);
+        assert_eq!(track_paths(&pool).await, original_paths);
+        assert!(!lib.root.join("Gamma").exists());
+    }
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn undo_move_restores_all(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    std::fs::write(lib.root.join("messy/cover.jpg"), b"jpeg").unwrap();
+    let original = tree(&lib.root);
+    let original_paths = track_paths(&pool).await;
+    let run = new_run(&lib, "move").await;
+    apply_run(&lib, run).await;
+    assert!(lib.root.join("Alpha/2001 - First/cover.jpg").exists());
+    undo_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "undone");
+    assert_eq!(tree(&lib.root), original);
+    assert_eq!(track_paths(&pool).await, original_paths);
+    assert!(!lib.root.join("Alpha").exists());
+    assert!(!lib.root.join("Beta").exists());
+    assert!(rows(&lib, run).await.iter().all(|r| r.state == "undone"));
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn undo_copy_removes_only_matching_copies(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let original = tree(&lib.root);
+    let run = new_run(&lib, "copy").await;
+    apply_run(&lib, run).await;
+    // The owner edits one copy afterwards.
+    let edited = lib.target.join("Beta/2005 - Second/01 - Three.mp3");
+    std::fs::write(&edited, b"edited").unwrap();
+
+    undo_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "undone");
+    assert_eq!(
+        tree(&lib.target).keys().cloned().collect::<Vec<_>>(),
+        vec!["Beta/2005 - Second/01 - Three.mp3".to_string()]
+    );
+    assert_eq!(std::fs::read(&edited).unwrap(), b"edited");
+    assert_eq!(tree(&lib.root), original);
+    let rows = rows(&lib, run).await;
+    let kept = rows
+        .iter()
+        .find(|r| r.to_path.ends_with("01 - Three.mp3"))
+        .unwrap();
+    assert_eq!(kept.state, "skipped");
+    assert_eq!(
+        rows.iter().filter(|r| r.state == "undone").count(),
+        files.len() - 1
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn switch_root_repoints_and_reconcile_is_noop(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let ids: HashMap<String, Uuid> = track_paths(&pool)
+        .await
+        .into_iter()
+        .map(|(id, p)| (p, id))
+        .collect();
+    let run = new_run(&lib, "copy").await;
+    apply_run(&lib, run).await;
+    apply::run_action(&lib.ctx, run, Action::SwitchRoot, &Hooks::default())
+        .await
+        .unwrap();
+
+    assert_eq!(lib.ctx.root.get(), lib.target);
+    let settings = aether_db::settings::get(&pool).await.unwrap();
+    assert_eq!(
+        settings.library_root,
+        Some(lib.target.display().to_string())
+    );
+    let paths = track_paths(&pool).await;
+    for (from, _, to) in &files {
+        assert_eq!(&paths[&ids[*from]], to);
+    }
+    assert!(
+        db::get_run(&pool, run)
+            .await
+            .unwrap()
+            .unwrap()
+            .switched_at
+            .is_some()
+    );
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE payload ->> 'kind' = 'reconcile' AND state = 'queued'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(queued, 1);
+
+    let report = scan::reconcile(&lib.ctx).await.unwrap();
+    assert_eq!(report.added, 0, "{report:?}");
+    assert_eq!(report.missing, 0, "{report:?}");
+    assert_eq!(report.unchanged, files.len(), "{report:?}");
+
+    // A switched copy cannot be undone.
+    start(&lib, run, &["done"], "undoing").await;
+    let err = apply::run_action(&lib.ctx, run, Action::Undo, &Hooks::default()).await;
+    assert!(matches!(err, Err(OrganizeError::Refused(_))), "{err:?}");
+    assert_eq!(state(&lib, run).await, "done");
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn watcher_ignores_organizer_moves(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let shutdown = CancellationToken::new();
+    let debounce = Duration::from_millis(200);
+    let handle = watch::spawn_with(
+        lib.ctx.clone(),
+        WatchMode::Auto,
+        Duration::from_secs(60),
+        debounce,
+        Duration::from_secs(30),
+        lib.ctx.ignore.clone(),
+        Arc::new(RwLock::new(WatchStatus::default())),
+        shutdown.clone(),
+    );
+    tokio::time::sleep(debounce * 2).await;
+    assert!(handle.status().active);
+
+    let run = new_run(&lib, "move").await;
+    apply_run(&lib, run).await;
+    tokio::time::sleep(debounce * 8).await;
+    let jobs: Vec<String> =
+        sqlx::query_scalar("SELECT payload::text FROM jobs WHERE queue = 'library' AND payload ->> 'kind' <> 'reconcile' ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(
+        jobs.is_empty(),
+        "the watcher reacted to organizer moves: {jobs:?}"
+    );
+
+    // An ordinary change right afterwards outside the moved paths is still seen.
+    make_audio(
+        &lib.root,
+        "fresh/new.flac",
+        tags("Delta", "D", "2010", "1", "New"),
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM jobs WHERE payload ->> 'path' = 'fresh/new.flac'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if n > 0 {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "new file not seen");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    shutdown.cancel();
+    handle.join().await;
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn watcher_follows_a_switched_root(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let shutdown = CancellationToken::new();
+    let handle = watch::spawn_with(
+        lib.ctx.clone(),
+        WatchMode::Auto,
+        Duration::from_secs(60),
+        Duration::from_millis(200),
+        Duration::from_secs(30),
+        lib.ctx.ignore.clone(),
+        Arc::new(RwLock::new(WatchStatus::default())),
+        shutdown.clone(),
+    );
+    let run = new_run(&lib, "copy").await;
+    apply_run(&lib, run).await;
+    apply::run_action(&lib.ctx, run, Action::SwitchRoot, &Hooks::default())
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    make_audio(
+        &lib.target,
+        "New/2020 - N/01 - N.flac",
+        tags("New", "N", "2020", "1", "N"),
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM jobs WHERE payload ->> 'path' = 'New/2020 - N/01 - N.flac'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if n > 0 {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the new root is not watched"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    shutdown.cancel();
+    handle.join().await;
+}
+
+/// A→B while B→A: the plan does not see cycles; apply stages one file and finishes the loop.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn swap_cycle_moves_through_staging(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    // Each file sits where the other one belongs.
+    let files = vec![
+        (
+            "Alpha/2001 - First/01 - One.flac",
+            tags("Alpha", "First", "2001", "2", "Two"),
+            "Alpha/2001 - First/02 - Two.flac",
+        ),
+        (
+            "Alpha/2001 - First/02 - Two.flac",
+            tags("Alpha", "First", "2001", "1", "One"),
+            "Alpha/2001 - First/01 - One.flac",
+        ),
+    ];
+    let lib = library(&pool, &files).await;
+    let original = tree(&lib.root);
+    let original_paths = track_paths(&pool).await;
+    let ids: HashMap<String, Uuid> = original_paths
+        .iter()
+        .map(|(id, p)| (p.clone(), *id))
+        .collect();
+    let run = new_run(&lib, "move").await;
+    assert_eq!(rows(&lib, run).await.len(), 2);
+    apply_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "done");
+
+    let after = tree(&lib.root);
+    for (from, _, to) in &files {
+        assert_eq!(after[*to], original[*from], "{from} -> {to}");
+    }
+    let paths = track_paths(&pool).await;
+    for (from, _, to) in &files {
+        assert_eq!(&paths[&ids[*from]], to);
+    }
+    assert_eq!(all_files(&lib.root).len(), 2, "{:?}", all_files(&lib.root));
+    assert!(rows(&lib, run).await.iter().all(|r| r.state == "done"));
+
+    undo_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "undone");
+    assert_eq!(tree(&lib.root), original);
+    assert_eq!(track_paths(&pool).await, original_paths);
+    assert_eq!(all_files(&lib.root).len(), 2);
+}
+
+/// A swap cycle interrupted while one file is parked under its staging name.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn swap_cycle_resumes_from_staging(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    // Stopped before the first row, mid-staging, and mid-second-pass.
+    let files = vec![
+        (
+            "Alpha/2001 - First/01 - One.flac",
+            tags("Alpha", "First", "2001", "2", "Two"),
+            "Alpha/2001 - First/02 - Two.flac",
+        ),
+        (
+            "Alpha/2001 - First/02 - Two.flac",
+            tags("Alpha", "First", "2001", "1", "One"),
+            "Alpha/2001 - First/01 - One.flac",
+        ),
+    ];
+    for stop in 0..3 {
+        let lib = library(&pool, &files).await;
+        let original = tree(&lib.root);
+        let run = new_run(&lib, "move").await;
+        start(&lib, run, &["previewed"], "applying").await;
+        let hooks = Hooks {
+            stop_after: Some(stop),
+            stop_mid_row: true,
+            ..Default::default()
+        };
+        assert!(apply_with(&lib, run, &hooks).await.is_err());
+        let mut sums: Vec<_> = tree_with_hidden(&lib.root);
+        let mut want: Vec<_> = original.values().cloned().collect();
+        sums.sort();
+        want.sort();
+        assert_eq!(sums, want, "stop {stop}: a file was lost or duplicated");
+        apply_with(&lib, run, &Hooks::default()).await.unwrap();
+        let after = tree(&lib.root);
+        for (from, _, to) in &files {
+            assert_eq!(after[*to], original[*from], "stop {stop}: {from} -> {to}");
+        }
+        assert_eq!(all_files(&lib.root).len(), 2);
+        // Clean up for the next round: drop this library's rows.
+        sqlx::query("DELETE FROM organizer_runs")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM tracks")
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// Checksums of every file, staging names included.
+fn tree_with_hidden(root: &Path) -> Vec<Vec<u8>> {
+    walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| e.file_name() != ".aether-data")
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .map(|e| sha(e.path()))
+        .collect()
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn case_only_rename(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = vec![(
+        "alpha/2001 - first/01 - one.flac",
+        tags("Alpha", "First", "2001", "1", "One"),
+        "Alpha/2001 - First/01 - One.flac",
+    )];
+    let lib = library(&pool, &files).await;
+    let original = tree(&lib.root);
+    let run = new_run(&lib, "move").await;
+    let rows_before = rows(&lib, run).await;
+    assert_eq!(rows_before.len(), 1);
+    apply_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "done");
+    let after = tree(&lib.root);
+    assert_eq!(
+        after.keys().cloned().collect::<Vec<_>>(),
+        vec!["Alpha/2001 - First/01 - One.flac".to_string()]
+    );
+    assert_eq!(after.values().next(), original.values().next());
+    assert!(!lib.root.join("alpha").exists());
+    let paths = track_paths(&pool).await;
+    assert_eq!(
+        paths.values().next().unwrap(),
+        "Alpha/2001 - First/01 - One.flac"
+    );
+    undo_run(&lib, run).await;
+    assert_eq!(tree(&lib.root), original);
+}
+
+/// A copy killed after a file was placed but before its row was committed resumes without
+/// copying twice.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn crash_mid_copy_resumes_cleanly(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let original = tree(&lib.root);
+    let run = new_run(&lib, "copy").await;
+    start(&lib, run, &["previewed"], "applying").await;
+    let hooks = Hooks {
+        stop_after: Some(1),
+        stop_mid_row: true,
+        ..Default::default()
+    };
+    assert!(matches!(
+        apply_with(&lib, run, &hooks).await,
+        Err(OrganizeError::Interrupted)
+    ));
+    assert_eq!(tree(&lib.target).len(), 2);
+    apply_with(&lib, run, &Hooks::default()).await.unwrap();
+    assert_eq!(state(&lib, run).await, "done");
+    let copied = tree(&lib.target);
+    assert_eq!(copied.keys().cloned().collect::<Vec<_>>(), targets(&files));
+    for (from, _, to) in &files {
+        assert_eq!(copied[*to], original[*from]);
+    }
+    assert!(rows(&lib, run).await.iter().all(|r| r.state == "done"));
+    assert_eq!(tree(&lib.root), original);
+}
+
+/// Killed between linking a file into place and unlinking its old name: both names are the
+/// same file. The resume drops the old name instead of reporting "target exists".
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn crash_between_link_and_unlink_resumes(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let original = tree(&lib.root);
+    let run = new_run(&lib, "move").await;
+    start(&lib, run, &["previewed"], "applying").await;
+    // Reproduce the moment: checksum journalled, hard link made, old name still there.
+    let row = rows(&lib, run)
+        .await
+        .into_iter()
+        .find(|r| r.from_path == "messy/a.flac")
+        .unwrap();
+    let (src, dst) = (lib.root.join(&row.from_path), lib.root.join(&row.to_path));
+    db::set_sha(&pool, row.id, &sha(&src)).await.unwrap();
+    std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+    std::fs::hard_link(&src, &dst).unwrap();
+
+    apply_with(&lib, run, &Hooks::default()).await.unwrap();
+    assert_eq!(state(&lib, run).await, "done");
+    let after = tree(&lib.root);
+    assert_eq!(after.len(), original.len());
+    for (from, _, to) in &files {
+        assert_eq!(after[*to], original[*from]);
+        assert!(!lib.root.join(from).exists());
+    }
+    assert!(rows(&lib, run).await.iter().all(|r| r.state == "done"));
+}
+
+fn swap_files() -> Vec<(&'static str, Tags, &'static str)> {
+    vec![
+        (
+            "Alpha/2001 - First/01 - One.flac",
+            tags("Alpha", "First", "2001", "2", "Two"),
+            "Alpha/2001 - First/02 - Two.flac",
+        ),
+        (
+            "Alpha/2001 - First/02 - Two.flac",
+            tags("Alpha", "First", "2001", "1", "One"),
+            "Alpha/2001 - First/01 - One.flac",
+        ),
+    ]
+}
+
+async fn is_missing(pool: &PgPool, track: Uuid) -> bool {
+    sqlx::query_scalar("SELECT missing_since IS NOT NULL FROM tracks WHERE id = $1")
+        .bind(track)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn undo_refuses_when_track_moved_since(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let run = new_run(&lib, "move").await;
+    apply_run(&lib, run).await;
+    // After the apply, the owner moves one organized file and the scanner follows it.
+    let moved_to = "Elsewhere/one.flac";
+    std::fs::create_dir_all(lib.root.join("Elsewhere")).unwrap();
+    std::fs::rename(
+        lib.root.join("Alpha/2001 - First/01 - One.flac"),
+        lib.root.join(moved_to),
+    )
+    .unwrap();
+    let row = rows(&lib, run)
+        .await
+        .into_iter()
+        .find(|r| r.from_path == "messy/a.flac")
+        .unwrap();
+    sqlx::query("UPDATE tracks SET path = $2 WHERE id = $1")
+        .bind(row.track_id.unwrap())
+        .bind(moved_to)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let kept = tree(&lib.root)[moved_to].clone();
+
+    undo_run(&lib, run).await;
+    let all = rows(&lib, run).await;
+    let refused = all.iter().find(|r| r.id == row.id).unwrap();
+    assert_eq!(refused.state, "skipped");
+    assert_eq!(
+        refused.note.as_deref(),
+        Some("could not undo: the track moved since the apply")
+    );
+    assert_eq!(tree(&lib.root)[moved_to], kept);
+    assert!(!lib.root.join("messy/a.flac").exists());
+    assert_eq!(
+        db::track_path(&pool, row.track_id.unwrap())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(moved_to)
+    );
+    for (from, _, _) in files.iter().filter(|(f, _, _)| *f != "messy/a.flac") {
+        assert!(lib.root.join(from).exists(), "{from}");
+    }
+
+    // An undo after the library root changed is refused outright.
+    let run2 = new_run(&lib, "move").await;
+    apply_run(&lib, run2).await;
+    let elsewhere = tempfile::tempdir().unwrap();
+    lib.ctx.root.set(elsewhere.path().to_path_buf());
+    start(&lib, run2, &["done"], "undoing").await;
+    let err = apply::run_action(&lib.ctx, run2, Action::Undo, &Hooks::default()).await;
+    assert!(
+        matches!(&err, Err(OrganizeError::Refused(m)) if m.contains("library root changed")),
+        "{err:?}"
+    );
+    lib.ctx.root.set(lib.root.clone());
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn undo_refuses_after_root_switched(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let run = new_run(&lib, "copy").await;
+    apply_run(&lib, run).await;
+    apply::run_action(&lib.ctx, run, Action::SwitchRoot, &Hooks::default())
+        .await
+        .unwrap();
+    let copied = tree(&lib.target);
+    // Even without the switch stamp, the job sees that the copy is the library.
+    sqlx::query("UPDATE organizer_runs SET switched_at = NULL WHERE id = $1")
+        .bind(run)
+        .execute(&pool)
+        .await
+        .unwrap();
+    start(&lib, run, &["done"], "undoing").await;
+    let err = apply::run_action(&lib.ctx, run, Action::Undo, &Hooks::default()).await;
+    assert!(
+        matches!(&err, Err(OrganizeError::Refused(m)) if m.contains("library uses this copy")),
+        "{err:?}"
+    );
+    assert_eq!(tree(&lib.target), copied);
+}
+
+/// A staged file whose target is taken, and whose own place is taken too, stays parked; the
+/// scanner must not flag its track missing.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn parked_file_is_not_marked_missing(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = swap_files();
+    let lib = library(&pool, &files).await;
+    let run = new_run(&lib, "move").await;
+    start(&lib, run, &["previewed"], "applying").await;
+    // First pass done (one staged, one moved), then stop before the second pass.
+    let hooks = Hooks {
+        stop_after: Some(2),
+        ..Default::default()
+    };
+    assert!(apply_with(&lib, run, &hooks).await.is_err());
+    let staged = rows(&lib, run)
+        .await
+        .into_iter()
+        .find(|r| r.state == "staged")
+        .expect("one row staged");
+    // Someone takes the staged file's target meanwhile.
+    std::fs::write(lib.root.join(&staged.to_path), b"squatter").unwrap();
+    apply_with(&lib, run, &Hooks::default()).await.unwrap();
+    assert_eq!(state(&lib, run).await, "failed");
+    let row = rows(&lib, run)
+        .await
+        .into_iter()
+        .find(|r| r.id == staged.id)
+        .unwrap();
+    assert_eq!(row.state, "staged");
+    assert_eq!(
+        std::fs::read(lib.root.join(&staged.to_path)).unwrap(),
+        b"squatter"
+    );
+    let track = row.track_id.unwrap();
+    let parked = db::track_path(&pool, track).await.unwrap().unwrap();
+    assert!(parked.contains(".aether-stage-"), "{parked}");
+    assert!(lib.root.join(&parked).is_file());
+
+    let report = scan::reconcile(&lib.ctx).await.unwrap();
+    assert_eq!(report.missing, 0, "{report:?}");
+    assert!(!is_missing(&pool, track).await);
+}
+
+/// A staged file whose target is taken goes back where it came from when that is free.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn parked_file_goes_back_when_its_place_is_free(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = vec![(
+        "alpha/2001 - first/01 - one.flac",
+        tags("Alpha", "First", "2001", "1", "One"),
+        "Alpha/2001 - First/01 - One.flac",
+    )];
+    let lib = library(&pool, &files).await;
+    let original = tree(&lib.root);
+    let run = new_run(&lib, "move").await;
+    start(&lib, run, &["previewed"], "applying").await;
+    let hooks = Hooks {
+        stop_after: Some(1),
+        ..Default::default()
+    };
+    assert!(apply_with(&lib, run, &hooks).await.is_err());
+    let target = lib.root.join("Alpha/2001 - First/01 - One.flac");
+    std::fs::write(&target, b"squatter").unwrap();
+    apply_with(&lib, run, &Hooks::default()).await.unwrap();
+    let row = rows(&lib, run).await.pop().unwrap();
+    assert_eq!(row.state, "skipped");
+    assert_eq!(std::fs::read(&target).unwrap(), b"squatter");
+    let mut want = original.clone();
+    want.insert("Alpha/2001 - First/01 - One.flac".into(), sha(&target));
+    assert_eq!(tree(&lib.root), want);
+    assert_eq!(
+        db::track_path(&pool, row.track_id.unwrap())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("alpha/2001 - first/01 - one.flac")
+    );
+    assert!(all_files(&lib.root).iter().all(|f| !f.contains(".aether-")));
+}
+
+/// Killed while staging, between linking the staging name and unlinking the old name.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn crash_between_link_and_unlink_while_staging_resumes(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = swap_files();
+    let lib = library(&pool, &files).await;
+    let original = tree(&lib.root);
+    let run = new_run(&lib, "move").await;
+    start(&lib, run, &["previewed"], "applying").await;
+    // The first row in plan order is the one that gets staged. Reproduce the moment: its
+    // checksum journalled, the staging name linked, the old name still there.
+    let row = rows(&lib, run).await.into_iter().next().unwrap();
+    let src = lib.root.join(&row.from_path);
+    let (dir, name) = row.to_path.rsplit_once('/').unwrap();
+    let stage = lib
+        .root
+        .join(dir)
+        .join(format!(".aether-stage-{}-{name}", row.id));
+    db::set_sha(&pool, row.id, &sha(&src)).await.unwrap();
+    std::fs::hard_link(&src, &stage).unwrap();
+
+    apply_with(&lib, run, &Hooks::default()).await.unwrap();
+    assert_eq!(state(&lib, run).await, "done");
+    let after = tree(&lib.root);
+    for (from, _, to) in &files {
+        assert_eq!(after[*to], original[*from], "{from} -> {to}");
+    }
+    assert_eq!(all_files(&lib.root).len(), 2, "{:?}", all_files(&lib.root));
+    assert!(rows(&lib, run).await.iter().all(|r| r.state == "done"));
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn switch_root_refuses_tracks_added_after_the_preview(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let run = new_run(&lib, "copy").await;
+    apply_run(&lib, run).await;
+    make_audio(
+        &lib.root,
+        "late/new.flac",
+        tags("Late", "L", "2020", "1", "New"),
+    );
+    assert_eq!(scan::reconcile(&lib.ctx).await.unwrap().added, 1);
+    let err = apply::run_action(&lib.ctx, run, Action::SwitchRoot, &Hooks::default()).await;
+    assert!(matches!(err, Err(OrganizeError::Invalid(_))), "{err:?}");
+    assert_eq!(lib.ctx.root.get(), lib.root);
+    assert_eq!(
+        aether_db::settings::get(&pool).await.unwrap().library_root,
+        None
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn refuses_symlinked_target_folders(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let run = new_run(&lib, "move").await;
+    // After the preview, the artist folder becomes a link out of the library.
+    let outside = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(outside.path(), lib.root.join("Alpha")).unwrap();
+    apply_run(&lib, run).await;
+    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+    for r in rows(&lib, run).await {
+        if r.to_path.starts_with("Alpha/") {
+            assert_eq!(r.state, "skipped", "{r:?}");
+            assert_eq!(
+                r.note.as_deref(),
+                Some("a folder on the target path is a symbolic link")
+            );
+            assert!(lib.root.join(&r.from_path).exists());
+        } else {
+            assert_eq!(r.state, "done", "{r:?}");
+        }
+    }
+
+    // Copy mode too.
+    std::fs::create_dir_all(&lib.target).unwrap();
+    std::os::unix::fs::symlink(outside.path(), lib.target.join("Beta")).unwrap();
+    let copy = new_run(&lib, "copy").await;
+    apply_run(&lib, copy).await;
+    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+    let refused = db::all_rows(&pool, copy)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.to_path.starts_with("Beta/"))
+        .inspect(|r| assert_eq!(r.state, "skipped", "{r:?}"))
+        .count();
+    assert_eq!(refused, 2);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn unchanged_rows_are_journaled_and_left_alone(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = vec![
+        (
+            "Alpha/2001 - First/01 - One.flac",
+            tags("Alpha", "First", "2001", "1", "One"),
+            "Alpha/2001 - First/01 - One.flac",
+        ),
+        (
+            "messy/b.flac",
+            tags("Alpha", "First", "2001", "2", "Two"),
+            "Alpha/2001 - First/02 - Two.flac",
+        ),
+    ];
+    let lib = library(&pool, &files).await;
+    let original = tree(&lib.root);
+    let run = new_run(&lib, "move").await;
+    let in_place = rows(&lib, run)
+        .await
+        .into_iter()
+        .find(|r| r.from_path == "Alpha/2001 - First/01 - One.flac")
+        .unwrap();
+    assert_eq!(in_place.state, "unchanged");
+    assert_eq!(in_place.from_path, in_place.to_path);
+    let summary = db::get_run(&pool, run).await.unwrap().unwrap().summary;
+    assert_eq!(summary["unchanged"], 1);
+    assert_eq!(summary["planned"], 1);
+
+    apply_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "done");
+    let after = rows(&lib, run).await;
+    let row = after.iter().find(|r| r.id == in_place.id).unwrap();
+    assert_eq!(row.state, "unchanged");
+    assert!(row.sha256.is_none());
+    undo_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "undone");
+    assert_eq!(tree(&lib.root), original);
+    let row = rows(&lib, run)
+        .await
+        .into_iter()
+        .find(|r| r.id == in_place.id)
+        .unwrap();
+    assert_eq!(row.state, "unchanged");
+}
+
+/// Killed after a cross-filesystem copy into the staging name, before the old name was
+/// dropped; then something rewrites the source. The resume must keep both files.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn changed_source_after_a_staging_copy_is_kept(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = swap_files();
+    let lib = library(&pool, &files).await;
+    let run = new_run(&lib, "move").await;
+    start(&lib, run, &["previewed"], "applying").await;
+    let row = rows(&lib, run).await.into_iter().next().unwrap();
+    let src = lib.root.join(&row.from_path);
+    let (dir, name) = row.to_path.rsplit_once('/').unwrap();
+    let stage = lib
+        .root
+        .join(dir)
+        .join(format!(".aether-stage-{}-{name}", row.id));
+    // The copy step finished (a separate file, not a link) and the checksum is journalled.
+    db::set_sha(&pool, row.id, &sha(&src)).await.unwrap();
+    std::fs::copy(&src, &stage).unwrap();
+    let copied = std::fs::read(&stage).unwrap();
+    // Then the source is rewritten.
+    std::fs::write(&src, b"rewritten after the copy").unwrap();
+
+    apply_with(&lib, run, &Hooks::default()).await.unwrap();
+    assert_eq!(std::fs::read(&src).unwrap(), b"rewritten after the copy");
+    assert_eq!(std::fs::read(&stage).unwrap(), copied);
+    let row = rows(&lib, run)
+        .await
+        .into_iter()
+        .find(|r| r.id == row.id)
+        .unwrap();
+    assert_eq!(row.state, "failed");
+    assert_eq!(
+        row.note.as_deref(),
+        Some("the source changed after it was copied; both files were kept")
+    );
+}
+
+/// Same for a direct placement: the copy sits at the target, the source was rewritten.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn changed_source_after_a_direct_copy_is_kept(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let run = new_run(&lib, "move").await;
+    start(&lib, run, &["previewed"], "applying").await;
+    let row = rows(&lib, run)
+        .await
+        .into_iter()
+        .find(|r| r.from_path == "messy/a.flac")
+        .unwrap();
+    let (src, dst) = (lib.root.join(&row.from_path), lib.root.join(&row.to_path));
+    db::set_sha(&pool, row.id, &sha(&src)).await.unwrap();
+    std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+    std::fs::copy(&src, &dst).unwrap();
+    std::fs::write(&src, b"rewritten").unwrap();
+
+    apply_with(&lib, run, &Hooks::default()).await.unwrap();
+    assert_eq!(std::fs::read(&src).unwrap(), b"rewritten");
+    assert!(dst.exists());
+    let row = rows(&lib, run)
+        .await
+        .into_iter()
+        .find(|r| r.id == row.id)
+        .unwrap();
+    assert_eq!(row.state, "failed");
+}
+
+/// A refused undo puts the run back where it was, with the reason.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn refused_undo_does_not_leave_the_run_undoing(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let run = new_run(&lib, "move").await;
+    apply_run(&lib, run).await;
+    let elsewhere = tempfile::tempdir().unwrap();
+    lib.ctx.root.set(elsewhere.path().to_path_buf());
+    start(&lib, run, &["done"], "undoing").await;
+    // Through the job entry point, as the worker runs it.
+    apply::run_job(&lib.ctx, run, Action::Undo).await.unwrap();
+    let r = db::get_run(&pool, run).await.unwrap().unwrap();
+    assert_eq!(r.state, "done");
+    assert!(
+        r.error
+            .as_deref()
+            .is_some_and(|e| e.contains("library root changed")),
+        "{:?}",
+        r.error
+    );
+
+    // From `failed`, it goes back to `failed`.
+    db::fail_run(&pool, run, "earlier trouble").await.unwrap();
+    start(&lib, run, &["failed"], "undoing").await;
+    apply::run_job(&lib.ctx, run, Action::Undo).await.unwrap();
+    assert_eq!(state(&lib, run).await, "failed");
+    lib.ctx.root.set(lib.root.clone());
+    // And once the root is back, the undo works.
+    start(&lib, run, &["failed"], "undoing").await;
+    apply::run_job(&lib.ctx, run, Action::Undo).await.unwrap();
+    assert_eq!(state(&lib, run).await, "undone");
+}
+
+/// Rows that failed during the apply are never undone, and must not keep the run from
+/// reaching `undone`.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn undo_ends_undone_despite_apply_time_failures(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let original = tree(&lib.root);
+    let run = new_run(&lib, "move").await;
+    start(&lib, run, &["previewed"], "applying").await;
+    let hooks = Hooks {
+        force_cross_fs: true,
+        after_copy: Some(Arc::new(|part: &Path| {
+            if part.to_string_lossy().contains("02 - Two") {
+                let mut bytes = std::fs::read(part).unwrap();
+                bytes[100] ^= 0xff;
+                std::fs::write(part, bytes).unwrap();
+            }
+        })),
+        ..Default::default()
+    };
+    apply_with(&lib, run, &hooks).await.unwrap();
+    let failed = rows(&lib, run)
+        .await
+        .into_iter()
+        .filter(|r| r.state == "failed")
+        .count();
+    assert_eq!(failed, 1);
+    assert_eq!(state(&lib, run).await, "done");
+
+    undo_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "undone");
+    assert_eq!(tree(&lib.root), original);
+    let after = rows(&lib, run).await;
+    assert_eq!(after.iter().filter(|r| r.state == "failed").count(), 1);
+    assert_eq!(
+        after.iter().filter(|r| r.state == "undone").count(),
+        files.len() - 1
+    );
+}
+
+/// An undo that finds a row unsafe marks it `undo_failed`; once the cause is gone, a second
+/// undo retries and finishes it.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn undo_failed_rows_are_retried(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let original = tree(&lib.root);
+    let run = new_run(&lib, "move").await;
+    apply_run(&lib, run).await;
+    // An undo died after copying one file back (across filesystems) and before dropping the
+    // organized copy; then the organized copy was rewritten.
+    let row = rows(&lib, run)
+        .await
+        .into_iter()
+        .find(|r| r.from_path == "messy/a.flac")
+        .unwrap();
+    let (applied, home) = (lib.root.join(&row.to_path), lib.root.join(&row.from_path));
+    let bytes = std::fs::read(&applied).unwrap();
+    std::fs::create_dir_all(home.parent().unwrap()).unwrap();
+    std::fs::copy(&applied, &home).unwrap();
+    std::fs::write(&applied, b"rewritten").unwrap();
+
+    undo_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "failed");
+    let r = rows(&lib, run)
+        .await
+        .into_iter()
+        .find(|r| r.id == row.id)
+        .unwrap();
+    assert_eq!(r.state, "undo_failed");
+    assert_eq!(std::fs::read(&applied).unwrap(), b"rewritten");
+
+    // The organized file is put back as it was; the retry completes the undo.
+    std::fs::write(&applied, &bytes).unwrap();
+    undo_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "undone");
+    assert_eq!(tree(&lib.root), original);
+    assert!(rows(&lib, run).await.iter().all(|r| r.state == "undone"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Album scope, `disc_total`, grouping by album (M3b). Rows are seeded, so no ffmpeg is needed.
+
+struct Seeded {
+    root: PathBuf,
+    target: PathBuf,
+    ctx: LibraryCtx,
+    _dirs: (tempfile::TempDir, tempfile::TempDir),
+}
+
+fn seeded_lib(pool: &PgPool) -> Seeded {
+    let dir = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let target = out.path().canonicalize().unwrap().join("organized");
+    let ctx = LibraryCtx {
+        pool: pool.clone(),
+        root: root.clone().into(),
+        events: EventBus::new(256),
+        data_dir: root.join(".aether-data"),
+        ignore: IgnoreSet::new(),
+    };
+    Seeded {
+        root,
+        target,
+        ctx,
+        _dirs: (dir, out),
+    }
+}
+
+struct Row<'a> {
+    artist: &'a str,
+    album: &'a str,
+    year: i32,
+    disc: i32,
+    disc_total: Option<i32>,
+    no: i32,
+    title: &'a str,
+    path: &'a str,
+}
+
+/// Inserts a track row and a dummy file at its path; returns (track id, album id).
+async fn seed_row(pool: &PgPool, s: &Seeded, r: Row<'_>) -> (Uuid, Uuid) {
+    let mut tx = pool.begin().await.unwrap();
+    let track = aether_db::library::upsert_track(
+        &mut tx,
+        &aether_db::library::ResolvedTrack {
+            album_artist: r.artist.into(),
+            album_artist_key: r.artist.to_lowercase(),
+            track_artist: r.artist.into(),
+            album: r.album.into(),
+            album_key: r.album.to_lowercase(),
+            album_year: Some(r.year),
+            track_year: Some(r.year),
+            is_compilation: false,
+            disc: r.disc,
+            track_no: r.no,
+            title: r.title.into(),
+            duration_secs: 180,
+            codec: "mp3".into(),
+            bitrate: Some(320),
+            path: r.path.into(),
+            size: 1,
+            mtime: time::OffsetDateTime::now_utc(),
+            fingerprint: [1; 32],
+            guessed: Default::default(),
+            ids: Default::default(),
+            isrc: None,
+            disc_total: r.disc_total,
+            track_total: None,
+            artist_mbid_candidate: None,
+        },
+    )
+    .await
+    .unwrap()
+    .track;
+    tx.commit().await.unwrap();
+    let full = s.root.join(r.path);
+    std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+    std::fs::write(&full, r.path.as_bytes()).unwrap();
+    let album: Uuid = sqlx::query_scalar("SELECT album_id FROM tracks WHERE id = $1")
+        .bind(track)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    (track, album)
+}
+
+async fn scoped_preview(s: &Seeded, mode: &str, albums: Option<&[Uuid]>) -> Uuid {
+    let target = if mode == "copy" { &s.target } else { &s.root };
+    std::fs::create_dir_all(target).unwrap();
+    let (root, tgt) = (s.root.display().to_string(), target.display().to_string());
+    let id = Uuid::now_v7();
+    let run = match albums {
+        Some(a) => db::create_scoped_run(&s.ctx.pool, id, mode, &root, &tgt, None, a, "user").await,
+        None => db::create_run(&s.ctx.pool, id, mode, &root, &tgt, None).await,
+    }
+    .unwrap();
+    apply::run_action(&s.ctx, run.id, Action::Preview, &Hooks::default())
+        .await
+        .unwrap();
+    run.id
+}
+
+async fn run_rows(s: &Seeded, run: Uuid) -> Vec<db::JournalRow> {
+    db::all_rows(&s.ctx.pool, run).await.unwrap()
+}
+
+fn one<'a>(artist: &'a str, album: &'a str, title: &'a str, path: &'a str) -> Row<'a> {
+    Row {
+        artist,
+        album,
+        year: 2001,
+        disc: 1,
+        disc_total: None,
+        no: 1,
+        title,
+        path,
+    }
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn scoped_preview_plans_only_those_albums(pool: PgPool) {
+    let s = seeded_lib(&pool);
+    let (ta, album_a) = seed_row(&pool, &s, one("Alpha", "First", "One", "x/a.mp3")).await;
+    let (tb, _) = seed_row(&pool, &s, one("Beta", "Second", "Two", "x/b.mp3")).await;
+    for mode in ["move", "copy"] {
+        let run = scoped_preview(&s, mode, Some(&[album_a])).await;
+        let r = db::get_run(&pool, run).await.unwrap().unwrap();
+        assert_eq!(r.album_ids, Some(vec![album_a]));
+        assert_eq!(r.origin, "user");
+        let tracks: Vec<_> = run_rows(&s, run)
+            .await
+            .into_iter()
+            .filter_map(|r| r.track_id)
+            .collect();
+        assert_eq!(tracks, vec![ta], "{mode}");
+        assert!(!tracks.contains(&tb));
+    }
+    // An unscoped run still plans everything.
+    let run = scoped_preview(&s, "move", None).await;
+    assert_eq!(run_rows(&s, run).await.len(), 2);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn scoped_preview_never_claims_another_albums_name(pool: PgPool) {
+    let s = seeded_lib(&pool);
+    let (ta, album_a) = seed_row(&pool, &s, one("Alpha", "First", "One", "x/a.mp3")).await;
+    // Another album's file already sits at the scoped track's target.
+    seed_row(
+        &pool,
+        &s,
+        one("Gamma", "Third", "Other", "Alpha/2001 - First/01 - One.mp3"),
+    )
+    .await;
+    let run = scoped_preview(&s, "move", Some(&[album_a])).await;
+    let rows = run_rows(&s, run).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].track_id, Some(ta));
+    assert_eq!(rows[0].to_path, "Alpha/2001 - First/01 - One (2).mp3");
+    assert!(rows[0].collision);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn switch_root_refuses_scoped_run(pool: PgPool) {
+    let s = seeded_lib(&pool);
+    let (_, album) = seed_row(&pool, &s, one("Alpha", "First", "One", "x/a.mp3")).await;
+    let run = scoped_preview(&s, "copy", Some(&[album])).await;
+    assert!(
+        db::transition(&pool, run, &["previewed"], "applying")
+            .await
+            .unwrap()
+    );
+    apply::run_action(&s.ctx, run, Action::Apply, &Hooks::default())
+        .await
+        .unwrap();
+    let err = apply::run_action(&s.ctx, run, Action::SwitchRoot, &Hooks::default()).await;
+    match err {
+        Err(OrganizeError::Refused(m)) => {
+            assert_eq!(m, "Only a whole-library copy can become the library");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(s.ctx.root.get(), s.root);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn disc_total_used_in_names(pool: PgPool) {
+    let s = seeded_lib(&pool);
+    // A two-disc album whose only present track is on disc 1: the total alone gives the
+    // `D-NN` prefix.
+    let (_, album) = seed_row(
+        &pool,
+        &s,
+        Row {
+            disc_total: Some(2),
+            ..one("Alpha", "First", "One", "x/a.mp3")
+        },
+    )
+    .await;
+    let (_, single) = seed_row(&pool, &s, one("Beta", "Second", "Two", "x/b.mp3")).await;
+    let run = scoped_preview(&s, "move", Some(&[album, single])).await;
+    let mut to: Vec<String> = run_rows(&s, run)
+        .await
+        .into_iter()
+        .map(|r| r.to_path)
+        .collect();
+    to.sort();
+    assert_eq!(
+        to,
+        vec![
+            "Alpha/2001 - First/1-01 - One.mp3",
+            "Beta/2001 - Second/01 - Two.mp3"
+        ]
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn rows_by_album_never_splits_a_group(pool: PgPool) {
+    let s = seeded_lib(&pool);
+    for i in 0..25 {
+        let (artist, album) = (format!("Artist {i:02}"), format!("Album {i:02}"));
+        for n in 1..=2 {
+            let path = format!("in/{i:02}-{n}.mp3");
+            seed_row(
+                &pool,
+                &s,
+                Row {
+                    no: n,
+                    ..one(&artist, &album, &format!("T{n}"), &path)
+                },
+            )
+            .await;
+        }
+    }
+    // A sidecar in the shared source folder follows the smallest target folder (album 00).
+    std::fs::write(s.root.join("in/cover.jpg"), b"jpg").unwrap();
+    let run = scoped_preview(&s, "move", None).await;
+    // Album 24's tracks are deleted after the preview: its rows lose their track and album.
+    sqlx::query("DELETE FROM tracks WHERE path LIKE 'in/24-%'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (page1, total) = db::rows_by_album(&pool, run, 0, 20).await.unwrap();
+    assert_eq!(total, 25, "24 albums and the group without an album");
+    assert_eq!(page1.len(), 20);
+    let (page2, _) = db::rows_by_album(&pool, run, 20, 20).await.unwrap();
+    assert_eq!(page2.len(), 5);
+    for g in page1.iter().chain(&page2).filter(|g| g.album_id.is_some()) {
+        let tracks = g.rows.iter().filter(|r| r.row.track_id.is_some()).count();
+        assert_eq!(tracks, 2, "{:?}", g.album);
+    }
+    let names: Vec<_> = page1
+        .iter()
+        .chain(&page2)
+        .filter_map(|g| g.artist.clone())
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted);
+    // The sidecar goes with the folder it was planned into (its album's); album 24's
+    // leftovers trail in a group without an album.
+    let g0 = page1
+        .iter()
+        .find(|g| g.artist.as_deref() == Some("Artist 00"))
+        .unwrap();
+    assert!(g0.rows.iter().any(|r| r.row.to_path.ends_with("cover.jpg")));
+    let last = page2.last().unwrap();
+    assert!(last.album_id.is_none());
+    assert!(last.rows.iter().all(|r| r.row.track_id.is_none()));
+    assert_eq!(last.rows.len(), 2);
+    let all: usize = page1.iter().chain(&page2).map(|g| g.rows.len()).sum();
+    assert_eq!(all, run_rows(&s, run).await.len());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Task 10: sidecars, duplicate copies, sidecar undo, hard-link waiting, resume fsync
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn lrc_and_nfo_travel_with_album(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    std::fs::write(lib.root.join("messy/a.LRC"), b"[00:01.00]one").unwrap();
+    std::fs::write(lib.root.join("messy/album.nfo"), b"release notes").unwrap();
+    let run = new_run(&lib, "move").await;
+    apply_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "done");
+    let after = tree(&lib.root);
+    assert!(after.contains_key("Alpha/2001 - First/a.lrc"), "{after:?}");
+    assert!(after.contains_key("Alpha/2001 - First/album.nfo"));
+    assert!(!lib.root.join("messy/album.nfo").exists());
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn second_copy_run_plans_no_duplicates(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    std::fs::write(lib.root.join("messy/cover.jpg"), b"jpeg").unwrap();
+    let run = new_run(&lib, "copy").await;
+    apply_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "done");
+    let copied = tree(&lib.target);
+    assert_eq!(copied.len(), files.len() + 1);
+
+    let again = new_run(&lib, "copy").await;
+    let planned = rows(&lib, again).await;
+    assert_eq!(planned.len(), files.len() + 1);
+    for r in &planned {
+        assert_eq!(r.state, "unchanged", "{r:?}");
+        assert!(!r.collision && !r.to_path.contains(" (2)"), "{r:?}");
+    }
+    // Applying it changes nothing.
+    apply_run(&lib, again).await;
+    assert_eq!(tree(&lib.target), copied);
+
+    // A file changed in the target is still a collision, and is not overwritten.
+    let edited = lib.target.join("Alpha/2001 - First/01 - One.flac");
+    std::fs::write(&edited, b"edited").unwrap();
+    let third = new_run(&lib, "copy").await;
+    let planned = rows(&lib, third).await;
+    let one = planned
+        .iter()
+        .find(|r| r.from_path == "messy/a.flac")
+        .unwrap();
+    assert!(one.collision && one.to_path.contains(" (2)"), "{one:?}");
+    assert_eq!(
+        planned.iter().filter(|r| r.state == "unchanged").count(),
+        files.len()
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn sidecar_undo_checks_content(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    std::fs::write(lib.root.join("messy/cover.jpg"), b"jpeg").unwrap();
+    let run = new_run(&lib, "move").await;
+    apply_run(&lib, run).await;
+    assert_eq!(state(&lib, run).await, "done");
+    let moved = lib.root.join("Alpha/2001 - First/cover.jpg");
+    std::fs::write(&moved, b"someone else's picture").unwrap();
+
+    undo_run(&lib, run).await;
+    let all = rows(&lib, run).await;
+    let cover = all.iter().find(|r| r.track_id.is_none()).unwrap();
+    assert_eq!(cover.state, "undo_failed");
+    assert_eq!(cover.note.as_deref(), Some("changed since the move"));
+    assert_eq!(std::fs::read(&moved).unwrap(), b"someone else's picture");
+    assert!(!lib.root.join("messy/cover.jpg").exists());
+    // The tracks still went home.
+    assert!(lib.root.join("messy/a.flac").exists());
+    assert!(
+        all.iter()
+            .filter(|r| r.track_id.is_some())
+            .all(|r| r.state == "undone")
+    );
+}
+
+#[cfg(unix)]
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn hard_linked_duplicates_keep_waiting(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = vec![
+        (
+            "a/a.flac",
+            tags("Alpha", "First", "2001", "1", "One"),
+            "Alpha/2001 - First/01 - One.flac",
+        ),
+        (
+            "Alpha/2001 - First/01 - Three.flac",
+            tags("Alpha", "First", "2001", "2", "Two"),
+            "Alpha/2001 - First/02 - Two.flac",
+        ),
+        (
+            "c/c.flac",
+            tags("Alpha", "First", "2001", "1", "Three"),
+            "Alpha/2001 - First/01 - Three.flac",
+        ),
+    ];
+    let lib = library(&pool, &files).await;
+    // Rows one and two now name one inode; row three wants the second one's current path.
+    let b = lib.root.join(files[1].0);
+    std::fs::remove_file(&b).unwrap();
+    std::fs::hard_link(lib.root.join(files[0].0), &b).unwrap();
+    let run = new_run(&lib, "move").await;
+    apply_run(&lib, run).await;
+    let all = rows(&lib, run).await;
+    assert!(all.iter().all(|r| r.state == "done"), "{all:?}");
+    assert_eq!(state(&lib, run).await, "done");
+    let after = tree(&lib.root);
+    for (_, _, to) in &files {
+        assert!(after.contains_key(*to), "{to}");
+    }
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn resume_fsyncs_up_to_root(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let run = new_run(&lib, "move").await;
+    start(&lib, run, &["previewed"], "applying").await;
+    // The moment an earlier attempt died in: checksum journalled, target folders created (and
+    // never synced), the file not yet copied.
+    let row = rows(&lib, run)
+        .await
+        .into_iter()
+        .find(|r| r.from_path == "messy/a.flac")
+        .unwrap();
+    db::set_sha(&pool, row.id, &sha(&lib.root.join(&row.from_path)))
+        .await
+        .unwrap();
+    let folder = lib.root.join("Alpha/2001 - First");
+    std::fs::create_dir_all(&folder).unwrap();
+
+    let synced: Arc<std::sync::Mutex<Vec<PathBuf>>> = Arc::default();
+    let log = synced.clone();
+    let hooks = Hooks {
+        force_cross_fs: true,
+        on_sync_dir: Some(Arc::new(move |d: &Path| {
+            log.lock().unwrap().push(d.to_path_buf())
+        })),
+        ..Default::default()
+    };
+    apply_with(&lib, run, &hooks).await.unwrap();
+    assert_eq!(state(&lib, run).await, "done");
+    let synced = synced.lock().unwrap().clone();
+    // The resumed row's walk went from its folder up through `Alpha` to the root; without
+    // `started` it would stop at the folder that already existed.
+    assert!(synced.contains(&folder), "{synced:?}");
+    assert!(synced.contains(&lib.root.join("Alpha")), "{synced:?}");
+    assert!(synced.contains(&lib.root), "{synced:?}");
+}
+
+/// Copies the library, then plans and applies a second copy run (every row `unchanged`).
+async fn copied_twice(lib: &Lib) -> (Uuid, Uuid) {
+    let first = new_run(lib, "copy").await;
+    apply_run(lib, first).await;
+    assert_eq!(state(lib, first).await, "done");
+    let second = new_run(lib, "copy").await;
+    (first, second)
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn unchanged_row_reverified_before_switch_root(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let (_, second) = copied_twice(&lib).await;
+    assert!(
+        rows(&lib, second)
+            .await
+            .iter()
+            .all(|r| r.state == "unchanged")
+    );
+    apply_run(&lib, second).await;
+    assert_eq!(state(&lib, second).await, "done");
+    // The apply journalled what the targets held.
+    assert!(rows(&lib, second).await.iter().all(|r| r.sha256.is_some()));
+
+    // A target is edited after the apply: it no longer counts as copied.
+    let edited = lib.target.join("Alpha/2001 - First/01 - One.flac");
+    let mut bytes = std::fs::read(&edited).unwrap();
+    bytes[10] ^= 1;
+    std::fs::write(&edited, bytes).unwrap();
+    let before = track_paths(&pool).await;
+    let err = apply::run_action(&lib.ctx, second, Action::SwitchRoot, &Hooks::default()).await;
+    assert!(matches!(err, Err(OrganizeError::Invalid(_))), "{err:?}");
+    assert_eq!(track_paths(&pool).await, before);
+    assert_ne!(lib.ctx.root.get(), lib.target);
+    let row = rows(&lib, second)
+        .await
+        .into_iter()
+        .find(|r| r.to_path.ends_with("01 - One.flac"))
+        .unwrap();
+    assert_eq!(row.state, "skipped");
+    assert_eq!(
+        row.note.as_deref(),
+        Some("the target changed since the apply")
+    );
+
+    // A deleted target is caught the same way.
+    std::fs::remove_file(lib.target.join("Beta/2005 - Second/01 - Three.mp3")).unwrap();
+    let err = apply::run_action(&lib.ctx, second, Action::SwitchRoot, &Hooks::default()).await;
+    assert!(matches!(err, Err(OrganizeError::Invalid(_))), "{err:?}");
+    assert_eq!(track_paths(&pool).await, before);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn unchanged_row_reverified_at_apply(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let (_, second) = copied_twice(&lib).await;
+    // The target is edited between the preview and the apply.
+    let edited = lib.target.join("Alpha/2001 - First/02 - Two.flac");
+    std::fs::write(&edited, b"edited").unwrap();
+    apply_run(&lib, second).await;
+    let row = rows(&lib, second)
+        .await
+        .into_iter()
+        .find(|r| r.to_path.ends_with("02 - Two.flac"))
+        .unwrap();
+    assert_eq!(row.state, "skipped");
+    assert_eq!(std::fs::read(&edited).unwrap(), b"edited");
+    let err = apply::run_action(&lib.ctx, second, Action::SwitchRoot, &Hooks::default()).await;
+    assert!(matches!(err, Err(OrganizeError::Invalid(_))), "{err:?}");
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn duplicate_tag_tracks_second_copy_run_keeps_one_to_one(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    for identical in [true, false] {
+        let files = vec![
+            (
+                "x/a.flac",
+                tags("Alpha", "First", "2001", "1", "Same"),
+                "Alpha/2001 - First/01 - Same.flac",
+            ),
+            (
+                "y/b.flac",
+                tags("Alpha", "First", "2001", "1", "Same"),
+                "Alpha/2001 - First/01 - Same (2).flac",
+            ),
+        ];
+        // Each pass in its own library and database state.
+        sqlx::query("TRUNCATE tracks, albums, artists CASCADE")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let lib = library(&pool, &files).await;
+        let a = lib.root.join("x/a.flac");
+        let b = lib.root.join("y/b.flac");
+        if identical {
+            std::fs::copy(&a, &b).unwrap();
+        } else {
+            let mut bytes = std::fs::read(&a).unwrap();
+            bytes.push(0);
+            std::fs::write(&b, bytes).unwrap();
+        }
+        let first = new_run(&lib, "copy").await;
+        apply_run(&lib, first).await;
+        let first_rows = rows(&lib, first).await;
+        assert!(first_rows.iter().all(|r| r.state == "done"));
+        assert_eq!(tree(&lib.target).len(), 2);
+
+        let second = new_run(&lib, "copy").await;
+        let second_rows = rows(&lib, second).await;
+        assert!(
+            second_rows.iter().all(|r| r.state == "unchanged"),
+            "{identical}: {second_rows:?}"
+        );
+        for r in &second_rows {
+            let was = first_rows
+                .iter()
+                .find(|f| f.track_id == r.track_id)
+                .unwrap();
+            assert_eq!(r.to_path, was.to_path, "{identical}");
+            assert!(!r.to_path.contains("(3)"));
+        }
+        apply_run(&lib, second).await;
+        assert_eq!(tree(&lib.target).len(), 2);
+        apply::run_action(&lib.ctx, second, Action::SwitchRoot, &Hooks::default())
+            .await
+            .unwrap();
+        let paths: std::collections::HashSet<_> = track_paths(&pool).await.into_values().collect();
+        assert_eq!(paths.len(), 2, "{identical}");
+    }
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn undo_leaves_unchanged_target_alone(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let (_, second) = copied_twice(&lib).await;
+    apply_run(&lib, second).await;
+    let copied = tree(&lib.target);
+    undo_run(&lib, second).await;
+    assert_eq!(state(&lib, second).await, "undone");
+    assert_eq!(tree(&lib.target), copied);
+    assert!(
+        rows(&lib, second)
+            .await
+            .iter()
+            .all(|r| r.state == "unchanged")
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn mixed_disc_total_uses_the_album_maximum(pool: PgPool) {
+    let s = seeded_lib(&pool);
+    // One track carries a total of 2, the other none: both get the `D-NN` prefix.
+    let (_, album) = seed_row(
+        &pool,
+        &s,
+        Row {
+            disc_total: Some(2),
+            ..one("Alpha", "First", "One", "x/a.mp3")
+        },
+    )
+    .await;
+    seed_row(
+        &pool,
+        &s,
+        Row {
+            no: 2,
+            ..one("Alpha", "First", "Two", "x/b.mp3")
+        },
+    )
+    .await;
+    let run = scoped_preview(&s, "move", Some(&[album])).await;
+    let mut to: Vec<String> = run_rows(&s, run)
+        .await
+        .into_iter()
+        .map(|r| r.to_path)
+        .collect();
+    to.sort();
+    assert_eq!(
+        to,
+        vec![
+            "Alpha/2001 - First/1-01 - One.mp3",
+            "Alpha/2001 - First/1-02 - Two.mp3"
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Task 11: symlinks (D-123) and scoped sidecars
+
+/// Moves the target's `Alpha/2001 - First` out of the target root and puts a symlink to it
+/// in its place: the same files, reached through a link.
+#[cfg(unix)]
+fn link_target_folder(lib: &Lib, outside: &Path) {
+    let folder = lib.target.join("Alpha/2001 - First");
+    let moved = outside.join("First");
+    std::fs::rename(&folder, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &folder).unwrap();
+}
+
+#[cfg(unix)]
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn symlinked_target_is_not_an_unchanged_copy_at_apply(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let (_, second) = copied_twice(&lib).await;
+    let outside = tempfile::tempdir().unwrap();
+    link_target_folder(&lib, outside.path());
+    apply_run(&lib, second).await;
+    for r in rows(&lib, second).await {
+        if r.to_path.starts_with("Alpha/2001 - First/") {
+            assert_eq!(r.state, "skipped", "{r:?}");
+            assert_eq!(
+                r.note.as_deref(),
+                Some("the target changed since the preview")
+            );
+        } else {
+            assert_eq!(r.state, "unchanged", "{r:?}");
+        }
+    }
+    let err = apply::run_action(&lib.ctx, second, Action::SwitchRoot, &Hooks::default()).await;
+    assert!(matches!(err, Err(OrganizeError::Invalid(_))), "{err:?}");
+    assert_ne!(lib.ctx.root.get(), lib.target);
+}
+
+#[cfg(unix)]
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn symlinked_target_is_not_copied_at_switch(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let files = messy();
+    let lib = library(&pool, &files).await;
+    let (_, second) = copied_twice(&lib).await;
+    apply_run(&lib, second).await;
+    assert_eq!(state(&lib, second).await, "done");
+    // Same bytes, so the journalled checksums still match; only the link differs.
+    let outside = tempfile::tempdir().unwrap();
+    link_target_folder(&lib, outside.path());
+    let before = track_paths(&pool).await;
+    let err = apply::run_action(&lib.ctx, second, Action::SwitchRoot, &Hooks::default()).await;
+    assert!(matches!(err, Err(OrganizeError::Invalid(_))), "{err:?}");
+    assert_eq!(track_paths(&pool).await, before);
+    assert_ne!(lib.ctx.root.get(), lib.target);
+    let linked: Vec<_> = rows(&lib, second)
+        .await
+        .into_iter()
+        .filter(|r| r.to_path.starts_with("Alpha/2001 - First/") && r.track_id.is_some())
+        .collect();
+    assert!(!linked.is_empty());
+    for r in linked {
+        assert_eq!(r.state, "skipped", "{r:?}");
+        assert_eq!(
+            r.note.as_deref(),
+            Some("the target changed since the apply")
+        );
+    }
+}
+
+#[cfg(unix)]
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn symlinked_source_track_is_refused(pool: PgPool) {
+    let s = seeded_lib(&pool);
+    let (linked, _) = seed_row(&pool, &s, one("Alpha", "First", "One", "x/a.mp3")).await;
+    let (plain, _) = seed_row(&pool, &s, one("Beta", "Second", "Two", "y/b.mp3")).await;
+    // The first track's file becomes a link to a copy outside the library.
+    let outside = tempfile::tempdir().unwrap();
+    let real = outside.path().join("a.mp3");
+    std::fs::rename(s.root.join("x/a.mp3"), &real).unwrap();
+    std::os::unix::fs::symlink(&real, s.root.join("x/a.mp3")).unwrap();
+    for mode in ["copy", "move"] {
+        let run = scoped_preview(&s, mode, None).await;
+        assert!(
+            db::transition(&pool, run, &["previewed"], "applying")
+                .await
+                .unwrap()
+        );
+        apply::run_action(&s.ctx, run, Action::Apply, &Hooks::default())
+            .await
+            .unwrap();
+        for r in run_rows(&s, run).await {
+            if r.track_id == Some(linked) {
+                assert_eq!(r.state, "skipped", "{mode}: {r:?}");
+                assert_eq!(
+                    r.note.as_deref(),
+                    Some("the source is reached through a symbolic link")
+                );
+            } else {
+                assert_eq!(r.track_id, Some(plain));
+                assert_eq!(r.state, "done", "{mode}: {r:?}");
+            }
+        }
+        // The link is where it was, still a link.
+        let meta = std::fs::symlink_metadata(s.root.join("x/a.mp3")).unwrap();
+        assert!(meta.file_type().is_symlink(), "{mode}");
+    }
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn scoped_move_leaves_shared_folder_sidecars(pool: PgPool) {
+    let s = seeded_lib(&pool);
+    // `x` holds a track of each album; `y` only one of the scoped album.
+    let (_, album_a) = seed_row(&pool, &s, one("Alpha", "First", "One", "x/a.mp3")).await;
+    seed_row(&pool, &s, one("Beta", "Second", "Two", "x/b.mp3")).await;
+    seed_row(
+        &pool,
+        &s,
+        Row {
+            no: 2,
+            ..one("Alpha", "First", "Three", "y/c.mp3")
+        },
+    )
+    .await;
+    std::fs::write(s.root.join("x/cover.jpg"), b"shared").unwrap();
+    std::fs::write(s.root.join("y/folder.jpg"), b"own").unwrap();
+
+    let run = scoped_preview(&s, "move", Some(&[album_a])).await;
+    let sidecars: Vec<String> = run_rows(&s, run)
+        .await
+        .into_iter()
+        .filter(|r| r.track_id.is_none())
+        .map(|r| r.from_path)
+        .collect();
+    assert_eq!(sidecars, vec!["y/folder.jpg"]);
+
+    // A copy takes nothing away, so it still brings the shared cover along.
+    let run = scoped_preview(&s, "copy", Some(&[album_a])).await;
+    let mut sidecars: Vec<String> = run_rows(&s, run)
+        .await
+        .into_iter()
+        .filter(|r| r.track_id.is_none())
+        .map(|r| r.from_path)
+        .collect();
+    sidecars.sort();
+    assert_eq!(sidecars, vec!["x/cover.jpg", "y/folder.jpg"]);
+
+    // Unscoped, the shared folder's sidecars move as before.
+    let run = scoped_preview(&s, "move", None).await;
+    let mut sidecars: Vec<String> = run_rows(&s, run)
+        .await
+        .into_iter()
+        .filter(|r| r.track_id.is_none())
+        .map(|r| r.from_path)
+        .collect();
+    sidecars.sort();
+    assert_eq!(sidecars, vec!["x/cover.jpg", "y/folder.jpg"]);
+}

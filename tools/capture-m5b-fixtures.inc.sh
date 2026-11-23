@@ -1,14 +1,14 @@
 # shellcheck shell=bash
 # M5b captures (plan 2026-11-19-m5b-mixes-radio.md, Task 19). Sourced by tools/capture-api-fixtures.sh when
-# KIMA_CAPTURE_SET=m5b (alone). Expects: base (API root of the run's kima server), token, stage (staging dir),
+# AETHER_CAPTURE_SET=m5b (alone). Expects: base (API root of the run's aether server), token, stage (staging dir),
 # server_pid, harness_pid (empty; set here so the caller's cleanup stops it), tmp, root, request() from the caller.
 #
 # Two variants, every capture recorded in m5b_capture_manifest.json with its variant, upstream route template,
 # path and status:
-# - live: the run's own kima server as shipped: no mood heads (blocked, owner M5 Q3), kima-rs's empty release
-#   catalog (D-267), KIMA_NET_DENY_REAL=1 (the update check is refused and answers like a failed check, D-270).
+# - live: the run's own aether server as shipped: no mood heads (blocked, owner M5 Q3), aether's empty release
+#   catalog (D-267), AETHER_NET_DENY_REAL=1 (the update check is refused and answers like a failed check, D-270).
 #   Pages that need the heads answer their real 400/200-empty replies.
-# - heads: after the live captures the server is stopped and crates/kima-api/tests/m5b_capture.rs serves the same
+# - heads: after the live captures the server is stopped and crates/aether-api/tests/m5b_capture.rs serves the same
 #   router on the same database with synthetic mood heads and a one-release synthetic catalog installed, so the
 #   recipe pages, the mood/workout stations and the release window answer 2xx with data.
 # Before the live captures the harness seeds (plain SQL, see its module doc) mood scores, readings, DSP tempo/key,
@@ -82,12 +82,12 @@ for id in $(jq -r '.[0:6][]' <<< "$m5b_ids"); do
 done
 
 # --- The harness binary (built from this checkout), then the seed.
-cargo test -p kima-api --test m5b_capture --no-run --message-format=json 2>> "$tmp/build.log" > "$tmp/harness-build.json" \
+cargo test -p aether-api --test m5b_capture --no-run --message-format=json 2>> "$tmp/build.log" > "$tmp/harness-build.json" \
   || { cat "$tmp/build.log" >&2; exit 1; }
 harness="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "m5b_capture" and .executable != null)
   | .executable' "$tmp/harness-build.json" | tail -n1)"
 [[ -x "$harness" ]] || { echo 'm5b capture harness was not built' >&2; exit 1; }
-KIMA_M5B_CAPTURE=1 "$harness" --ignored --exact m5b_capture_seed --nocapture > "$tmp/seed.log" 2>&1 \
+AETHER_M5B_CAPTURE=1 "$harness" --ignored --exact m5b_capture_seed --nocapture > "$tmp/seed.log" 2>&1 \
   || { cat "$tmp/seed.log" >&2; exit 1; }
 grep -F 'm5b capture seed: ' "$tmp/seed.log" >&2
 
@@ -140,7 +140,7 @@ kill "$server_pid" 2>/dev/null || true
 wait "$server_pid" 2>/dev/null || true
 server_pid=''
 hport="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
-KIMA_M5B_CAPTURE=1 KIMA_M5B_CAPTURE_PORT="$hport" "$harness" --ignored --exact m5b_capture_serve --nocapture \
+AETHER_M5B_CAPTURE=1 AETHER_M5B_CAPTURE_PORT="$hport" "$harness" --ignored --exact m5b_capture_serve --nocapture \
   > "$tmp/harness.log" 2>&1 & harness_pid=$!
 hbase="http://127.0.0.1:$hport/api"
 for _ in {1..60}; do
@@ -174,9 +174,9 @@ harness_pid=''
 # --- Fail before any copy: the manifest, all 22 upstream routes answered 2xx, no token in any body, cross-ids.
 jq -Rn --arg head "$(git rev-parse HEAD)" --arg tz "$tz" '
   {source: {head: $head, tz: $tz,
-            live: "the run'"'"'s kima server: no mood heads, the shipped empty release catalog, KIMA_NET_DENY_REAL=1",
-            heads: "crates/kima-api/tests/m5b_capture.rs m5b_capture_serve: same router and database, synthetic mood heads and a one-release synthetic catalog",
-            seed: "crates/kima-api/tests/m5b_capture.rs m5b_capture_seed (SQL: vectors, mood scores, readings, tempo/key, mood tags, mood statistics, cover tokens, owner genres, similar artists)"},
+            live: "the run'"'"'s aether server: no mood heads, the shipped empty release catalog, AETHER_NET_DENY_REAL=1",
+            heads: "crates/aether-api/tests/m5b_capture.rs m5b_capture_serve: same router and database, synthetic mood heads and a one-release synthetic catalog",
+            seed: "crates/aether-api/tests/m5b_capture.rs m5b_capture_seed (SQL: vectors, mood scores, readings, tempo/key, mood tags, mood statistics, cover tokens, owner genres, similar artists)"},
    captures: [inputs | split("\t") | {name: .[0], variant: .[1], route: .[2], method: .[3], path: .[4],
               status: (.[5] | tonumber)}]}' < "$m5b_manifest" > "$stage/m5b_capture_manifest.json"
 [[ "$(jq '.captures | length' "$stage/m5b_capture_manifest.json")" == "${#m5b_names[@]}" ]] \

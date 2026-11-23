@@ -1,0 +1,535 @@
+use std::time::Duration;
+
+use aether_core::events::EventBus;
+use aether_db::PgPool;
+use aether_jobs::queue;
+use aether_library::scan::LibraryCtx;
+use aether_server::jobs::{Registry, drain, spawn_all};
+use serde_json::json;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+
+async fn wait_for_state(pool: &PgPool, id: Uuid, want: &str) -> (String, Option<String>) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let row: (String, Option<String>) =
+            sqlx::query_as("SELECT state, last_error FROM jobs WHERE id = $1")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        if row.0 == want || tokio::time::Instant::now() > deadline {
+            return row;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn library_queue_runs_reconcile_and_path_jobs(pool: PgPool) {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("readme.txt"), "not audio").unwrap();
+    let events = EventBus::new(64);
+    let mut rx = events.subscribe();
+    let mut registry = Registry::new();
+    registry.register_library(LibraryCtx {
+        pool: pool.clone(),
+        root: root.path().to_path_buf().into(),
+        events,
+        data_dir: root.path().join(".data"),
+        ignore: Default::default(),
+    });
+    let shutdown = CancellationToken::new();
+    let workers = spawn_all(&pool, registry, shutdown.clone());
+
+    let reconcile = aether_library::jobs::enqueue_reconcile(&pool)
+        .await
+        .unwrap()
+        .expect("nothing queued yet");
+    let path = aether_library::jobs::enqueue_path(&pool, "gone.mp3")
+        .await
+        .unwrap()
+        .expect("queued");
+    let organize = queue::enqueue(&pool, "library", json!({"kind": "organize"}), 1)
+        .await
+        .unwrap();
+
+    assert_eq!(wait_for_state(&pool, reconcile, "done").await.0, "done");
+    assert_eq!(wait_for_state(&pool, path, "done").await.0, "done");
+    let (state, error) = wait_for_state(&pool, organize, "failed").await;
+    assert_eq!(state, "failed");
+    // An organize payload without a run id is malformed.
+    assert!(error.unwrap().contains("invalid library job payload"));
+
+    let ev = rx.recv().await.unwrap();
+    assert_eq!(ev.data["type"], "library:progress");
+    assert_eq!(ev.data["job"], "scan");
+
+    shutdown.cancel();
+    drain(workers, Duration::from_secs(5)).await;
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn startup_reconcile_is_not_queued_twice(pool: PgPool) {
+    assert!(
+        aether_library::jobs::enqueue_reconcile(&pool)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        aether_library::jobs::enqueue_reconcile(&pool)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// A reconcile left `running` by a killed process must not block the startup reconcile for
+/// its lease: startup requeues it (instead of adding a second one).
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn startup_requeues_a_reconcile_left_running(pool: PgPool) {
+    let stuck = aether_library::jobs::enqueue_reconcile(&pool)
+        .await
+        .unwrap()
+        .unwrap();
+    queue::claim(&pool, "library", 1, Duration::from_secs(300))
+        .await
+        .unwrap();
+    aether_server::jobs::prepare_library_queue(&pool)
+        .await
+        .unwrap();
+    let rows: Vec<(Uuid, String, bool)> =
+        sqlx::query_as("SELECT id, state, run_at <= now() FROM jobs WHERE queue = 'library'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(rows, vec![(stuck, "queued".to_string(), true)]);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn startup_queues_a_reconcile_when_none_is_pending(pool: PgPool) {
+    aether_server::jobs::prepare_library_queue(&pool)
+        .await
+        .unwrap();
+    aether_server::jobs::prepare_library_queue(&pool)
+        .await
+        .unwrap();
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE queue = 'library' AND payload->>'kind' = 'reconcile'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn library_root_setting_overrides_music_path(pool: PgPool) {
+    let music = std::path::Path::new("/music");
+    assert_eq!(
+        aether_library::scan::effective_root(&pool, music)
+            .await
+            .unwrap(),
+        music
+    );
+    aether_db::settings::update(
+        &pool,
+        aether_db::settings::SettingsPatch {
+            library_root: Some("/organized".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        aether_library::scan::effective_root(&pool, music)
+            .await
+            .unwrap(),
+        std::path::Path::new("/organized")
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn library_queue_uses_default_lease(pool: PgPool) {
+    let mut registry = Registry::new();
+    registry.register_library(LibraryCtx {
+        pool: pool.clone(),
+        root: std::path::PathBuf::from("/music").into(),
+        events: EventBus::new(4),
+        data_dir: "/data".into(),
+        ignore: Default::default(),
+    });
+    let config = registry.config("library").unwrap();
+    let default = aether_jobs::worker::WorkerConfig::new("library", 1);
+    assert_eq!(config.concurrency, 1);
+    assert_eq!(config.lease, default.lease);
+    assert_eq!(config.heartbeat, default.heartbeat);
+}
+
+/// Review Focus 4, at startup: a run left `applying` whose job is gone (it died on its final
+/// attempt) gets a new apply job; one whose job was merely requeued does not get a second.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn startup_resumes_interrupted_organizer_runs(pool: PgPool) {
+    use aether_db::organizer;
+    use aether_library::organize::apply::{self, Action};
+    let orphan = organizer::create_run(&pool, Uuid::now_v7(), "move", "/m", "/m", None)
+        .await
+        .unwrap();
+    let with_job = organizer::create_run(&pool, Uuid::now_v7(), "move", "/m", "/m", None)
+        .await
+        .unwrap();
+    for run in [orphan.id, with_job.id] {
+        assert!(
+            organizer::transition(&pool, run, &["planning"], "applying")
+                .await
+                .unwrap()
+        );
+    }
+    apply::enqueue(&pool, with_job.id, Action::Apply)
+        .await
+        .unwrap();
+    aether_server::jobs::prepare_library_queue(&pool)
+        .await
+        .unwrap();
+    aether_server::jobs::prepare_library_queue(&pool)
+        .await
+        .unwrap();
+    let jobs: Vec<(String, String)> = sqlx::query_as(
+        "SELECT payload ->> 'runId', payload ->> 'action' FROM jobs
+         WHERE payload ->> 'kind' = 'organize' ORDER BY payload ->> 'runId'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut want = vec![
+        (orphan.id.to_string(), "apply".to_string()),
+        (with_job.id.to_string(), "apply".to_string()),
+    ];
+    want.sort();
+    assert_eq!(jobs, want);
+}
+
+async fn enrich_jobs(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM jobs WHERE queue = 'enrich'")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Runs one reconcile through the registered `library` worker and waits for it.
+async fn reconcile_once(pool: &PgPool, root: &std::path::Path) {
+    let mut registry = Registry::new();
+    registry.register_library(LibraryCtx {
+        pool: pool.clone(),
+        root: root.to_path_buf().into(),
+        events: EventBus::new(64),
+        data_dir: root.join(".data"),
+        ignore: Default::default(),
+    });
+    let shutdown = CancellationToken::new();
+    let workers = spawn_all(pool, registry, shutdown.clone());
+    let id = aether_library::jobs::enqueue_reconcile(pool)
+        .await
+        .unwrap()
+        .expect("nothing queued");
+    assert_eq!(wait_for_state(pool, id, "done").await.0, "done");
+    shutdown.cancel();
+    drain(workers, Duration::from_secs(5)).await;
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn reconcile_with_changes_kicks(pool: PgPool) {
+    if !aether_test_support::require_ffmpeg() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    aether_test_support::make_audio(
+        root.path(),
+        "A/B/01.flac",
+        aether_test_support::Tags::full(),
+    );
+    reconcile_once(&pool, root.path()).await;
+    assert_eq!(enrich_jobs(&pool).await, 1, "the reconcile added a track");
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn unchanged_reconcile_does_not_kick(pool: PgPool) {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("readme.txt"), "not audio").unwrap();
+    reconcile_once(&pool, root.path()).await;
+    assert_eq!(enrich_jobs(&pool).await, 0);
+}
+
+fn ident_ctx(pool: &PgPool) -> aether_ident::IdentCtx {
+    aether_ident::IdentCtx {
+        pool: pool.clone(),
+        net: std::sync::Arc::new(aether_net::Net::disabled()),
+        cipher: std::sync::Arc::new(aether_core::cipher::Cipher::from_secret("t")),
+        events: EventBus::new(4),
+        progress_events: aether_ident::events::ProgressEvents::new(EventBus::new(4)),
+        embedding_runtime: Default::default(),
+        analysis_runtime: Default::default(),
+        acoustid_hold: Default::default(),
+        library: LibraryCtx {
+            pool: pool.clone(),
+            root: std::path::PathBuf::from("/music").into(),
+            events: EventBus::new(4),
+            data_dir: "/data".into(),
+            ignore: Default::default(),
+        },
+        settings: aether_db::settings_kv::SettingsCache::new(
+            pool.clone(),
+            std::sync::Arc::new(aether_core::cipher::Cipher::from_secret("t")),
+        ),
+        config: aether_ident::IdentConfig::default(),
+        last_cycle: Default::default(),
+    }
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn enrich_queue_registered_with_concurrency_one(pool: PgPool) {
+    let ctx = ident_ctx(&pool);
+    let mut registry = Registry::new();
+    registry.register_enrich(ctx);
+    let config = registry.config("enrich").unwrap();
+    let default = aether_jobs::worker::WorkerConfig::new("enrich", 1);
+    assert_eq!(config.concurrency, 1);
+    assert_eq!(config.lease, default.lease);
+}
+
+/// The server registers three queues: `autotag` and `enrich` at concurrency 1 with the
+/// default lease, and `library`.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn registered_queues_are_autotag_enrich_library(pool: PgPool) {
+    let ctx = ident_ctx(&pool);
+    let mut registry = Registry::new();
+    registry.register_library(ctx.library.clone());
+    registry.register_autotag(ctx.clone());
+    registry.register_enrich(ctx);
+    assert_eq!(registry.queues(), ["autotag", "enrich", "library"]);
+    let config = registry.config("autotag").unwrap();
+    let default = aether_jobs::worker::WorkerConfig::new("autotag", 1);
+    assert_eq!(config.concurrency, 1);
+    assert_eq!(config.lease, default.lease);
+}
+
+/// Startup requeues an autotag search a dead process left running and puts its album back
+/// to `queued`; an album `searching` with no job left is `failed`.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn prepare_autotag_queue_recovers_searches(pool: PgPool) {
+    let mut albums = Vec::new();
+    for n in 0..2 {
+        let artist = Uuid::now_v7();
+        sqlx::query("INSERT INTO artists (id, name, name_key) VALUES ($1, $2, $2)")
+            .bind(artist)
+            .bind(format!("artist {n}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let album = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO albums (id, artist_id, title, title_key) VALUES ($1, $2, 'x', 'x')",
+        )
+        .bind(album)
+        .bind(artist)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO autotag_albums (album_id, state) VALUES ($1, 'searching')")
+            .bind(album)
+            .execute(&pool)
+            .await
+            .unwrap();
+        albums.push(album);
+    }
+    let job = queue::enqueue(
+        &pool,
+        "autotag",
+        json!({"kind": "search", "albumId": albums[0]}),
+        3,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE jobs SET state = 'running', attempts = 1 WHERE id = $1")
+        .bind(job)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    aether_server::jobs::prepare_autotag_queue(&pool)
+        .await
+        .unwrap();
+
+    let job_state: String = sqlx::query_scalar("SELECT state FROM jobs WHERE id = $1")
+        .bind(job)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(job_state, "queued");
+    let state = |album: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (String, Option<String>)>(
+                "SELECT state, error FROM autotag_albums WHERE album_id = $1",
+            )
+            .bind(album)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(state(albums[0]).await, ("queued".into(), None));
+    assert_eq!(
+        state(albums[1]).await,
+        ("failed".into(), Some("The search was interrupted".into()))
+    );
+}
+
+fn config(sync: Option<&str>) -> aether_core::config::Config {
+    aether_core::config::Config::from_lookup(|k| match k {
+        "DATABASE_URL" => Some("postgres://unused".into()),
+        "AETHER_LIBRARY_SYNC_CRON" => sync.map(str::to_string),
+        _ => None,
+    })
+    .unwrap()
+}
+
+#[test]
+fn schedule_has_prune_and_kick_always() {
+    let names = |sync: Option<aether_jobs::schedule::Cron>, cfg| {
+        aether_server::schedule_entries(&cfg, sync)
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .collect::<Vec<_>>()
+    };
+    // Sync off still gives the three always-on entries.
+    assert_eq!(
+        names(None, config(Some("off"))),
+        vec!["http-cache-prune", "enrich-kick", "podcast-refresh-sweep"]
+    );
+    let cron = aether_jobs::schedule::Cron::parse("0 4 * * *").unwrap();
+    assert_eq!(
+        names(Some(cron), config(None)),
+        vec![
+            "library-sync",
+            "http-cache-prune",
+            "enrich-kick",
+            "podcast-refresh-sweep"
+        ]
+    );
+    // The fire times: 03:17 daily, every ten minutes.
+    let entries = aether_server::schedule_entries(&config(Some("off")), None);
+    let t = time::macros::datetime!(2026-01-01 00:00:00 UTC);
+    assert_eq!(
+        entries[0].1.next_after(t),
+        Some(time::macros::datetime!(2026-01-01 03:17:00 UTC))
+    );
+    assert_eq!(
+        entries[1].1.next_after(t),
+        Some(time::macros::datetime!(2026-01-01 00:10:00 UTC))
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn schedule_entries_prune_and_kick(pool: PgPool) {
+    let entries = aether_server::schedule_entries(&config(Some("off")), None);
+    sqlx::query(
+        "INSERT INTO http_cache (key, source, request, outcome, body, expires_at)
+         VALUES ('k', 'musicbrainz', 'r', 'answered', '{}', now() - interval '1 day')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO genres (id, name, key) VALUES ($1, 'Rock', 'rock')")
+        .bind(Uuid::now_v7())
+        .execute(&pool)
+        .await
+        .unwrap();
+    (entries[0].2)(pool.clone()).await.unwrap();
+    let left: (i64, i64) =
+        sqlx::query_as("SELECT (SELECT count(*) FROM http_cache), (SELECT count(*) FROM genres)")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(left, (0, 0));
+    (entries[1].2)(pool.clone()).await.unwrap();
+    assert_eq!(enrich_jobs(&pool).await, 1);
+}
+
+/// Upstream `clearMixCache` (`workers/unifiedEnrichment.ts:1263-1276`, reference `9450c94b`, D-260): a completed
+/// enrichment cycle drops every cached mix (the lists, the energy band, the familiarity scans) from the listener
+/// store, once per completion point per process; station sessions and radio covers are not mixes and stay.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn completed_enrichment_cycle_drops_the_cached_mixes(pool: PgPool) {
+    use aether_mixes::store::{ListenerStore, SaveMode, StationSession};
+    let ctx = ident_ctx(&pool);
+    let store = std::sync::Arc::new(ListenerStore::new());
+    let stop = CancellationToken::new();
+    aether_mixes::store::spawn_full_drop(
+        store.clone(),
+        ctx.progress_events.subscribe_mix_clears(),
+        stop.clone(),
+    );
+    let me = Uuid::from_u128(1);
+    let fill = |store: &ListenerStore| {
+        let now = std::time::Instant::now();
+        store.put_mix_list(me, "UTC", std::sync::Arc::new(json!([{"id": "l"}])), now);
+        store.put_energy_band(Some((0.1, 0.2)), now);
+        store.put_familiar(me, "sig", None, now);
+        store.save_session(
+            "mood:calm",
+            me,
+            StationSession {
+                seed: "s".into(),
+                start: 0,
+                pass: 0,
+                length: 1,
+                last_artist: "a".into(),
+                ids: std::sync::Arc::new(vec![Uuid::from_u128(2)]),
+            },
+            SaveMode::Replace,
+            now,
+        );
+    };
+    let cached = |store: &ListenerStore| {
+        let now = std::time::Instant::now();
+        (
+            store.mix_list(me, "UTC", now).is_some(),
+            store.energy_band(now).is_some(),
+            store.familiar(me, "sig", now).is_some(),
+        )
+    };
+    fill(&store);
+    assert_eq!(cached(&store), (true, true, true));
+    // An empty library: core and full enrichment are complete after the first cycle.
+    let report = aether_ident::coordinator::run_cycle(&ctx, &CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(report.ran);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while cached(&store) != (false, false, false) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        cached(&store),
+        (false, false, false),
+        "dropped after the cycle"
+    );
+    assert!(
+        store
+            .touch_session("mood:calm", me, std::time::Instant::now())
+            .is_some(),
+        "a station session is not a mix"
+    );
+    // Once per point per process: a later completed cycle (the same publisher, no minimum gap) drops nothing.
+    fill(&store);
+    let mut again = ident_ctx(&pool);
+    again.progress_events = ctx.progress_events.clone();
+    aether_ident::coordinator::run_cycle(&again, &CancellationToken::new())
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(cached(&store), (true, true, true));
+    stop.cancel();
+}

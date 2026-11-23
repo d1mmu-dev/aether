@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generates the library used by tools/run-kima-web-visual.sh: 4 artists, 6 albums, 22 tracks of ffmpeg
+# Generates the library used by tools/run-aether-web-visual.sh: 4 artists, 6 albums, 22 tracks of ffmpeg
 # sine tones with real artist/album/title tags and generated cover art (folder cover.jpg + embedded).
 # Usage: FFMPEG=/path/to/ffmpeg tools/make-visual-library.sh <output-dir>
 set -euo pipefail

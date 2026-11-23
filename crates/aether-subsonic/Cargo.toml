@@ -1,0 +1,45 @@
+[package]
+name = "aether-subsonic"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axum.workspace = true
+form_urlencoded.workspace = true
+hex.workspace = true
+hmac.workspace = true
+aether-api.workspace = true
+aether-core.workspace = true
+aether-db.workspace = true
+aether-ident.workspace = true
+aether-jobs.workspace = true
+aether-library.workspace = true
+aether-net.workspace = true
+aether-podcast.workspace = true
+md-5.workspace = true
+quick-xml.workspace = true
+rand.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+axum-test.workspace = true
+base64.workspace = true
+image.workspace = true
+insta.workspace = true
+aether-api.workspace = true
+aether-ml.workspace = true
+aether-net = { workspace = true, features = ["testing"] }
+aether-vibe.workspace = true
+reqwest.workspace = true
+tempfile.workspace = true
+aether-test-support = { workspace = true, features = ["profiles"] }

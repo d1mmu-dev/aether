@@ -1,0 +1,1335 @@
+//! The enrichment coordinator (spec §10.6): the cycle's state machine, what it runs and when
+//! it queues the next one, kick, prepare, and Review Focus 1 (identification switched off
+//! makes no request while fingerprints are still computed). Replay only.
+
+mod common;
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+use aether_core::identify::IdentifySwitch;
+use aether_db::PgPool;
+use aether_db::enrichment::{self, Status};
+use aether_ident::IdentCtx;
+use aether_ident::coordinator::{self, CYCLE_KIND, MAX_ATTEMPTS, QUEUE};
+use aether_jobs::queue;
+use aether_jobs::worker::{WorkerConfig, spawn_worker};
+use aether_net::Bases;
+use aether_net::testing::{Entry, Recording, Replay};
+use aether_test_support::{Tags, make_audio, require_ffmpeg};
+use common::{ident_ctx, ident_ctx_with};
+use serde_json::{Value, json};
+use sqlx::Row;
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+
+fn rec_id(n: u32) -> String {
+    format!("00000000-0000-4000-8000-{n:012}")
+}
+
+fn get(url: &str, body: Value) -> Entry {
+    Entry {
+        method: "GET".into(),
+        url: url.into(),
+        status: 200,
+        headers: BTreeMap::new(),
+        body,
+        body_base64: None,
+        request_body_sha256: None,
+    }
+}
+
+/// The one request the file-tag rung makes for `rec`.
+fn details(rec: &str) -> Entry {
+    get(
+        &format!("/recording/{rec}?inc=isrcs+genres+tags&fmt=json"),
+        json!({"id": rec, "title": "Tone", "length": 30_000, "isrcs": [], "genres": [], "tags": []}),
+    )
+}
+
+/// Copies the 30 s chromaprint fixture to `root/rel` (a 2 s tone is too short to fingerprint).
+fn tone(root: &Path, rel: &str) {
+    let out = root.join(rel);
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/fixtures/chromaprint/tone.wav");
+    std::fs::copy(fixture, out).unwrap();
+}
+
+/// A present track "Tone" at `rel` (30 s), tagged with `tag` as its recording id when given.
+async fn track(pool: &PgPool, rel: &str, tag: Option<&str>) -> Uuid {
+    let t = common::track(pool, rel, 30).await;
+    sqlx::query("UPDATE tracks SET title = 'Tone', tag_recording_mbid = $2 WHERE id = $1")
+        .bind(t)
+        .bind(tag.map(|s| Uuid::parse_str(s).unwrap()))
+        .execute(pool)
+        .await
+        .unwrap();
+    t
+}
+
+async fn set_state(pool: &PgPool, status: &str, halted: bool) {
+    sqlx::query("UPDATE enrichment_state SET status = $1, halted = $2")
+        .bind(status)
+        .bind(halted)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn stage_rows(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM track_stages")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn stage_status(pool: &PgPool, t: Uuid, stage: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT status FROM track_stages WHERE track_id = $1 AND stage = $2")
+        .bind(t)
+        .bind(stage)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+}
+
+/// `(state, seconds from the database's now() to run_at)` of every enrich job.
+async fn enrich_jobs(pool: &PgPool) -> Vec<(String, f64)> {
+    sqlx::query(
+        "SELECT state, extract(epoch FROM run_at - now())::float8 AS secs FROM jobs
+         WHERE queue = 'enrich' ORDER BY created_at",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|r| (r.get("state"), r.get("secs")))
+    .collect()
+}
+
+async fn queued_enrich(pool: &PgPool) -> Vec<f64> {
+    enrich_jobs(pool)
+        .await
+        .into_iter()
+        .filter(|(s, _)| s == "queued")
+        .map(|(_, secs)| secs)
+        .collect()
+}
+
+fn forget_last_cycle(ctx: &IdentCtx) {
+    *ctx.last_cycle.lock().unwrap() = None;
+}
+
+async fn cycle(ctx: &IdentCtx) -> coordinator::CycleReport {
+    forget_last_cycle(ctx);
+    coordinator::run_cycle(ctx, &CancellationToken::new())
+        .await
+        .unwrap()
+}
+
+fn root(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    dir.path().canonicalize().unwrap()
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn paused_or_halted_cycle_does_nothing(pool: PgPool) {
+    let replay = Replay::start(Recording(vec![])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), Bases::all(&replay.url()));
+    ctx.config.fingerprinting = false;
+    track(&pool, "a.wav", Some(&rec_id(1))).await;
+
+    for (status, halted) in [("paused", false), ("idle", true), ("running", true)] {
+        set_state(&pool, status, halted).await;
+        let report = cycle(&ctx).await;
+        assert!(!report.ran, "{status} halted={halted}");
+        assert_eq!(stage_rows(&pool).await, 0);
+        assert!(enrich_jobs(&pool).await.is_empty(), "enqueues nothing");
+        let st = enrichment::state(&pool).await.unwrap();
+        assert!(!st.may_run());
+    }
+    // Paused stays paused.
+    set_state(&pool, "paused", false).await;
+    cycle(&ctx).await;
+    assert_eq!(
+        enrichment::state(&pool).await.unwrap().status,
+        Status::Paused
+    );
+    assert!(replay.asked().is_empty());
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn stopping_cycle_goes_idle(pool: PgPool) {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ident_ctx(&pool, &root(&dir), common::dead_bases());
+    track(&pool, "a.wav", None).await;
+    sqlx::query(
+        "UPDATE enrichment_state SET status = 'stopping', halted = true, current_phase = 'tracks'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let report = cycle(&ctx).await;
+
+    assert!(!report.ran);
+    let st = enrichment::state(&pool).await.unwrap();
+    assert_eq!(st.status, Status::Idle);
+    assert!(st.halted, "stop's halt stays until sync");
+    assert_eq!(st.current_phase, None);
+    assert_eq!(stage_rows(&pool).await, 0);
+    assert!(enrich_jobs(&pool).await.is_empty());
+}
+
+/// Waits until the enrich queue has run at least one job and nothing is queued or running.
+async fn wait_enrich_quiet(pool: &PgPool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let jobs = enrich_jobs(pool).await;
+        if !jobs.is_empty() && jobs.iter().all(|(s, _)| s == "done") {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "enrich queue never went quiet: {jobs:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn fast(queue: &str) -> WorkerConfig {
+    let mut c = WorkerConfig::new(queue, 1);
+    c.poll_interval = Duration::from_millis(100);
+    c
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn halt_survives_kick_and_scan(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let replay = Replay::start(Recording(vec![])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = root(&dir);
+    let ctx = ident_ctx(&pool, &root, Bases::all(&replay.url()));
+    set_state(&pool, "idle", true).await;
+    make_audio(&root, "Artist/Album/01.flac", Tags::full());
+
+    let shutdown = CancellationToken::new();
+    let enrich = spawn_worker(
+        pool.clone(),
+        fast(QUEUE),
+        coordinator::handler(ctx.clone()),
+        shutdown.clone(),
+    );
+    let library = spawn_worker(
+        pool.clone(),
+        fast(aether_library::jobs::QUEUE),
+        aether_library::jobs::handler_with(ctx.library.clone(), coordinator::kick_on_change()),
+        shutdown.clone(),
+    );
+
+    // A reconcile that adds a track kicks the coordinator.
+    let reconcile = aether_library::jobs::enqueue_reconcile(&pool)
+        .await
+        .unwrap()
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let state: String = sqlx::query_scalar("SELECT state FROM jobs WHERE id = $1")
+            .bind(reconcile)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        if state == "done" {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let tracks: i64 = sqlx::query_scalar("SELECT count(*) FROM tracks")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(tracks, 1, "the reconcile changed the library");
+    wait_enrich_quiet(&pool).await;
+    coordinator::kick(&pool).await.unwrap();
+    wait_enrich_quiet(&pool).await;
+
+    shutdown.cancel();
+    let _ = tokio::join!(enrich, library);
+    assert_eq!(stage_rows(&pool).await, 0, "no work ran while halted");
+    assert!(
+        queued_enrich(&pool).await.is_empty(),
+        "no next cycle queued"
+    );
+    let st = enrichment::state(&pool).await.unwrap();
+    assert!(st.halted);
+    assert_eq!(st.status, Status::Idle);
+    assert!(replay.asked().is_empty());
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn cycle_fingerprints_and_identifies(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let rec = rec_id(1);
+    let replay = Replay::start(Recording(vec![details(&rec)])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = root(&dir);
+    let ctx = ident_ctx(&pool, &root, Bases::all(&replay.url()));
+    tone(&root, "a.wav");
+    let t = track(&pool, "a.wav", Some(&rec)).await;
+
+    // The recording stage waits for the fingerprint to settle, which may take a second cycle.
+    for _ in 0..3 {
+        cycle(&ctx).await;
+        if stage_status(&pool, t, "recording").await.as_deref() == Some("done") {
+            break;
+        }
+    }
+
+    assert_eq!(
+        stage_status(&pool, t, "fingerprint").await.as_deref(),
+        Some("done")
+    );
+    assert!(
+        aether_db::identity::fingerprint_of(&pool, t)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        stage_status(&pool, t, "recording").await.as_deref(),
+        Some("done")
+    );
+    let mbid: Option<Uuid> = sqlx::query_scalar("SELECT recording_mbid FROM tracks WHERE id = $1")
+        .bind(t)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(mbid, Some(Uuid::parse_str(&rec).unwrap()));
+    let st = enrichment::state(&pool).await.unwrap();
+    assert_ne!(st.status, Status::Paused);
+}
+
+/// Review Focus 1: with identification off, two cycles over tagged and untagged tracks make
+/// no request, while every track is still fingerprinted.
+async fn identify_off(pool: PgPool, switch: IdentifySwitch) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let replay = Replay::start(Recording(vec![])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let root = root(&dir);
+    let ctx = ident_ctx_with(&pool, &root, Bases::all(&replay.url()), switch);
+    tone(&root, "tagged.wav");
+    tone(&root, "untagged.wav");
+    let tagged = track(&pool, "tagged.wav", Some(&rec_id(1))).await;
+    let untagged = track(&pool, "untagged.wav", None).await;
+
+    cycle(&ctx).await;
+    cycle(&ctx).await;
+
+    assert!(replay.asked().is_empty(), "{:?}", replay.asked());
+    for t in [tagged, untagged] {
+        let acoustid: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM track_acoustid WHERE track_id = $1")
+                .bind(t)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(acoustid, 1, "fingerprinted");
+    }
+    let done: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM track_stages WHERE stage = 'recording' AND status = 'done'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(done, 0);
+    // The coordinator never ran the tracks phase (not merely refused by `Net`).
+    let recording: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM track_stages WHERE stage = 'recording'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(recording, 0);
+    let identified: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tracks WHERE recording_mbid IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(identified, 0);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn identify_off_makes_no_request(pool: PgPool) {
+    // The "Auto enrich metadata" toggle off.
+    identify_off(pool, IdentifySwitch::new(false, false)).await;
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn identify_env_off_makes_no_request(pool: PgPool) {
+    // AETHER_IDENTIFY=off with the toggle on.
+    identify_off(pool, IdentifySwitch::new(true, true)).await;
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn paused_musicbrainz_skips_tracks_phase(pool: PgPool) {
+    let rec = rec_id(1);
+    let replay = Replay::start(Recording(vec![details(&rec)])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), Bases::all(&replay.url()));
+    ctx.config.fingerprinting = false;
+    let t = track(&pool, "a.wav", Some(&rec)).await;
+    sqlx::query(
+        "INSERT INTO source_pauses (source, paused_until, reason)
+         VALUES ('musicbrainz', now() + interval '10 minutes', 'HTTP 503')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    ctx.net.load_pauses().await.unwrap();
+
+    cycle(&ctx).await;
+
+    assert!(replay.asked().is_empty());
+    assert_eq!(stage_status(&pool, t, "recording").await, None);
+}
+
+/// Owner decision 2026-11-04 (1): the embedding phase runs as a phase inside the existing
+/// enrich cycle, independent of the MusicBrainz on/off switch. While MusicBrainz is
+/// paused, an unconfigured embedding capability must not claim or fail a track.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn embedding_phase_runs_while_musicbrainz_is_paused(pool: PgPool) {
+    let rec = rec_id(1);
+    let replay = Replay::start(Recording(vec![details(&rec)])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), Bases::all(&replay.url()));
+    ctx.config.fingerprinting = false;
+    let t = track(&pool, "a.wav", Some(&rec)).await;
+    sqlx::query(
+        "INSERT INTO source_pauses (source, paused_until, reason)
+         VALUES ('musicbrainz', now() + interval '10 minutes', 'HTTP 503')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    ctx.net.load_pauses().await.unwrap();
+
+    let report = cycle(&ctx).await;
+
+    assert!(replay.asked().is_empty());
+    assert_eq!(stage_status(&pool, t, "recording").await, None);
+    assert_eq!(report.embedding.claimed, 0);
+    assert_eq!(stage_status(&pool, t, "embedding").await, None);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn next_cycle_in_5s_after_work_and_60s_when_idle(pool: PgPool) {
+    let rec = rec_id(1);
+    let replay = Replay::start(Recording(vec![details(&rec)])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), Bases::all(&replay.url()));
+    ctx.config.fingerprinting = false;
+    track(&pool, "a.wav", Some(&rec)).await;
+
+    let report = cycle(&ctx).await;
+    assert!(report.ran);
+    assert_eq!(report.tracks.done, 1);
+    let queued = queued_enrich(&pool).await;
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert!((3.0..=6.0).contains(&queued[0]), "{queued:?}");
+    assert_eq!(
+        enrichment::state(&pool).await.unwrap().status,
+        Status::Running
+    );
+
+    sqlx::query("DELETE FROM jobs")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let report = cycle(&ctx).await;
+    assert!(report.ran);
+    assert_eq!(report.tracks.claimed, 0);
+    let queued = queued_enrich(&pool).await;
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert!((57.0..=61.0).contains(&queued[0]), "{queued:?}");
+    let st = enrichment::state(&pool).await.unwrap();
+    assert_eq!(st.status, Status::Idle);
+    assert_eq!(st.current_phase, None);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn queued_kick_wins_over_the_next_cycle(pool: PgPool) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), common::dead_bases());
+    ctx.config.fingerprinting = false;
+    coordinator::kick(&pool).await.unwrap();
+    cycle(&ctx).await;
+    let queued = queued_enrich(&pool).await;
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert!(queued[0] <= 0.5, "the kick's job stays due now: {queued:?}");
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn kick_moves_queued_cycle_to_now(pool: PgPool) {
+    let later = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    queue::enqueue_at(
+        &pool,
+        QUEUE,
+        json!({"kind": CYCLE_KIND}),
+        MAX_ATTEMPTS,
+        later,
+    )
+    .await
+    .unwrap();
+
+    coordinator::kick(&pool).await.unwrap();
+
+    let queued = queued_enrich(&pool).await;
+    assert_eq!(queued.len(), 1);
+    assert!(queued[0] <= 0.0, "{queued:?}");
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn kick_enqueues_when_none_queued(pool: PgPool) {
+    coordinator::kick(&pool).await.unwrap();
+    let jobs = sqlx::query("SELECT payload, max_attempts FROM jobs WHERE queue = 'enrich'")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].get::<Value, _>("payload"), json!({"kind": "cycle"}));
+    assert_eq!(jobs[0].get::<i32, _>("max_attempts"), MAX_ATTEMPTS);
+    assert!(queued_enrich(&pool).await[0] <= 0.0);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn concurrent_kicks_queue_one(pool: PgPool) {
+    let kicks = (0..16).map(|_| {
+        let pool = pool.clone();
+        tokio::spawn(async move { coordinator::kick(&pool).await.unwrap() })
+    });
+    for k in futures::future::join_all(kicks).await {
+        k.unwrap();
+    }
+    assert_eq!(queued_enrich(&pool).await.len(), 1);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn min_interval_between_cycles(pool: PgPool) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), common::dead_bases());
+    ctx.config.fingerprinting = false;
+    assert_eq!(coordinator::MIN_INTERVAL, Duration::from_secs(10));
+
+    // The previous cycle started 8 s ago: this one waits the remaining 2 s.
+    *ctx.last_cycle.lock().unwrap() = Some(Instant::now() - Duration::from_secs(8));
+    let started = Instant::now();
+    coordinator::run_cycle(&ctx, &CancellationToken::new())
+        .await
+        .unwrap();
+    let waited = started.elapsed();
+    assert!(waited >= Duration::from_millis(1900), "{waited:?}");
+    assert!(waited < Duration::from_secs(6), "{waited:?}");
+
+    // The wait is cancellable.
+    *ctx.last_cycle.lock().unwrap() = Some(Instant::now());
+    let cancel = CancellationToken::new();
+    let trigger = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        trigger.cancel();
+    });
+    let started = Instant::now();
+    assert!(coordinator::run_cycle(&ctx, &cancel).await.is_err());
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn prepare_resets_enriching_artists(pool: PgPool) {
+    let artist = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO artists (id, name, name_key, enrichment_status) VALUES ($1, 'x', 'x', 'enriching')",
+    )
+    .bind(artist)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // A cycle a dead process left running.
+    let job = queue::enqueue(&pool, QUEUE, json!({"kind": CYCLE_KIND}), MAX_ATTEMPTS)
+        .await
+        .unwrap();
+    queue::claim(&pool, QUEUE, 1, Duration::from_secs(300))
+        .await
+        .unwrap();
+
+    coordinator::prepare(&pool).await.unwrap();
+
+    let status: String = sqlx::query_scalar("SELECT enrichment_status FROM artists WHERE id = $1")
+        .bind(artist)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "pending");
+    let jobs = sqlx::query("SELECT id, state FROM jobs WHERE queue = 'enrich'")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(jobs.len(), 1, "the requeued cycle is the kick's");
+    assert_eq!(jobs[0].get::<Uuid, _>("id"), job);
+    assert_eq!(jobs[0].get::<String, _>("state"), "queued");
+}
+
+/// Carry (Task 17): a database error in a batch is recorded and retried next cycle; the
+/// cycle itself does not fail and the coordinator keeps its schedule.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn batch_db_error_is_recorded_and_retried(pool: PgPool) {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ident_ctx(&pool, &root(&dir), common::dead_bases());
+    track(&pool, "a.wav", None).await;
+    sqlx::query("ALTER TABLE track_stages RENAME TO track_stages_gone")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let report = cycle(&ctx).await;
+
+    assert!(report.ran);
+    let st = enrichment::state(&pool).await.unwrap();
+    let err = st.last_error.expect("recorded");
+    assert!(err.contains("track_stages"), "{err}");
+    assert!(err.chars().count() <= 2000);
+    assert_eq!(
+        queued_enrich(&pool).await.len(),
+        1,
+        "the next cycle is queued"
+    );
+}
+
+/// Carry (Task 14 m1): cancelling a batch releases the claims it had not started back to
+/// `pending`; the one in flight stays `working` for its lease.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn cancel_releases_unstarted_claims(pool: PgPool) {
+    if !require_ffmpeg() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let root = root(&dir);
+    let fifo = root.join("stuck.flac");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    tone(&root, "b.wav");
+    let mut ctx = ident_ctx(&pool, &root, common::dead_bases());
+    ctx.config.fingerprint_workers = 1;
+    let stuck = common::track(&pool, "stuck.flac", 100).await;
+    let waiting = common::track(&pool, "b.wav", 30).await;
+    // The stuck file is claimed first (newest first).
+    sqlx::query("UPDATE tracks SET mtime = now() - interval '1 day' WHERE id = $1")
+        .bind(waiting)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let cancel = CancellationToken::new();
+    let trigger = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        trigger.cancel();
+    });
+    let report = aether_ident::stages::fingerprint::run_batch(&ctx, &cancel)
+        .await
+        .unwrap();
+
+    assert_eq!(report.claimed, 2);
+    assert_eq!(
+        stage_status(&pool, stuck, "fingerprint").await.as_deref(),
+        Some("working")
+    );
+    let row = sqlx::query(
+        "SELECT status, next_attempt_at, redelivered, started_at FROM track_stages
+         WHERE track_id = $1 AND stage = 'fingerprint'",
+    )
+    .bind(waiting)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(row.get::<String, _>("status"), "pending");
+    assert!(
+        row.get::<Option<time::OffsetDateTime>, _>("next_attempt_at")
+            .is_none()
+    );
+    assert_eq!(row.get::<i16, _>("redelivered"), 0);
+    // Due again at once.
+    let again = aether_db::stages::claim(&pool, aether_db::stages::Stage::Fingerprint, 5, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        again.iter().map(|c| c.track_id).collect::<Vec<_>>(),
+        vec![waiting]
+    );
+}
+
+/// Task 21: the artists phase runs before the tracks phase, inside the network phases.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn artists_phase_runs_before_tracks(pool: PgPool) {
+    let rec = rec_id(1);
+    let replay = Replay::start(Recording(vec![
+        details(&rec),
+        get(
+            "/artist?query=Nobody&limit=10&fmt=json",
+            json!({"artists": []}),
+        ),
+    ]))
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), Bases::all(&replay.url()));
+    ctx.config.fingerprinting = false;
+    let t = track(&pool, "a.wav", Some(&rec)).await;
+    sqlx::query(
+        "UPDATE artists SET name = 'Nobody', enrichment_status = 'pending'
+         WHERE id = (SELECT al.artist_id FROM tracks t JOIN albums al ON al.id = t.album_id
+                     WHERE t.id = $1)",
+    )
+    .bind(t)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let report = cycle(&ctx).await;
+
+    assert_eq!(report.artists.claimed, 1);
+    assert_eq!(report.artists.done, 1);
+    assert_eq!(report.tracks.done, 1);
+    let status: String = sqlx::query_scalar("SELECT enrichment_status FROM artists")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "unresolvable");
+    let asked = replay.asked();
+    let artist_at = asked.iter().position(|a| a.contains("/artist?")).unwrap();
+    let track_at = asked
+        .iter()
+        .position(|a| a.contains("/recording/"))
+        .unwrap();
+    assert!(artist_at < track_at, "{asked:?}");
+}
+
+/// Task 21: while MusicBrainz is paused the artists phase is skipped like the tracks phase.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn paused_musicbrainz_skips_artists_phase(pool: PgPool) {
+    let replay = Replay::start(Recording(vec![])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), Bases::all(&replay.url()));
+    ctx.config.fingerprinting = false;
+    track(&pool, "a.wav", None).await;
+    sqlx::query("UPDATE artists SET enrichment_status = 'pending'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO source_pauses (source, paused_until, reason)
+         VALUES ('musicbrainz', now() + interval '10 minutes', 'HTTP 503')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    ctx.net.load_pauses().await.unwrap();
+
+    let report = cycle(&ctx).await;
+
+    assert_eq!(report.artists.claimed, 0);
+    assert!(replay.asked().is_empty());
+    let status: String = sqlx::query_scalar("SELECT enrichment_status FROM artists")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "pending");
+}
+
+/// A pending artist with a tagged MBID, named `name`, owning a fresh present track.
+async fn pending_artist(
+    pool: &PgPool,
+    rel: &str,
+    name: &str,
+    mbid: &str,
+    tag: Option<&str>,
+) -> (Uuid, Uuid) {
+    let t = track(pool, rel, tag).await;
+    let a: Uuid = sqlx::query_scalar(
+        "UPDATE artists SET name = $2, enrichment_status = 'pending', mbid = $3, mbid_source = 'tag'
+         WHERE id = (SELECT al.artist_id FROM tracks t JOIN albums al ON al.id = t.album_id
+                     WHERE t.id = $1)
+         RETURNING id",
+    )
+    .bind(t)
+    .bind(name)
+    .bind(Uuid::parse_str(mbid).unwrap())
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    (a, t)
+}
+
+/// Everything MusicBrainz and Wikidata say of `name`/`mbid`: it is this artist, no genres, no
+/// Wikidata item.
+fn artist_answers(name: &str, mbid: &str) -> Vec<Entry> {
+    let q = format!("SELECT ?item WHERE {{ ?item wdt:P434 \"{mbid}\" }} LIMIT 1");
+    vec![
+        get(
+            &format!("/artist/{mbid}?inc=aliases&fmt=json"),
+            json!({"id": mbid, "name": name, "sort-name": name, "aliases": []}),
+        ),
+        get(
+            &format!("/artist/{mbid}?inc=genres&fmt=json"),
+            json!({"id": mbid, "name": name, "genres": []}),
+        ),
+        get(
+            &format!("/sparql?query={q}&format=json"),
+            json!({"results": {"bindings": []}}),
+        ),
+    ]
+}
+
+async fn artist_row(pool: &PgPool, a: Uuid) -> (String, i16) {
+    let r = sqlx::query("SELECT enrichment_status, enrichment_failures FROM artists WHERE id = $1")
+        .bind(a)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    (r.get(0), r.get(1))
+}
+
+/// Review I1: with ListenBrainz and Deezer paused every artist ends `pending`; the artists phase
+/// still ends after one batch, the tracks phase runs, and no failure is counted.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn paused_similar_sources_end_the_artists_phase(pool: PgPool) {
+    let rec = rec_id(1);
+    let mut entries = vec![details(&rec)];
+    let ids: Vec<String> = (1..=3)
+        .map(|i| format!("66666666-0000-4000-8000-{i:012}"))
+        .collect();
+    for (i, id) in ids.iter().enumerate() {
+        entries.extend(artist_answers(&format!("Artist {i}"), id));
+    }
+    let replay = Replay::start(Recording(entries)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), Bases::all(&replay.url()));
+    ctx.config.fingerprinting = false;
+    let mut artists = Vec::new();
+    for (i, id) in ids.iter().enumerate() {
+        let tag = (i == 0).then_some(rec.as_str());
+        artists.push(
+            pending_artist(&pool, &format!("{i}.wav"), &format!("Artist {i}"), id, tag).await,
+        );
+    }
+    sqlx::query(
+        "INSERT INTO source_pauses (source, paused_until, reason)
+         VALUES ('listenbrainz', now() + interval '10 minutes', 'HTTP 429'),
+                ('deezer', now() + interval '10 minutes', 'HTTP 429')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    ctx.net.load_pauses().await.unwrap();
+
+    let report = tokio::time::timeout(Duration::from_secs(60), cycle(&ctx))
+        .await
+        .expect("the cycle ends");
+
+    assert_eq!(report.artists.claimed, 3);
+    assert_eq!(report.artists.failed, 3, "pending counts as not done");
+    assert!(report.tracks.done >= 1, "{report:?}");
+    for (a, _) in &artists {
+        assert_eq!(artist_row(&pool, *a).await, ("pending".to_string(), 0));
+    }
+    // The next cycle asks again (still paused) and still counts no failure.
+    cycle(&ctx).await;
+    for (a, _) in &artists {
+        assert_eq!(artist_row(&pool, *a).await, ("pending".to_string(), 0));
+    }
+}
+
+/// D-254 (upstream `artistEnrichment.ts`/`unifiedEnrichment.ts`): a source outage fails the
+/// run and the artist is asked again by the first cycle at least a minute later (upstream's
+/// idle backoff, the slowest it re-queues a completed job); each try counts toward the cap of
+/// 4. The cycles in between leave it alone, so a down source cannot run it to the cap in a few
+/// back-to-back cycles.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn an_outage_is_retried_once_a_minute_until_the_cap(pool: PgPool) {
+    let id = "66666666-0000-4000-8000-000000000009";
+    // Wikidata is not recorded: the replay answers 599, a failure.
+    let mut entries = artist_answers("Flaky", id);
+    entries.pop();
+    entries.push(get(
+        &format!("/similar-artists/json?artist_mbids={id}&algorithm=session_based_days_7500_session_300_contribution_3_threshold_10_limit_100_filter_True_skip_30"),
+        json!([]),
+    ));
+    entries.push(get("/search/artist?q=Flaky&limit=1", json!({"data": []})));
+    let replay = Replay::start(Recording(entries)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), Bases::all(&replay.url()));
+    ctx.config.fingerprinting = false;
+    let (a, _) = pending_artist(&pool, "a.wav", "Flaky", id, None).await;
+
+    let make_due = || async {
+        sqlx::query(
+            "UPDATE artists SET enrichment_retry_at = now() - interval '1 second' WHERE id = $1",
+        )
+        .bind(a)
+        .execute(&pool)
+        .await
+        .unwrap();
+    };
+    for tries in 1..=3 {
+        cycle(&ctx).await;
+        assert_eq!(artist_row(&pool, a).await, ("failed".to_string(), tries));
+        cycle(&ctx).await;
+        assert_eq!(
+            artist_row(&pool, a).await,
+            ("failed".to_string(), tries),
+            "the next cycle comes before the minute"
+        );
+        make_due().await;
+    }
+    cycle(&ctx).await;
+    assert_eq!(artist_row(&pool, a).await, ("unresolvable".to_string(), 4));
+    cycle(&ctx).await;
+    assert_eq!(artist_row(&pool, a).await, ("unresolvable".to_string(), 4));
+}
+
+/// Upstream `executeArtistsPhase` starts by putting `unresolvable` artists with no real MBID
+/// tried over a day ago back to `pending` with no failures; the same cycle then asks again
+/// (here MusicBrainz does not answer: one fresh failure, not a fifth).
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn the_artists_phase_reopens_unresolvable_artists_without_an_mbid(pool: PgPool) {
+    let replay = Replay::start(Recording(vec![])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), Bases::all(&replay.url()));
+    ctx.config.fingerprinting = false;
+    let (a, _) = pending_artist(
+        &pool,
+        "a.wav",
+        "Nameless",
+        "66666666-0000-4000-8000-000000000010",
+        None,
+    )
+    .await;
+    sqlx::query(
+        "UPDATE artists SET mbid = NULL, mbid_source = NULL, enrichment_status = 'unresolvable',
+                enrichment_failures = 4, last_enriched_at = now() - interval '25 hours'
+         WHERE id = $1",
+    )
+    .bind(a)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let report = cycle(&ctx).await;
+    assert_eq!(report.artists.claimed, 1);
+    assert_eq!(artist_row(&pool, a).await, ("failed".to_string(), 1));
+}
+
+/// Review M3 (upstream `executeArtistsPhase`): an artist a crashed or errored run left
+/// `enriching` is set `pending` by the next cycle's artists phase and asked again, unless
+/// another process's cycle runs on a live lease (its claims are real); once that lease has
+/// lapsed (a dead process) the reset happens.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn the_artists_phase_resets_artists_left_enriching_when_no_cycle_runs(pool: PgPool) {
+    let replay = Replay::start(Recording(vec![])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), Bases::all(&replay.url()));
+    ctx.config.fingerprinting = false;
+    let (a, _) = pending_artist(
+        &pool,
+        "a.wav",
+        "Stuck",
+        "66666666-0000-4000-8000-000000000011",
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE artists SET enrichment_status = 'enriching' WHERE id = $1")
+        .bind(a)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let other = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO jobs (id, queue, payload, state, attempts, locked_until)
+         VALUES ($1, $2, '{\"kind\":\"cycle\"}', 'running', 1, now() + interval '5 minutes')",
+    )
+    .bind(other)
+    .bind(coordinator::QUEUE)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let report = cycle(&ctx).await;
+    assert_eq!(report.artists.claimed, 0, "another cycle may hold it");
+    assert_eq!(artist_row(&pool, a).await, ("enriching".to_string(), 0));
+
+    sqlx::query("UPDATE jobs SET locked_until = now() - interval '1 second' WHERE id = $1")
+        .bind(other)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let report = cycle(&ctx).await;
+    assert_eq!(report.artists.claimed, 1);
+    assert_eq!(artist_row(&pool, a).await, ("failed".to_string(), 1));
+}
+
+/// The cycle job a worker runs is itself `running` on a live lease: the handler must not count
+/// it as another cycle, or the reset above could never happen in production.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn the_running_cycle_job_does_not_hold_back_its_own_reset(pool: PgPool) {
+    let replay = Replay::start(Recording(vec![])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), Bases::all(&replay.url()));
+    ctx.config.fingerprinting = false;
+    let (a, _) = pending_artist(
+        &pool,
+        "a.wav",
+        "Stuck",
+        "66666666-0000-4000-8000-000000000012",
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE artists SET enrichment_status = 'enriching' WHERE id = $1")
+        .bind(a)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let own = Uuid::new_v4();
+    let payload = json!({"kind": coordinator::CYCLE_KIND});
+    sqlx::query(
+        "INSERT INTO jobs (id, queue, payload, state, attempts, locked_until)
+         VALUES ($1, $2, $3, 'running', 1, now() + interval '5 minutes')",
+    )
+    .bind(own)
+    .bind(coordinator::QUEUE)
+    .bind(&payload)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    forget_last_cycle(&ctx);
+    let job = queue::Job {
+        id: own,
+        queue: coordinator::QUEUE.to_owned(),
+        payload,
+        attempts: 1,
+        max_attempts: coordinator::MAX_ATTEMPTS,
+    };
+    let job_ctx = aether_jobs::worker::JobCtx {
+        cancel: CancellationToken::new(),
+    };
+    coordinator::handler(ctx.clone())(job, job_ctx)
+        .await
+        .unwrap();
+    assert_eq!(artist_row(&pool, a).await, ("failed".to_string(), 1));
+}
+
+// ---- M-SYNC Task 14 (upstream b78b1167): the scan first, then each step for the whole library ----
+
+/// A `library`-queue job of `kind` in `state`, due in `due_in_secs` (a retry waits in `queued`).
+async fn library_job(pool: &PgPool, kind: &str, state: &str, due_in_secs: i32) -> Uuid {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO jobs (id, queue, payload, state, run_at, attempts) \
+         VALUES ($1, 'library', $2, $3, now() + make_interval(secs => $4), 1)",
+    )
+    .bind(id)
+    .bind(json!({ "kind": kind }))
+    .bind(state)
+    .bind(due_in_secs)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
+async fn finish_job(pool: &PgPool, id: Uuid) {
+    sqlx::query("UPDATE jobs SET state = 'done', finished_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn clear_jobs(pool: &PgPool, queue: &str) {
+    sqlx::query("DELETE FROM jobs WHERE queue = $1")
+        .bind(queue)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn enrichment_waits_for_a_running_scan(pool: PgPool) {
+    let rec = rec_id(1);
+    let replay = Replay::start(Recording(vec![details(&rec)])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), Bases::all(&replay.url()));
+    ctx.config.fingerprinting = false;
+    let t = track(&pool, "a.wav", Some(&rec)).await;
+
+    // A scan that is running, one that is queued and one waiting out a retry delay each hold
+    // the cycle back; so does a single-file update (it adds songs too).
+    for (kind, state, due) in [
+        ("reconcile", "running", 0),
+        ("reconcile", "queued", 0),
+        ("reconcile", "queued", 600),
+        ("path", "queued", 0),
+    ] {
+        clear_jobs(&pool, "library").await;
+        library_job(&pool, kind, state, due).await;
+        let report = cycle(&ctx).await;
+        assert!(!report.ran, "{kind} {state} {due}");
+        assert!(!report.any_work());
+        assert_eq!(stage_rows(&pool).await, 0, "{kind} {state} {due}");
+        // It comes back promptly, not a minute later.
+        let queued = queued_enrich(&pool).await;
+        assert_eq!(queued.len(), 1, "{queued:?}");
+        assert!(queued[0] <= 11.0, "{queued:?}");
+        assert_eq!(enrichment::state(&pool).await.unwrap().status, Status::Idle);
+        clear_jobs(&pool, "enrich").await;
+    }
+    assert!(replay.asked().is_empty());
+
+    // Once the scan is done the cycle runs.
+    clear_jobs(&pool, "library").await;
+    let scan = library_job(&pool, "reconcile", "running", 0).await;
+    assert!(!cycle(&ctx).await.ran);
+    finish_job(&pool, scan).await;
+    let report = cycle(&ctx).await;
+    assert!(report.ran);
+    assert_eq!(report.tracks.done, 1);
+    assert_eq!(
+        stage_status(&pool, t, "recording").await.as_deref(),
+        Some("done")
+    );
+}
+
+/// Makes `op` on `table` wait, for rows matching `when`, in a BEFORE trigger until the
+/// advisory lock `key` is released: the writer has taken every lock before that write and
+/// sits inside its transaction holding them.
+async fn gate(pool: &PgPool, name: &str, op: &str, table: &str, when: &str, key: i64) {
+    sqlx::query(
+        "CREATE OR REPLACE FUNCTION test_gate() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN PERFORM pg_advisory_xact_lock_shared(TG_ARGV[0]::bigint); RETURN NEW; END $$",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(&format!(
+        "CREATE TRIGGER {name} BEFORE {op} ON {table} FOR EACH ROW WHEN ({when}) \
+         EXECUTE FUNCTION test_gate({key})"
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Waits until `n` sessions are waiting on an advisory lock.
+async fn advisory_waiters(pool: &PgPool, n: i64) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+             AND wait_event_type = 'Lock' AND wait_event = 'advisory'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting >= n {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{waiting} of {n} gated writers waiting"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The recording claim must not take a track another stage's work has locked for "nothing
+/// to do": the coordinator runs the analysis phase alongside the tracks phase, and their
+/// claims and reports lock the same track rows. Hosted CI caught the race in
+/// `enrichment_waits_for_a_running_scan` (`report.tracks.done` 0); here it is forced: the
+/// analysis failure report holds the track while the tracks phase claims.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn tracks_phase_claims_a_track_the_analysis_stage_holds(pool: PgPool) {
+    let rec = rec_id(1);
+    let replay = Replay::start(Recording(vec![details(&rec)])).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ident_ctx(&pool, &root(&dir), Bases::all(&replay.url()));
+    ctx.config.fingerprinting = false;
+    let t = track(&pool, "a.wav", Some(&rec)).await;
+
+    // Gate 1: the analysis failure report (its file is missing), after it locked the track.
+    gate(
+        &pool,
+        "gate_analysis_report",
+        "UPDATE",
+        "track_stages",
+        "NEW.stage = 'analysis' AND NEW.status <> 'working'",
+        1,
+    )
+    .await;
+    // Gate 2: the network phases, before the tracks phase starts (the artists phase's mark).
+    gate(
+        &pool,
+        "gate_artists_mark",
+        "UPDATE",
+        "enrichment_state",
+        "NEW.current_phase = 'artists'",
+        2,
+    )
+    .await;
+    // Every phase the cycle marks, so a tracks phase that claimed nothing is seen to end.
+    sqlx::query("CREATE TABLE test_phases (phase text)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE FUNCTION test_log_phase() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN INSERT INTO test_phases VALUES (NEW.current_phase); RETURN NEW; END $$",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER test_log_phase AFTER UPDATE ON enrichment_state FOR EACH ROW \
+         EXECUTE FUNCTION test_log_phase()",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut holder = pool.acquire().await.unwrap();
+    sqlx::query("SELECT pg_advisory_lock(1), pg_advisory_lock(2)")
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let run = tokio::spawn({
+        let ctx = ctx.clone();
+        async move { cycle(&ctx).await }
+    });
+    advisory_waiters(&pool, 2).await;
+
+    // The analysis report holds the track; now the tracks phase claims.
+    sqlx::query("SELECT pg_advisory_unlock(2)")
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let claimed = stage_status(&pool, t, "recording").await.is_some();
+        let ended: bool =
+            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM test_phases WHERE phase = 'tracks')")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        if claimed || ended {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the tracks phase never claimed"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    sqlx::query("SELECT pg_advisory_unlock(1)")
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+
+    let report = run.await.unwrap();
+    assert!(report.ran);
+    assert_eq!(report.analysis.claimed, 1, "{report:?}");
+    assert_eq!(report.tracks.done, 1, "{report:?}");
+    assert_eq!(
+        stage_status(&pool, t, "recording").await.as_deref(),
+        Some("done")
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn an_organizer_or_autotag_job_does_not_hold_enrichment_back(pool: PgPool) {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ident_ctx(&pool, &root(&dir), common::dead_bases());
+    for kind in ["organize", "autotag-apply", "autotag-undo"] {
+        library_job(&pool, kind, "running", 0).await;
+        library_job(&pool, kind, "queued", 0).await;
+    }
+    // A finished or failed scan holds nothing either.
+    library_job(&pool, "reconcile", "done", 0).await;
+    library_job(&pool, "reconcile", "failed", 0).await;
+
+    assert!(cycle(&ctx).await.ran);
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn a_scan_does_not_wake_a_paused_pipeline(pool: PgPool) {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ident_ctx(&pool, &root(&dir), common::dead_bases());
+    library_job(&pool, "reconcile", "running", 0).await;
+    set_state(&pool, "paused", false).await;
+
+    let report = cycle(&ctx).await;
+
+    assert!(!report.ran);
+    assert!(
+        queued_enrich(&pool).await.is_empty(),
+        "paused queues nothing"
+    );
+    assert_eq!(
+        enrichment::state(&pool).await.unwrap().status,
+        Status::Paused
+    );
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn retry_failed_and_blocked_offers_nothing_while_a_scan_runs(pool: PgPool) {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ident_ctx(&pool, &root(&dir), common::dead_bases());
+    let t = track(&pool, "a.wav", None).await;
+    sqlx::query(
+        "INSERT INTO track_stages (track_id, stage, status, attempts, next_attempt_at) \
+         VALUES ($1, 'recording', 'failed', 1, now() + interval '1 hour')",
+    )
+    .bind(t)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let scan = library_job(&pool, "reconcile", "running", 0).await;
+
+    // The scan goes first; the next cycle after it offers the same work.
+    let n = coordinator::control::retry_failed_and_blocked(&ctx)
+        .await
+        .unwrap();
+
+    assert_eq!(n, 0);
+    assert_eq!(
+        stage_status(&pool, t, "recording").await.as_deref(),
+        Some("failed")
+    );
+    finish_job(&pool, scan).await;
+    let n = coordinator::control::retry_failed_and_blocked(&ctx)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(
+        stage_status(&pool, t, "recording").await.as_deref(),
+        Some("pending")
+    );
+}
