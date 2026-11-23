@@ -120,7 +120,7 @@ Global colour-token changes are a small code diff with broad visual effects; ver
 
 ## Stage ledger
 
-Divergence rows reserved for this plan: **D-286..D-289** (after the live ledger's D-285). D-286 is used by stage 1.
+Divergence rows reserved for this plan: **D-286..D-289** (after the live ledger's D-285). D-286 is used by stage 1. D-290 (outside the reservation) records the radio performance extension below.
 
 ### Stage 1 (2026-11-23, branch `feature/appearance-i18n`) — foundation + first Settings slice, local only
 
@@ -174,6 +174,13 @@ Task 6, third slice (podcasts + final inventory of the existing web UI):
 - Stragglers fixed: unknown-address page and the profile picker (Kids badge, manage profiles, who's listening, sign out).
 - Inventory (`inventory.py` heuristic over all non-test `aether-web` literals + classified residue): no remaining untranslated interface label found in existing pages. Remaining English by design or later: the client fallback "Request failed (status)" for unreadable error bodies (plan later), server error bodies/toasts shown as received, SSR first paint, theme preset and brand names, codec diagnostics. There are no separate advanced/admin settings screens in aether-web to translate.
 - Verified (scoped): `aether-web` lib 235/0, clippy lib+tests clean, fmt, CSS `--check` up to date, `vertigo build` 0.14.5; browser on the real WASM with a CDP-mocked API from the captured podcast fixtures, trusted clicks, silent sink, nothing played: 18/18 — in-place EN->PL on the home page (incl. a displayed feed validation error) and the show page; search queries, pill refetch with `ai=show` and no settings write, refresh-all and show refresh toasts, category paging requests, order flip, admin label body, unfollow (DELETE, back to /podcasts without reload), preview follow body + navigation, 404 and profile picker in Polish, phone layouts without horizontal overflow, exact write audit, no console errors. Not server acceptance. Run 1: 17/18, harness timing only (checked before the pill's refetch was logged).
+
+Bounded performance extension (owner approval 2026-11-23, "stations at once, covers in the background", D-290):
+- Problem: after a restart the in-memory cover store is cold and `GET /library/radio/row` works out one radio selection per station before answering, so `/radio` showed only placeholders for seconds.
+- API: `?covers=none` returns the same stations/order/keys with `cover: null` and picks or keeps no cover (zone still kept for the warm job); other values or a repeated key 400 `covers must be none`; the default reply is unchanged. No new cache, worker or spawn; the existing warm job is untouched.
+- Web: tiles from the `covers=none` reply (playable at once); one request for the unchanged full row lends covers to the shown tiles, matched by type/value (stations, counts and order stay from the first reply); a covers failure keeps the placeholders, no error, no retry; late answers fenced by the page's visit generation and, on profile switch, by the replaced document/retired client. Station start, seed/cursor/refill and shuffle rule unchanged.
+- Verified (scoped, local): `aether-api --test radio_row` 14/14 (2 new, RED->GREEN), `aether-web` lib 238/0 (3 new), clippy native/wasm32/API, fmt, CSS `--check`, `vertigo build`; real-WASM browser with a CDP-mocked API and a held/failed/delayed full row: 10/10 (base build RED: no tiles while the full row is held). Simulated 3 s cover delay: tiles ready about 0.11 s vs about 3.1 s before; covers unchanged at about 3.1 s (mock measurement, not the owner's server).
+- Not claimed: real-server timing, independent review, hosted CI for these commits.
 
 Remaining (not claimed):
 - First paint: SSR always renders the default; a stored non-default theme/language applies after hydration (possible flash). A CSP-compatible bootstrap is not done.
