@@ -301,6 +301,95 @@ catalogue! {
     ),
     // footer (the product name and year stay outside the catalogue)
     FooterTagline => ("Your music, your way.", "Twoja muzyka, na Twój sposób."),
+    // desktop sidebar
+    MainNavigation => ("Main navigation", "Nawigacja główna"),
+    NavigationIndex => ("Navigation Index", "Spis nawigacji"),
+    PlaylistStack => ("Playlist Stack", "Stos playlist"),
+    // collection: tabs, refine panel, toolbar
+    TabArtists => ("Artists", "Artyści"),
+    TabAlbums => ("Albums", "Albumy"),
+    TabTracks => ("Tracks", "Utwory"),
+    Refine => ("Refine", "Dostosuj"),
+    RefineButton => ("Refine: sort and per-page options", "Dostosuj: sortowanie i liczba na stronie"),
+    RefineOptions => ("Refine options", "Opcje widoku"),
+    CloseRefinePanel => ("Close refine panel", "Zamknij opcje widoku"),
+    RefinementsActive => ("Refinements active", "Zmieniono opcje widoku"),
+    SortBy => ("Sort by", "Sortuj według"),
+    ItemsPerPage => ("Items per page", "Pozycji na stronie"),
+    SortNameAsc => ("Name (A–Z)", "Nazwa (A–Z)"),
+    SortNameDesc => ("Name (Z–A)", "Nazwa (Z–A)"),
+    SortYearNewest => ("Year (Newest)", "Rok (od najnowszych)"),
+    SortMostTracks => ("Most Tracks", "Najwięcej utworów"),
+    ShuffleLibrary => ("Shuffle entire library", "Odtwarzaj losowo całą bibliotekę"),
+    /// Tooltip form (lower-cased by [`Msg::hint`]).
+    ShuffleLibraryHint => ("Shuffle library", "Losowo z biblioteki"),
+    // collection: empty states and toasts
+    NoArtistsYet => ("No artists yet", "Nie ma jeszcze artystów"),
+    NoArtistsHelp => (
+        "Put music in the server's music directory and press the sync button to scan it.",
+        "Umieść muzykę w katalogu muzyki serwera i naciśnij przycisk synchronizacji, aby ją zeskanować.",
+    ),
+    NoAlbums => ("No albums", "Brak albumów"),
+    NoTracks => ("No tracks", "Brak utworów"),
+    NothingHereYet => ("Nothing here yet.", "Na razie nic tu nie ma."),
+    AlbumHasNoTracks => ("This album has no tracks", "Ten album nie ma utworów"),
+    PlaylistHasNoTracks => ("This playlist has no tracks", "Ta playlista nie ma utworów"),
+    // pagination
+    Pagination => ("Pagination", "Stronicowanie"),
+    FirstPage => ("First page", "Pierwsza strona"),
+    PreviousPage => ("Previous page", "Poprzednia strona"),
+    NextPage => ("Next page", "Następna strona"),
+    LastPage => ("Last page", "Ostatnia strona"),
+    // search
+    TypeToSearch => ("Type to search", "Zacznij pisać, aby wyszukać"),
+    TypeToSearchHelp => (
+        "Use the search bar above to find music, artists, and albums",
+        "Użyj pola wyszukiwania powyżej, aby znaleźć muzykę, artystów i albumy",
+    ),
+    NoMatches => ("No matches found", "Nic nie znaleziono"),
+    NoMatchesHelp => (
+        "Try a different search term or check your spelling",
+        "Spróbuj wyszukać coś innego lub sprawdź pisownię",
+    ),
+    // track rows
+    ColumnTitle => ("Title", "Tytuł"),
+    ColumnAlbum => ("Album", "Album"),
+    ColumnDuration => ("Duration", "Czas"),
+    ColumnActions => ("Actions", "Akcje"),
+    AddToPlaylist => ("Add to playlist", "Dodaj do playlisty"),
+    NoPlaylistsPicker => (
+        "No playlists yet: create one on the Playlists page.",
+        "Nie masz jeszcze playlist: utwórz ją na stronie Playlisty.",
+    ),
+    // playlists
+    YourLibrary => ("Your library", "Twoja biblioteka"),
+    Create => ("Create", "Utwórz"),
+    Close => ("Close", "Zamknij"),
+    PlaylistNamePlaceholder => ("Playlist name...", "Nazwa playlisty…"),
+    NoPlaylistsYet => ("No playlists yet", "Nie masz jeszcze playlist"),
+    NoPlaylistsHelp => (
+        "Create one to start organising your music",
+        "Utwórz pierwszą, aby uporządkować swoją muzykę",
+    ),
+    AllPlaylists => ("All Playlists", "Wszystkie playlisty"),
+    EnterPlaylistName => ("Enter a playlist name", "Wpisz nazwę playlisty"),
+    PlaylistNameTooLong => (
+        "Playlist name must be at most 200 characters",
+        "Nazwa playlisty może mieć najwyżej 200 znaków",
+    ),
+    PlaylistEyebrow => ("Playlist", "Playlista"),
+    PlaylistName => ("Playlist name", "Nazwa playlisty"),
+    PlayAll => ("Play all", "Odtwórz wszystko"),
+    ShufflePlay => ("Shuffle play", "Odtwarzaj losowo"),
+    MakePrivate => ("Make private", "Ustaw jako prywatną"),
+    MakePublic => ("Make public", "Ustaw jako publiczną"),
+    DeletePlaylist => ("Delete playlist", "Usuń playlistę"),
+    DeletePlaylistQuestion => ("Delete Playlist?", "Usunąć playlistę?"),
+    Delete => ("Delete", "Usuń"),
+    EmptyPlaylist => ("Empty Playlist", "Pusta playlista"),
+    NoTracksYet => ("No tracks yet", "Nie ma jeszcze utworów"),
+    AddTracksToStart => ("Add some tracks to get started", "Dodaj utwory, aby zacząć"),
+    RemoveFromPlaylist => ("Remove from playlist", "Usuń z playlisty"),
 }
 
 impl Msg {
@@ -477,14 +566,120 @@ pub fn token_dates(locale: Locale, created: &str, last_used: Option<&str>) -> St
     }
 }
 
-/// A complete "N tracks" phrase (whole sentences per locale, no concatenated noun fragments).
-// First consumer: the library count labels of the next translation slice.
-#[allow(dead_code)]
-pub fn track_count(locale: Locale, n: u64) -> String {
+/// A count as the API sends it (`i64`); a negative count never happens and reads as zero.
+fn whole(n: i64) -> u64 {
+    u64::try_from(n).unwrap_or(0)
+}
+
+/// `en_one` / `en_many` in English, the three Polish forms otherwise (whole phrases, no noun fragments).
+fn counted(locale: Locale, n: i64, en: (&str, &str), pl: (&str, &str, &str)) -> String {
+    let n = whole(n);
     match locale {
-        Locale::En if n == 1 => "1 track".to_owned(),
-        Locale::En => format!("{n} tracks"),
-        Locale::Pl => pl_count(n, "utwór", "utwory", "utworów"),
+        Locale::En => format!("{n} {}", if n == 1 { en.0 } else { en.1 }),
+        Locale::Pl => pl_count(n, pl.0, pl.1, pl.2),
+    }
+}
+
+/// A complete "N tracks" phrase (whole sentences per locale, no concatenated noun fragments).
+pub fn track_count(locale: Locale, n: i64) -> String {
+    counted(
+        locale,
+        n,
+        ("track", "tracks"),
+        ("utwór", "utwory", "utworów"),
+    )
+}
+
+/// "N songs" (playlist cards and header; Polish uses the same noun as tracks).
+pub fn song_count(locale: Locale, n: i64) -> String {
+    counted(locale, n, ("song", "songs"), ("utwór", "utwory", "utworów"))
+}
+
+pub fn artist_count(locale: Locale, n: i64) -> String {
+    // Masculine-personal noun: with digits both 2-4 and 5+ take the genitive plural.
+    counted(
+        locale,
+        n,
+        ("artist", "artists"),
+        ("artysta", "artystów", "artystów"),
+    )
+}
+
+pub fn album_count(locale: Locale, n: i64) -> String {
+    counted(
+        locale,
+        n,
+        ("album", "albums"),
+        ("album", "albumy", "albumów"),
+    )
+}
+
+pub fn playlist_count(locale: Locale, n: i64) -> String {
+    counted(
+        locale,
+        n,
+        ("playlist", "playlists"),
+        ("playlista", "playlisty", "playlist"),
+    )
+}
+
+/// The pager's position, e.g. "Page 2 of 3".
+pub fn page_of(locale: Locale, page: i64, pages: i64) -> String {
+    match locale {
+        Locale::En => format!("Page {page} of {pages}"),
+        Locale::Pl => format!("Strona {page} z {pages}"),
+    }
+}
+
+/// The items shown, e.g. `1–40 of 120` (or `0 of 0`).
+pub fn page_range(locale: Locale, offset: i64, shown: usize, total: i64) -> String {
+    let of = match locale {
+        Locale::En => "of",
+        Locale::Pl => "z",
+    };
+    if shown == 0 {
+        return format!("0 {of} {total}");
+    }
+    format!("{}–{} {of} {total}", offset + 1, offset + shown as i64)
+}
+
+/// A card's play button label; `title` is the item's own name.
+pub fn play_named(locale: Locale, title: &str) -> String {
+    match locale {
+        Locale::En => format!("Play {title}"),
+        Locale::Pl => format!("Odtwórz: {title}"),
+    }
+}
+
+/// The playlist deletion prompt; `name` is the playlist's own name.
+pub fn delete_playlist_confirm(locale: Locale, name: &str) -> String {
+    match locale {
+        Locale::En => {
+            format!("Are you sure you want to delete \"{name}\"? This action cannot be undone.")
+        }
+        Locale::Pl => {
+            format!("Czy na pewno chcesz usunąć „{name}”? Tej operacji nie można cofnąć.")
+        }
+    }
+}
+
+/// The toast after adding a track to the playlist called `name` (`added` false: it was already there).
+pub fn added_to_playlist(locale: Locale, name: &str, added: bool) -> String {
+    match (locale, added) {
+        (Locale::En, true) => format!("Added to {name}"),
+        (Locale::En, false) => format!("Already in {name}"),
+        (Locale::Pl, true) => format!("Dodano do playlisty „{name}”"),
+        (Locale::Pl, false) => format!("Ten utwór jest już na playliście „{name}”"),
+    }
+}
+
+/// A playlist's total length: `4 min`, `1 hr 5 min` (legacy `formatTotalDuration`).
+pub fn total_duration(locale: Locale, seconds: i64) -> String {
+    let (hours, mins) = (seconds / 3600, (seconds % 3600) / 60);
+    match locale {
+        Locale::En if hours > 0 => format!("{hours} hr {mins} min"),
+        Locale::Pl if hours > 0 => format!("{hours} godz. {mins} min"),
+        _ => format!("{mins} min"),
     }
 }
 
@@ -562,6 +757,108 @@ mod tests {
         assert_eq!(track_count(Locale::En, 1), "1 track");
         assert_eq!(track_count(Locale::En, 0), "0 tracks");
         assert_eq!(track_count(Locale::En, 2), "2 tracks");
+        assert_eq!(track_count(Locale::Pl, -3), "0 utworów");
+    }
+
+    #[test]
+    fn library_counts_use_the_three_polish_forms() {
+        let pl = |f: fn(Locale, i64) -> String| [1, 2, 5, 12, 22].map(|n| f(Locale::Pl, n));
+        assert_eq!(
+            pl(album_count),
+            [
+                "1 album",
+                "2 albumy",
+                "5 albumów",
+                "12 albumów",
+                "22 albumy"
+            ]
+        );
+        assert_eq!(
+            pl(playlist_count),
+            [
+                "1 playlista",
+                "2 playlisty",
+                "5 playlist",
+                "12 playlist",
+                "22 playlisty"
+            ]
+        );
+        assert_eq!(
+            pl(artist_count),
+            [
+                "1 artysta",
+                "2 artystów",
+                "5 artystów",
+                "12 artystów",
+                "22 artystów"
+            ]
+        );
+        assert_eq!(
+            pl(song_count),
+            [
+                "1 utwór",
+                "2 utwory",
+                "5 utworów",
+                "12 utworów",
+                "22 utwory"
+            ]
+        );
+        assert_eq!(artist_count(Locale::En, 1), "1 artist");
+        assert_eq!(album_count(Locale::En, 0), "0 albums");
+        assert_eq!(playlist_count(Locale::En, 3), "3 playlists");
+        assert_eq!(song_count(Locale::En, 1), "1 song");
+    }
+
+    #[test]
+    fn pagination_and_duration_sentences() {
+        assert_eq!(page_of(Locale::En, 2, 3), "Page 2 of 3");
+        assert_eq!(page_of(Locale::Pl, 2, 3), "Strona 2 z 3");
+        assert_eq!(page_range(Locale::En, 0, 40, 120), "1–40 of 120");
+        assert_eq!(page_range(Locale::En, 80, 40, 120), "81–120 of 120");
+        assert_eq!(page_range(Locale::En, 0, 0, 0), "0 of 0");
+        assert_eq!(page_range(Locale::Pl, 40, 40, 120), "41–80 z 120");
+        assert_eq!(page_range(Locale::Pl, 0, 0, 0), "0 z 0");
+        assert_eq!(total_duration(Locale::En, 0), "0 min");
+        assert_eq!(total_duration(Locale::En, 59), "0 min");
+        assert_eq!(total_duration(Locale::En, 245), "4 min");
+        assert_eq!(total_duration(Locale::En, 3900), "1 hr 5 min");
+        assert_eq!(total_duration(Locale::Pl, 3900), "1 godz. 5 min");
+        assert_eq!(total_duration(Locale::Pl, 245), "4 min");
+    }
+
+    #[test]
+    fn playlist_sentences_keep_names_verbatim() {
+        let name = "Zażółć \"<b>\"";
+        for l in Locale::ALL {
+            for text in [
+                play_named(l, name),
+                delete_playlist_confirm(l, name),
+                added_to_playlist(l, name, true),
+                added_to_playlist(l, name, false),
+            ] {
+                assert!(text.contains(name), "{text}");
+                assert!(text.len() > name.len() + 3, "{text}");
+            }
+        }
+        assert_eq!(
+            delete_playlist_confirm(Locale::En, "Road"),
+            "Are you sure you want to delete \"Road\"? This action cannot be undone."
+        );
+        assert_eq!(
+            delete_playlist_confirm(Locale::Pl, "Road"),
+            "Czy na pewno chcesz usunąć „Road”? Tej operacji nie można cofnąć."
+        );
+        assert_eq!(added_to_playlist(Locale::En, "Road", true), "Added to Road");
+        assert_eq!(
+            added_to_playlist(Locale::En, "Road", false),
+            "Already in Road"
+        );
+        assert_eq!(
+            added_to_playlist(Locale::Pl, "Road", true),
+            "Dodano do playlisty „Road”"
+        );
+        assert_eq!(play_named(Locale::Pl, "Abbey Road"), "Odtwórz: Abbey Road");
+        assert_eq!(play_named(Locale::En, "Abbey Road"), "Play Abbey Road");
     }
 
     #[test]
@@ -578,10 +875,11 @@ mod tests {
                 Msg::NavRadio,
                 Msg::RoleAdministrator,
                 Msg::AvatarPanda,
-                Msg::AvatarRobot
+                Msg::AvatarRobot,
+                Msg::ColumnAlbum,
             ]
         );
-        assert!(Msg::ALL.len() >= 150, "{}", Msg::ALL.len());
+        assert!(Msg::ALL.len() >= 220, "{}", Msg::ALL.len());
     }
 
     #[test]

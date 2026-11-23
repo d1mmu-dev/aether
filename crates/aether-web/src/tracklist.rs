@@ -9,6 +9,7 @@ use aether_api_types::playlists::{AddItems, AddItemsResponse, PlaylistListEntry}
 use vertigo::{Computed, DomNode, Value, bind, dom, get_driver};
 
 use crate::api::client::load;
+use crate::i18n::{Locale, Msg, added_to_playlist};
 use crate::icons::icon;
 use crate::player::queue_item;
 use crate::route::Route;
@@ -59,12 +60,8 @@ fn queue_button(ctx: &Ctx, track: &Track, class: &'static str) -> DomNode {
 }
 
 /// The message after adding `track` to the playlist called `name`.
-pub fn add_message(name: &str, answer: &AddItemsResponse) -> String {
-    if answer.added > 0 {
-        format!("Added to {name}")
-    } else {
-        format!("Already in {name}")
-    }
+pub fn add_message(locale: Locale, name: &str, answer: &AddItemsResponse) -> String {
+    added_to_playlist(locale, name, answer.added > 0)
 }
 
 /// A button that opens the list of the user's playlists; picking one adds the track to it.
@@ -81,11 +78,12 @@ fn add_to_playlist(ctx: &Ctx, track_id: String, button_class: &'static str) -> D
                 .await
         }));
         let inner = resource_view(
+            &ctx.prefs,
             resource,
             bind!(ctx, open, track_id, |lists: Rc<Vec<PlaylistListEntry>>| {
                 if lists.is_empty() {
                     return dom! {
-                        <span class="block px-3 py-2 text-xs text-[var(--text-muted)]">"No playlists yet: create one on the Playlists page."</span>
+                        <span class="block px-3 py-2 text-xs text-[var(--text-muted)]">{ctx.prefs.text(Msg::NoPlaylistsPicker)}</span>
                     };
                 }
                 let buttons: Vec<DomNode> = lists
@@ -104,7 +102,7 @@ fn add_to_playlist(ctx: &Ctx, track_id: String, button_class: &'static str) -> D
                                     )
                                     .await;
                                 ctx.notify(match result {
-                                    Ok(answer) => add_message(&name, &answer),
+                                    Ok(answer) => add_message(ctx.prefs.current(), &name, &answer),
                                     Err(err) => err.message,
                                 });
                                 ctx.playlists_rev.change(|n| *n += 1);
@@ -130,7 +128,7 @@ fn add_to_playlist(ctx: &Ctx, track_id: String, button_class: &'static str) -> D
     }));
     dom! {
         <div class="relative">
-            <button name="add-to-playlist" class={button_class} title="add to playlist" aria-label="Add to playlist" on_click={toggle}>
+            <button name="add-to-playlist" class={button_class} title={ctx.prefs.hint(Msg::AddToPlaylist)} aria-label={ctx.prefs.text(Msg::AddToPlaylist)} on_click={toggle}>
                 {icon("plus", "w-4 h-4")}
             </button>
             {picker}
@@ -198,7 +196,7 @@ pub fn library_rows(ctx: &Ctx, tracks: Vec<Track>) -> DomNode {
                 <div data-track-row="true" class={row_class} style={style}>
                     <div class="w-8 flex items-center justify-center">
                         <button class="group/play w-10 h-10 flex items-center justify-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-                            aria-label="Play" title="Play" on_click={play}>
+                            aria-label={ctx.prefs.text(Msg::Play)} title={ctx.prefs.text(Msg::Play)} on_click={play}>
                             {number_view}
                             {icon("play", "w-4 h-4 text-brand opacity-0 group-hover:opacity-100 group-focus-visible/play:opacity-100 transition-opacity duration-150 fill-current")}
                         </button>
@@ -226,9 +224,9 @@ pub fn library_rows(ctx: &Ctx, tracks: Vec<Track>) -> DomNode {
         <div>
             <div class="grid grid-cols-[auto_1fr_auto] md:grid-cols-[auto_1fr_1fr_auto] items-center gap-3 px-4 py-3 bg-[var(--bg-primary)] border-2 border-white/10 rounded-lg mb-2">
                 <div class="w-8 text-center text-xs font-semibold text-[var(--text-muted)]">"#"</div>
-                <div class="text-xs font-semibold text-[var(--text-muted)]">"Title"</div>
-                <div class="hidden md:block text-xs font-semibold text-[var(--text-muted)]">"Album"</div>
-                <div class="w-[140px] text-right pr-2 text-xs font-semibold text-[var(--text-muted)]">"Duration"</div>
+                <div class="text-xs font-semibold text-[var(--text-muted)]">{ctx.prefs.text(Msg::ColumnTitle)}</div>
+                <div class="hidden md:block text-xs font-semibold text-[var(--text-muted)]">{ctx.prefs.text(Msg::ColumnAlbum)}</div>
+                <div class="w-[140px] text-right pr-2 text-xs font-semibold text-[var(--text-muted)]">{ctx.prefs.text(Msg::ColumnDuration)}</div>
             </div>
             <div class="space-y-1">{..rows}</div>
         </div>
@@ -261,7 +259,7 @@ pub fn compact_rows(ctx: &Ctx, tracks: Vec<Track>) -> DomNode {
             let add = add_to_playlist(ctx, t.id.to_string(), "w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-secondary)] hover:text-white hover:bg-white/10 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-all");
             dom! {
                 <div data-track-row="true" class="flex items-center gap-3 p-2 rounded-md group transition-colors hover:bg-white/5">
-                    <button class="w-10 h-10 flex items-center justify-center flex-shrink-0" aria-label="Play" title="Play" on_click={play}>
+                    <button class="w-10 h-10 flex items-center justify-center flex-shrink-0" aria-label={ctx.prefs.text(Msg::Play)} title={ctx.prefs.text(Msg::Play)} on_click={play}>
                         <span class="text-sm text-[var(--text-secondary)] group-hover:hidden">{n}</span>
                         {icon("play", "w-4 h-4 text-white hidden group-hover:block ml-0.5")}
                     </button>
@@ -310,7 +308,7 @@ pub fn playlist_rows(ctx: &Ctx, tracks: Vec<Track>, extra: RowExtra) -> DomNode 
             dom! {
                 <div data-track-row="true" class="grid grid-cols-[40px_minmax(0,1fr)_96px] md:grid-cols-[64px_minmax(0,2fr)_minmax(0,1fr)_56px_160px] gap-2 md:gap-4 px-4 py-2 rounded-lg hover:bg-white/[0.03] transition-all group cursor-pointer border border-transparent hover:border-white/5 touch-manipulation">
                     <div class="flex items-center justify-center gap-1">
-                        <button class="w-8 h-8 flex items-center justify-center" aria-label="Play" title="Play" on_click={play}>
+                        <button class="w-8 h-8 flex items-center justify-center" aria-label={ctx.prefs.text(Msg::Play)} title={ctx.prefs.text(Msg::Play)} on_click={play}>
                             <span class="text-xs group-hover:hidden text-[var(--text-muted)]">{n}</span>
                             {icon("play", "w-4 h-4 text-white hidden group-hover:block")}
                         </button>
@@ -336,10 +334,10 @@ pub fn playlist_rows(ctx: &Ctx, tracks: Vec<Track>, extra: RowExtra) -> DomNode 
         <div class="w-full">
             <div class="hidden md:grid grid-cols-[64px_minmax(0,2fr)_minmax(0,1fr)_56px_160px] gap-4 px-4 py-2 text-xs text-[var(--text-muted)] border-b border-white/10 mb-2">
                 <span class="text-center">"#"</span>
-                <span>"Title"</span>
-                <span>"Album"</span>
-                <span class="text-right">"Duration"</span>
-                <span class="sr-only">"Actions"</span>
+                <span>{ctx.prefs.text(Msg::ColumnTitle)}</span>
+                <span>{ctx.prefs.text(Msg::ColumnAlbum)}</span>
+                <span class="text-right">{ctx.prefs.text(Msg::ColumnDuration)}</span>
+                <span class="sr-only">{ctx.prefs.text(Msg::ColumnActions)}</span>
             </div>
             <div>{..rows}</div>
         </div>
@@ -361,7 +359,14 @@ mod tests {
 
     #[test]
     fn message_tells_added_from_duplicate() {
-        assert_eq!(add_message("Road", &answer(1)), "Added to Road");
-        assert_eq!(add_message("Road", &answer(0)), "Already in Road");
+        assert_eq!(add_message(Locale::En, "Road", &answer(1)), "Added to Road");
+        assert_eq!(
+            add_message(Locale::En, "Road", &answer(0)),
+            "Already in Road"
+        );
+        assert_eq!(
+            add_message(Locale::Pl, "Road", &answer(0)),
+            "Ten utwór jest już na playliście „Road”"
+        );
     }
 }

@@ -5,12 +5,14 @@
 use std::rc::Rc;
 
 use vertigo::router::Router;
-use vertigo::{Computed, DomNode, Resource, Value, dom, dom_element, get_driver};
+use vertigo::{Computed, DomNode, EmbedDom, Resource, Value, dom, dom_element, get_driver};
 
 use crate::api::client::ApiClient;
 use crate::auth::Session;
+use crate::i18n::{Msg, page_of, page_range};
 use crate::icons::icon;
 use crate::player::Player;
+use crate::prefs::Prefs;
 use crate::route::Route;
 
 /// Items per page the collection offers in the Refine panel (legacy `PER_PAGE_OPTIONS`).
@@ -93,9 +95,12 @@ pub const BTN_PRIMARY: &str = "inline-flex items-center justify-center gap-2 rou
 pub const INPUT: &str = "w-full px-4 py-2.5 bg-white/5 border border-white/10 rounded-lg text-white placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-transparent transition-all duration-200";
 pub const LABEL: &str = "block text-sm font-medium text-[var(--text-primary)] mb-1.5";
 
-/// An empty state: big icon, heading, one line of help.
-pub fn empty_state(icon_name: &'static str, heading: &str, text: &str) -> DomNode {
-    let (heading, text) = (heading.to_owned(), text.to_owned());
+/// An empty state: big icon, heading, one line of help (plain text or a language-following `Computed`).
+pub fn empty_state(
+    icon_name: &'static str,
+    heading: impl EmbedDom,
+    text: impl EmbedDom,
+) -> DomNode {
     dom! {
         <div class="flex flex-col items-center justify-center py-12 md:py-16 text-center px-4">
             <div class="mb-4 text-[var(--text-muted)]">{icon(icon_name, "w-16 h-16")}</div>
@@ -105,20 +110,33 @@ pub fn empty_state(icon_name: &'static str, heading: &str, text: &str) -> DomNod
     }
 }
 
+/// The loading row; its text follows the language in place.
+pub fn loading_row(prefs: &Prefs) -> DomNode {
+    dom! { <p class="py-8 text-sm text-[var(--text-muted)]">{prefs.text(Msg::Loading)}</p> }
+}
+
+/// The error row: the API's message as received (never translated).
+pub fn error_row(message: String) -> DomNode {
+    dom! { <p class="py-8 text-sm text-danger-light">{message}</p> }
+}
+
 /// The one loading / error / ready presentation every data-driven view goes through.
 pub fn resource_view<T: PartialEq + 'static>(
+    prefs: &Prefs,
     resource: Computed<Resource<Rc<T>>>,
     render: impl Fn(Rc<T>) -> DomNode + 'static,
 ) -> DomNode {
+    let prefs = prefs.clone();
     resource.render_value(move |state| match state {
-        Resource::Loading => {
-            dom! { <p class="py-8 text-sm text-[var(--text-muted)]">"Loading…"</p> }
-        }
-        Resource::Error(message) => {
-            dom! { <p class="py-8 text-sm text-danger-light">{message}</p> }
-        }
+        Resource::Loading => loading_row(&prefs),
+        Resource::Error(message) => error_row(message),
         Resource::Ready(data) => render(data),
     })
+}
+
+/// Text that never changes (library metadata) where a language-following `Computed` is expected.
+pub fn fixed_text(text: impl Into<String>) -> Computed<String> {
+    Value::new(text.into()).to_computed()
 }
 
 /// A boolean HTML attribute: present (`disabled="true"`) when `on`, removed otherwise. (vertigo writes
@@ -142,14 +160,6 @@ pub fn total_pages(total: i64, per_page: i64) -> i64 {
     ((total + per_page - 1) / per_page).max(1)
 }
 
-/// `1–40 of 120` (or `0 of 0`).
-pub fn page_label(offset: i64, shown: usize, total: i64) -> String {
-    if shown == 0 {
-        return format!("0 of {total}");
-    }
-    format!("{}–{} of {total}", offset + 1, offset + shown as i64)
-}
-
 pub fn has_next(offset: i64, shown: usize, total: i64) -> bool {
     offset + (shown as i64) < total
 }
@@ -158,7 +168,14 @@ const PAGER_BUTTON: &str = "flex items-center justify-center min-h-[44px] min-w-
 
 /// Previous / next controls under a list (the legacy `Pagination`; nothing when there is one page).
 /// `offset` is the page the list is showing.
-pub fn pager(offset: Value<i64>, current: i64, shown: usize, total: i64, per_page: i64) -> DomNode {
+pub fn pager(
+    prefs: &Prefs,
+    offset: Value<i64>,
+    current: i64,
+    shown: usize,
+    total: i64,
+    per_page: i64,
+) -> DomNode {
     let pages = total_pages(total, per_page);
     if pages <= 1 {
         return dom! { <span /> };
@@ -171,24 +188,25 @@ pub fn pager(offset: Value<i64>, current: i64, shown: usize, total: i64, per_pag
     let (first, prev, next, last) = (go(1), go(page - 1), go(page + 1), go(pages));
     let at_first = current <= 0;
     let at_last = !has_next(current, shown, total);
-    let label = page_label(current, shown, total);
+    // One sentence per language (word order is the language's), so the numbers are no longer separate spans.
+    let position = prefs.format(move |l| page_of(l, page, pages));
+    let label = prefs.format(move |l| format!(" ({})", page_range(l, current, shown, total)));
     dom! {
-        <nav aria-label="Pagination" class="flex items-center justify-center gap-2 pt-6 mt-12 border-t border-white/5">
-            <button class={PAGER_BUTTON} aria-label="First page" on_click={first} disabled={flag_now(at_first)}>
+        <nav aria-label={prefs.text(Msg::Pagination)} class="flex items-center justify-center gap-2 pt-6 mt-12 border-t border-white/5">
+            <button class={PAGER_BUTTON} aria-label={prefs.text(Msg::FirstPage)} on_click={first} disabled={flag_now(at_first)}>
                 {icon("chevron-left", "w-4 h-4")}
             </button>
-            <button class={PAGER_BUTTON} aria-label="Previous page" on_click={prev} disabled={flag_now(at_first)}>
+            <button class={PAGER_BUTTON} aria-label={prefs.text(Msg::PreviousPage)} on_click={prev} disabled={flag_now(at_first)}>
                 {icon("chevron-left", "w-4 h-4")}
             </button>
             <p class="px-3 text-sm text-[var(--text-secondary)] tabular-nums whitespace-nowrap">
-                "Page "<span class="text-white font-medium">{page.to_string()}</span>" of "
-                <span class="text-white font-medium">{pages.to_string()}</span>
+                <span class="text-white font-medium">{position}</span>
                 <span class="sr-only">{label}</span>
             </p>
-            <button class={PAGER_BUTTON} aria-label="Next page" on_click={next} disabled={flag_now(at_last)}>
+            <button class={PAGER_BUTTON} aria-label={prefs.text(Msg::NextPage)} on_click={next} disabled={flag_now(at_last)}>
                 {icon("chevron-right", "w-4 h-4")}
             </button>
-            <button class={PAGER_BUTTON} aria-label="Last page" on_click={last} disabled={flag_now(at_last)}>
+            <button class={PAGER_BUTTON} aria-label={prefs.text(Msg::LastPage)} on_click={last} disabled={flag_now(at_last)}>
                 {icon("chevron-right", "w-4 h-4")}
             </button>
         </nav>
@@ -217,20 +235,12 @@ pub fn format_time(secs: f64) -> String {
     format!("{}:{:02}", total / 60, total % 60)
 }
 
-/// `1 album` / `2 albums`.
-pub fn plural(n: i64, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn paging_labels() {
-        assert_eq!(page_label(0, 40, 120), "1–40 of 120");
-        assert_eq!(page_label(80, 40, 120), "81–120 of 120");
-        assert_eq!(page_label(0, 0, 0), "0 of 0");
         assert!(has_next(0, 40, 120));
         assert!(!has_next(80, 40, 120));
         assert_eq!(total_pages(0, 40), 1);
@@ -248,9 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn plurals_and_cover_urls() {
-        assert_eq!(plural(1, "album", "albums"), "1 album");
-        assert_eq!(plural(0, "album", "albums"), "0 albums");
+    fn cover_urls() {
         assert_eq!(
             cover_url("abc", 80, Some("tok")).as_deref(),
             Some("/api/library/cover-art/abc?size=80&token=tok")

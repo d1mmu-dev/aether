@@ -53,17 +53,23 @@ pub fn discovery_href(item: &DiscoveryItem) -> String {
 
 pub fn discovery_card(ctx: &Ctx, item: &DiscoveryItem, index: usize) -> DomNode {
     let token = ctx.session.current_token();
-    media_card(Card {
-        href: discovery_href(item),
-        covers: image_url(item.cover_url.as_deref(), 300, token.as_deref())
-            .into_iter()
-            .collect(),
-        title: item.title.clone(),
-        subtitle: ai::with_label(item.author.as_deref().unwrap_or_default(), item.ai_label),
-        kind: Kind::Podcast,
-        on_play: None,
-        index,
-    })
+    media_card(
+        ctx.prefs.locale.to_computed(),
+        Card {
+            href: discovery_href(item),
+            covers: image_url(item.cover_url.as_deref(), 300, token.as_deref())
+                .into_iter()
+                .collect(),
+            title: item.title.clone(),
+            subtitle: crate::ui::fixed_text(ai::with_label(
+                item.author.as_deref().unwrap_or_default(),
+                item.ai_label,
+            )),
+            kind: Kind::Podcast,
+            on_play: None,
+            index,
+        },
+    )
 }
 
 /// The show an episode belongs to, as the player bar names it.

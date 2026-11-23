@@ -7,8 +7,9 @@ use vertigo::{DomNode, Resource, Value, bind, computed_tuple, dom};
 
 use crate::api::client::load;
 use crate::components::{Card, Kind, Tab, library_page, media_card, media_grid};
+use crate::i18n::{Msg, album_count, artist_count};
 use crate::route::Route;
-use crate::ui::{Ctx, Refine, cover_url, empty_state, pager, plural};
+use crate::ui::{Ctx, Refine, cover_url, empty_state, error_row, loading_row, pager};
 
 pub fn render(ctx: &Ctx) -> DomNode {
     // A new Refine choice rebuilds the page, so it starts at page 1 again.
@@ -36,30 +37,33 @@ fn page(ctx: &Ctx, refine: Refine) -> DomNode {
                     &ctx,
                     Tab::Artists,
                     None,
-                    dom! { <p class="py-8 text-sm text-[var(--text-muted)]">"Loading…"</p> },
+                    loading_row(&ctx.prefs),
                 ),
                 Resource::Error(message) => library_page(
                     &ctx,
                     Tab::Artists,
                     None,
-                    dom! { <p class="py-8 text-sm text-danger-light">{message}</p> },
+                    error_row(message),
                 ),
                 Resource::Ready(page) => {
-                    let count = plural(page.total, "artist", "artists");
+                    let total = page.total;
+                    let count = ctx.prefs.format(move |l| artist_count(l, total));
                     let body = if page.artists.is_empty() {
                         empty_state(
                             "music",
-                            "No artists yet",
-                            "Put music in the server's music directory and press the sync button to scan it.",
+                            ctx.prefs.text(Msg::NoArtistsYet),
+                            ctx.prefs.text(Msg::NoArtistsHelp),
                         )
                     } else {
                         let token = ctx.session.current_token();
+                        let locale = ctx.prefs.locale.to_computed();
                         let cards: Vec<DomNode> = page
                             .artists
                             .iter()
                             .enumerate()
                             .map(|(i, a)| {
-                                media_card(Card {
+                                let albums = a.album_count;
+                                media_card(locale.clone(), Card {
                                     href: Route::Albums {
                                         artist: Some(a.id.to_string()),
                                     }
@@ -71,7 +75,7 @@ fn page(ctx: &Ctx, refine: Refine) -> DomNode {
                                         .into_iter()
                                         .collect(),
                                     title: a.name.clone(),
-                                    subtitle: plural(a.album_count, "album", "albums"),
+                                    subtitle: ctx.prefs.format(move |l| album_count(l, albums)),
                                     kind: Kind::Artist,
                                     on_play: None,
                                     index: i,
@@ -81,7 +85,7 @@ fn page(ctx: &Ctx, refine: Refine) -> DomNode {
                         dom! {
                             <div>
                                 {media_grid(cards)}
-                                {pager(offset.clone(), page.offset, page.artists.len(), page.total, refine.per_page)}
+                                {pager(&ctx.prefs, offset.clone(), page.offset, page.artists.len(), page.total, refine.per_page)}
                             </div>
                         }
                     };

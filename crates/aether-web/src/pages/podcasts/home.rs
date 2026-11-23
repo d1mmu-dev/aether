@@ -78,17 +78,23 @@ fn listening_view(ctx: &Ctx, data: Rc<Listening>) -> DomNode {
                 let resume = resume_point(row.episode.progress.as_ref());
                 let player = ctx.player.clone();
                 let play: Rc<dyn Fn()> = Rc::new(move || player.play_episode(item.clone(), resume));
-                media_card(Card {
-                    href: show_href(row.podcast.id),
-                    covers: image_url(cover, 300, token.as_deref())
-                        .into_iter()
-                        .collect(),
-                    title: row.episode.title.clone(),
-                    subtitle: with_label(&progress_line(row), row.episode.ai_label),
-                    kind: Kind::Podcast,
-                    on_play: Some(play),
-                    index,
-                })
+                media_card(
+                    ctx.prefs.locale.to_computed(),
+                    Card {
+                        href: show_href(row.podcast.id),
+                        covers: image_url(cover, 300, token.as_deref())
+                            .into_iter()
+                            .collect(),
+                        title: row.episode.title.clone(),
+                        subtitle: crate::ui::fixed_text(with_label(
+                            &progress_line(row),
+                            row.episode.ai_label,
+                        )),
+                        kind: Kind::Podcast,
+                        on_play: Some(play),
+                        index,
+                    },
+                )
             })
             .collect();
         let header = section_header(
@@ -143,17 +149,23 @@ fn followed_view(
         .into_iter()
         .enumerate()
         .map(|(index, show)| {
-            media_card(Card {
-                href: show_href(show.id),
-                covers: image_url(show.cover_url.as_deref(), 300, token.as_deref())
-                    .into_iter()
-                    .collect(),
-                title: show.title.clone(),
-                subtitle: with_label(show.author.as_deref().unwrap_or_default(), show.ai_label),
-                kind: Kind::Podcast,
-                on_play: None,
-                index,
-            })
+            media_card(
+                ctx.prefs.locale.to_computed(),
+                Card {
+                    href: show_href(show.id),
+                    covers: image_url(show.cover_url.as_deref(), 300, token.as_deref())
+                        .into_iter()
+                        .collect(),
+                    title: show.title.clone(),
+                    subtitle: crate::ui::fixed_text(with_label(
+                        show.author.as_deref().unwrap_or_default(),
+                        show.ai_label,
+                    )),
+                    kind: Kind::Podcast,
+                    on_play: None,
+                    index,
+                },
+            )
         })
         .collect();
     let header = section_header(Kind::Podcast, "your shows", shows.len() as i64);
@@ -284,10 +296,11 @@ pub fn render(ctx: &Ctx) -> DomNode {
         // Asked for with the pill's position and fetched again when it flips.
         let listening = when_known(&show_ai, bind!(ctx, |on| {
             let listening = load(bind!(ctx, async move { api::listening(&ctx.client, on).await }));
-            resource_view(listening, bind!(ctx, |data: Rc<Listening>| listening_view(&ctx, data)))
+            resource_view(&ctx.prefs, listening, bind!(ctx, |data: Rc<Listening>| listening_view(&ctx, data)))
         }));
         let followed = load(bind!(ctx, async move { api::followed(&ctx.client).await }));
         let followed = resource_view(
+            &ctx.prefs,
             followed,
             bind!(ctx, check_all, check_label, checking, show_ai, |shows: Rc<Vec<FollowedShow>>| {
                 when_known(&show_ai, bind!(ctx, check_all, check_label, checking, shows, |on| {
@@ -340,6 +353,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
         _ => dom! { <span class="hidden" /> },
     }));
     let top_view = resource_view(
+        &ctx.prefs,
         top,
         bind!(ctx, show_ai, |items: Rc<Vec<DiscoveryItem>>| {
             when_known(
@@ -357,6 +371,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
         }),
     );
     let categories_view = resource_view(
+        &ctx.prefs,
         categories,
         bind!(shown, |c: Rc<Vec<Category>>| {
             shown.render_value(move |ids: Vec<i32>| categories_view(c.clone(), ids))

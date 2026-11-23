@@ -22,7 +22,7 @@ use crate::api::podcasts::{self as api, Order};
 use crate::components::{Kind, media_grid, section_header};
 use crate::icons::icon;
 use crate::route::Route;
-use crate::ui::{Ctx, flag, flag_now, format_time, page_label, resource_view};
+use crate::ui::{Ctx, flag, flag_now, format_time, resource_view};
 
 pub const PAGE: u32 = 20;
 
@@ -198,8 +198,9 @@ fn episodes(
             let page = load(bind!(ctx, id, async move {
                 api::episodes(&ctx.client, &id, at, PAGE, sort, on).await
             }));
-            resource_view(page, bind!(ctx, show, show_ai, admin, reload, order, offset, |page: Rc<EpisodePage>| {
-                let label = page_label(page.offset, page.episodes.len(), page.total);
+            resource_view(&ctx.prefs, page, bind!(ctx, show, show_ai, admin, reload, order, offset, |page: Rc<EpisodePage>| {
+                // Podcasts are not translated yet (separate slice): the range stays English.
+                let label = crate::i18n::page_range(crate::i18n::Locale::En, page.offset, page.episodes.len(), page.total);
                 let has_prev = page.offset > 0;
                 let has_next = page.offset + (page.episodes.len() as i64) < page.total;
                 let prev = bind!(offset, |_| offset.change(|o| *o = o.saturating_sub(PAGE)));
@@ -247,6 +248,7 @@ fn similar(ctx: &Ctx, id: String, show_ai: &ShowAi) -> DomNode {
         async move { api::similar(&ctx.client, &id).await }
     ));
     resource_view(
+        &ctx.prefs,
         found,
         bind!(ctx, show_ai, |all: Rc<Vec<DiscoveryItem>>| {
             when_known(
@@ -380,6 +382,7 @@ pub fn render(ctx: &Ctx, id: String) -> DomNode {
     let show_ai = show_ai_state(ctx);
     let reload = Value::new(0u32);
     resource_view(
+        &ctx.prefs,
         detail,
         bind!(ctx, show_ai, reload, |d| show_page(
             &ctx, d, &show_ai, &reload
@@ -463,7 +466,7 @@ pub fn preview(ctx: &Ctx, itunes_id: String) -> DomNode {
     let found = load(bind!(ctx, itunes_id, async move {
         api::preview(&ctx.client, &itunes_id).await
     }));
-    resource_view(found, bind!(ctx, |p| preview_page(&ctx, p)))
+    resource_view(&ctx.prefs, found, bind!(ctx, |p| preview_page(&ctx, p)))
 }
 
 #[cfg(test)]

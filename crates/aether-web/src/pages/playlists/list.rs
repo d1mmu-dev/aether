@@ -10,10 +10,11 @@ use crate::api::client::load;
 use crate::components::{
     Card, Kind, eyebrow, media_card, media_grid, mosaic_covers, section_header,
 };
+use crate::i18n::{Msg, UiError, playlist_count, song_count};
 use crate::icons::icon;
 use crate::player::queue_item;
 use crate::route::Route;
-use crate::ui::{Ctx, cover_url, empty_state, flag, plural, resource_view};
+use crate::ui::{Ctx, cover_url, empty_state, flag, resource_view};
 
 /// The mosaic covers of a list entry (its preview tracks), as image URLs.
 fn covers_of(entry: &PlaylistListEntry, token: Option<&str>) -> Vec<String> {
@@ -48,7 +49,7 @@ fn play_playlist(ctx: &Ctx, id: String) {
                     0,
                 );
             }
-            Ok(_) => ctx.notify("This playlist has no tracks"),
+            Ok(_) => ctx.notify(ctx.prefs.now(Msg::PlaylistHasNoTracks)),
             Err(e) => ctx.notify(e.message),
         }
     }));
@@ -56,7 +57,7 @@ fn play_playlist(ctx: &Ctx, id: String) {
 
 pub fn render(ctx: &Ctx) -> DomNode {
     let name = Value::new(String::new());
-    let error: Value<Option<String>> = Value::new(None);
+    let error: Value<Option<UiError>> = Value::new(None);
     let busy = Value::new(false);
     let creating = Value::new(false);
 
@@ -67,7 +68,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
                 is_public: false,
             },
             Err(message) => {
-                error.set(Some(message));
+                error.set(Some(UiError::Msg(message)));
                 return;
             }
         };
@@ -85,31 +86,36 @@ pub fn render(ctx: &Ctx) -> DomNode {
                         id: created.id.to_string(),
                     });
                 }
-                Err(err) => error.set(Some(err.message)),
+                Err(err) => error.set(Some(UiError::Server(err.message))),
             }
             busy.set(false);
         }));
     });
-    let panel = creating.render_value(bind!(creating, name, busy, submit, error, |open: bool| {
+    let prefs = ctx.prefs.clone();
+    let panel = creating.render_value(bind!(creating, name, busy, submit, error, prefs, |open: bool| {
         if !open {
             return dom! { <span class="hidden" /> };
         }
-        let error_view = error.render_value(|e| match e {
-            Some(message) => dom! { <p class="w-full text-xs tabular-nums text-danger-light mt-1">{message}</p> },
+        let error_view = error.render_value(bind!(prefs, |e: Option<UiError>| match e {
+            // A catalogue message follows the language in place; a server body is shown as received.
+            Some(e) => {
+                let message = prefs.format(move |l| e.text(l));
+                dom! { <p class="w-full text-xs tabular-nums text-danger-light mt-1">{message}</p> }
+            }
             None => dom! { <span class="hidden" /> },
-        });
+        }));
         let close = bind!(creating, |_| creating.set(false));
         dom! {
             <div class="mt-4 p-4 rounded-lg bg-white/[0.02] border border-white/10">
                 <form class="flex flex-wrap items-center gap-3" on_submit={submit.clone()}>
                     <input class={format!("flex-1 min-w-[180px] {PANEL_INPUT}")} type="text" name="name" autofocus="true"
-                        placeholder="Playlist name..." value={name.clone()} on_input={bind!(name, |v: String| name.set(v))} />
+                        placeholder={prefs.text(Msg::PlaylistNamePlaceholder)} value={name.clone()} on_input={bind!(name, |v: String| name.set(v))} />
                     <button class="inline-flex items-center justify-center gap-2 rounded-lg font-semibold transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed bg-brand hover:bg-brand-hover text-black px-4 py-2 text-xs"
                         type="submit" disabled={flag(busy.to_computed())}>
                         {icon("check", "w-3.5 h-3.5")}
-                        "Create"
+                        {prefs.text(Msg::Create)}
                     </button>
-                    <button type="button" aria-label="Close" on_click={close}
+                    <button type="button" aria-label={prefs.text(Msg::Close)} on_click={close}
                         class="px-3 py-2 rounded-lg text-xs tabular-nums text-[var(--text-muted)] hover:text-white/70 transition-colors">
                         {icon("x", "w-4 h-4")}
                     </button>
@@ -122,12 +128,12 @@ pub fn render(ctx: &Ctx) -> DomNode {
         let now = vertigo::transaction(|c| creating.get(c));
         creating.set(!now);
     });
-    let create_button = creating.render_value(bind!(toggle, |open: bool| {
+    let create_button = creating.render_value(bind!(toggle, prefs, |open: bool| {
         let class = if open { ACTION_BRAND_ACTIVE } else { ACTION_BRAND };
         dom! {
-            <button class={class} name="create-playlist" aria-label="Create playlist" on_click={toggle.clone()}>
+            <button class={class} name="create-playlist" aria-label={prefs.text(Msg::CreatePlaylist)} on_click={toggle.clone()}>
                 {icon("plus", "w-4 h-4")}
-                <span class="hidden sm:inline">"Create"</span>
+                <span class="hidden sm:inline">{prefs.text(Msg::Create)}</span>
             </button>
         }
     }));
@@ -137,21 +143,26 @@ pub fn render(ctx: &Ctx) -> DomNode {
             .get::<Vec<PlaylistListEntry>>("/api/playlists?limit=100")
             .await
     }));
-    let description = resource.map(|state| match state {
-        vertigo::Resource::Ready(lists) => plural(lists.len() as i64, "playlist", "playlists"),
-        _ => "\u{a0}".to_owned(),
-    });
+    let description = {
+        let (resource, locale) = (resource.clone(), ctx.prefs.locale.clone());
+        vertigo::Computed::from(move |c| match resource.get(c) {
+            vertigo::Resource::Ready(lists) => playlist_count(locale.get(c), lists.len() as i64),
+            _ => "\u{a0}".to_owned(),
+        })
+    };
     let lists = resource_view(
+        &ctx.prefs,
         resource,
         bind!(ctx, |lists: Rc<Vec<PlaylistListEntry>>| {
             if lists.is_empty() {
                 return empty_state(
                     "list-music",
-                    "No playlists yet",
-                    "Create one to start organising your music",
+                    ctx.prefs.text(Msg::NoPlaylistsYet),
+                    ctx.prefs.text(Msg::NoPlaylistsHelp),
                 );
             }
             let token = ctx.session.current_token();
+            let locale = ctx.prefs.locale.to_computed();
             let cards: Vec<DomNode> = lists
                 .iter()
                 .enumerate()
@@ -161,20 +172,26 @@ pub fn render(ctx: &Ctx) -> DomNode {
                         let (ctx, id) = (ctx.clone(), id.clone());
                         Rc::new(move || play_playlist(&ctx, id.clone()))
                     };
-                    media_card(Card {
-                        href: Route::Playlist { id }.to_string(),
-                        covers: covers_of(p, token.as_deref()),
-                        title: p.summary.playlist.name.clone(),
-                        subtitle: plural(p.summary.track_count, "song", "songs"),
-                        kind: Kind::Playlist,
-                        on_play: Some(play),
-                        index: i,
-                    })
+                    media_card(
+                        locale.clone(),
+                        Card {
+                            href: Route::Playlist { id }.to_string(),
+                            covers: covers_of(p, token.as_deref()),
+                            title: p.summary.playlist.name.clone(),
+                            subtitle: {
+                                let songs = p.summary.track_count;
+                                ctx.prefs.format(move |l| song_count(l, songs))
+                            },
+                            kind: Kind::Playlist,
+                            on_play: Some(play),
+                            index: i,
+                        },
+                    )
                 })
                 .collect();
             dom! {
                 <div>
-                    {section_header(Kind::Playlist, "All Playlists", lists.len() as i64)}
+                    {section_header(Kind::Playlist, ctx.prefs.text(Msg::AllPlaylists), lists.len() as i64)}
                     {media_grid(cards)}
                 </div>
             }
@@ -184,10 +201,10 @@ pub fn render(ctx: &Ctx) -> DomNode {
     dom! {
         <div class="min-h-screen bg-gradient-to-b from-(--bg-primary) to-black section-stack">
             <header class="page-shell pt-8 pb-6">
-                {eyebrow("Your library")}
+                {eyebrow(ctx.prefs.text(Msg::YourLibrary))}
                 <div class="flex flex-wrap items-end justify-between gap-4">
                     <div class="min-w-0">
-                        <h1 class="text-4xl md:text-5xl font-bold tracking-tight text-white leading-none">"Playlists"</h1>
+                        <h1 class="text-4xl md:text-5xl font-bold tracking-tight text-white leading-none">{ctx.prefs.text(Msg::NavPlaylists)}</h1>
                         <p class="mt-3 text-sm text-[var(--text-muted)]">{description}</p>
                     </div>
                 </div>

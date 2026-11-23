@@ -31,6 +31,7 @@ pub(super) fn render(ctx: &Ctx) -> DomNode {
         refresh(ctx, data.clone(), error.clone(), busy.clone());
     }
     let content = resource_view(
+        &ctx.prefs,
         data.to_computed(),
         bind!(ctx, data, error, busy, |answer: Rc<ProfilesResponse>| {
             let manager = answer

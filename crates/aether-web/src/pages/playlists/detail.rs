@@ -15,21 +15,12 @@ use vertigo::{DomNode, Value, bind, dom, get_driver};
 use super::validate_name;
 use crate::api::client::load;
 use crate::components::{Kind, eyebrow, mosaic_covers, section_header};
+use crate::i18n::{Msg, UiError, delete_playlist_confirm, song_count, total_duration};
 use crate::icons::icon;
 use crate::player::queue_item;
 use crate::route::Route;
 use crate::tracklist::{RowExtra, playlist_rows};
-use crate::ui::{Ctx, cover_url, plural, resource_view};
-
-/// `4 min`, `1 hr 5 min` (legacy `formatTotalDuration`).
-pub fn total_duration(seconds: i64) -> String {
-    let (hours, mins) = (seconds / 3600, (seconds % 3600) / 60);
-    if hours > 0 {
-        format!("{hours} hr {mins} min")
-    } else {
-        format!("{mins} min")
-    }
-}
+use crate::ui::{Ctx, cover_url, resource_view};
 
 pub fn render(ctx: &Ctx, id: String) -> DomNode {
     let reload = Value::new(0_u32);
@@ -40,6 +31,7 @@ pub fn render(ctx: &Ctx, id: String) -> DomNode {
                 .await
         }));
         resource_view(
+            &ctx.prefs,
             resource,
             bind!(ctx, id, reload, |detail: Rc<PlaylistDetail>| body(
                 &ctx, &id, &reload, &detail
@@ -52,7 +44,8 @@ const ICON_BUTTON: &str = "h-8 w-8 rounded-lg flex items-center justify-center t
 
 fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> DomNode {
     let id = id.to_owned();
-    let message: Value<Option<String>> = Value::new(None);
+    let message: Value<Option<UiError>> = Value::new(None);
+    let prefs = ctx.prefs.clone();
     let tracks: Vec<Track> = detail.items.iter().map(|i| i.track.clone()).collect();
     let playlist_name = detail.summary.playlist.name.clone();
     let is_public = detail.summary.playlist.is_public;
@@ -95,7 +88,7 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
             let new_name = match validate_name(&typed) {
                 Ok(n) => n,
                 Err(m) => {
-                    message.set(Some(m));
+                    message.set(Some(UiError::Msg(m)));
                     return;
                 }
             };
@@ -114,7 +107,7 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
                         ctx.playlists_rev.change(|n| *n += 1);
                         reload.change(|n| *n += 1);
                     }
-                    Err(err) => message.set(Some(err.message)),
+                    Err(err) => message.set(Some(UiError::Server(err.message))),
                 }
             }));
         }
@@ -136,7 +129,7 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
                     ctx.playlists_rev.change(|n| *n += 1);
                     reload.change(|n| *n += 1);
                 }
-                Err(err) => message.set(Some(err.message)),
+                Err(err) => message.set(Some(UiError::Server(err.message))),
             }
         }));
     });
@@ -152,28 +145,27 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
                     ctx.playlists_rev.change(|n| *n += 1);
                     ctx.router.set(Route::Playlists);
                 }
-                Err(err) => message.set(Some(err.message)),
+                Err(err) => message.set(Some(UiError::Server(err.message))),
             }
         }));
     });
     let ask = bind!(confirming, |_| confirming.set(true));
     let cancel = bind!(confirming, |_| confirming.set(false));
-    let dialog = confirming.render_value(bind!(delete, cancel, playlist_name, |sure: bool| {
+    let dialog = confirming.render_value(bind!(delete, cancel, playlist_name, prefs, |sure: bool| {
         if !sure {
             return dom! { <span class="hidden" /> };
         }
-        let text = format!(
-            "Are you sure you want to delete \"{playlist_name}\"? This action cannot be undone."
-        );
+        let named = playlist_name.clone();
+        let text = prefs.format(move |l| delete_playlist_confirm(l, &named));
         dom! {
             <div class="fixed inset-0 z-(--z-modal) flex items-center justify-center p-4">
                 <div class="absolute inset-0 bg-black/70" on_click={cancel.clone()}></div>
-                <div role="dialog" aria-label="Delete Playlist?" class="relative w-full max-w-md rounded-lg border border-white/10 bg-[var(--bg-secondary)] p-6 animate-pop">
-                    <h2 class="text-lg font-bold text-white mb-2">"Delete Playlist?"</h2>
+                <div role="dialog" aria-label={prefs.text(Msg::DeletePlaylistQuestion)} class="relative w-full max-w-md rounded-lg border border-white/10 bg-[var(--bg-secondary)] p-6 animate-pop">
+                    <h2 class="text-lg font-bold text-white mb-2">{prefs.text(Msg::DeletePlaylistQuestion)}</h2>
                     <p class="text-sm text-[var(--text-secondary)] mb-6">{text}</p>
                     <div class="flex justify-end gap-3">
-                        <button type="button" class="px-4 py-2 rounded-lg text-sm font-medium text-[var(--text-secondary)] hover:text-white hover:bg-white/5 border border-white/10 transition-colors" on_click={cancel.clone()}>"Cancel"</button>
-                        <button type="button" name="confirm-delete" class="px-4 py-2 rounded-lg text-sm font-semibold bg-danger text-white hover:bg-danger-light transition-colors" on_click={delete.clone()}>"Delete"</button>
+                        <button type="button" class="px-4 py-2 rounded-lg text-sm font-medium text-[var(--text-secondary)] hover:text-white hover:bg-white/5 border border-white/10 transition-colors" on_click={cancel.clone()}>{prefs.text(Msg::Cancel)}</button>
+                        <button type="button" name="confirm-delete" class="px-4 py-2 rounded-lg text-sm font-semibold bg-danger text-white hover:bg-danger-light transition-colors" on_click={delete.clone()}>{prefs.text(Msg::Delete)}</button>
                     </div>
                 </div>
             </div>
@@ -182,6 +174,10 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
 
     let remove: RowExtra = {
         let (ctx, id, message, reload) = (ctx.clone(), id.clone(), message.clone(), reload.clone());
+        let (label, hint) = (
+            ctx.prefs.text(Msg::RemoveFromPlaylist),
+            ctx.prefs.hint(Msg::RemoveFromPlaylist),
+        );
         Rc::new(move |track: &Track| {
             let track_id = track.id.to_string();
             let click = bind!(ctx, id, message, reload, |_| {
@@ -197,12 +193,12 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
                             ctx.playlists_rev.change(|n| *n += 1);
                             reload.change(|n| *n += 1);
                         }
-                        Err(err) => message.set(Some(err.message)),
+                        Err(err) => message.set(Some(UiError::Server(err.message))),
                     }
                 }));
             });
             dom! {
-                <button name="remove-track" aria-label="Remove from playlist" title="remove from playlist" on_click={click}
+                <button name="remove-track" aria-label={label.clone()} title={hint.clone()} on_click={click}
                     class="w-11 h-11 md:w-9 md:h-9 flex items-center justify-center rounded-lg hover:bg-white/10 text-[var(--text-muted)] hover:text-danger-light transition-all">
                     {icon("x", "w-4 h-4")}
                 </button>
@@ -210,10 +206,14 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
         })
     };
 
-    let message_view = message.render_value(|m| match m {
-        Some(text) => dom! { <p class="mt-3 text-sm text-danger-light">{text}</p> },
+    let message_view = message.render_value(bind!(prefs, |m: Option<UiError>| match m {
+        // A catalogue message follows the language in place; a server body is shown as received.
+        Some(e) => {
+            let text = prefs.format(move |l| e.text(l));
+            dom! { <p class="mt-3 text-sm text-danger-light">{text}</p> }
+        }
         None => dom! { <span class="hidden" /> },
-    });
+    }));
 
     // Cover mosaic and the blurred hero backdrop of the leading cover.
     let token = ctx.session.current_token();
@@ -258,13 +258,15 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
     };
 
     let total: i64 = tracks.iter().map(|t| t.duration).sum();
-    let songs = plural(detail.summary.track_count, "song", "songs");
+    let track_total = detail.summary.track_count;
+    let songs = prefs.format(move |l| song_count(l, track_total));
+    let length = prefs.format(move |l| total_duration(l, total));
     let counts = if total > 0 {
         dom! {
             <div class="flex flex-wrap items-center gap-3 text-xs tabular-nums text-[var(--text-secondary)]">
                 <span>{songs}</span>
                 <span class="text-[var(--text-muted)]">"|"</span>
-                <span>{total_duration(total)}</span>
+                <span>{length}</span>
             </div>
         }
     } else {
@@ -275,7 +277,7 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
         }
     };
 
-    let title_view = editing.render_value(bind!(name, save_name, editing, playlist_name, |is_editing: bool| {
+    let title_view = editing.render_value(bind!(name, save_name, editing, playlist_name, prefs, |is_editing: bool| {
         if is_editing {
             let on_key = bind!(save_name, editing, |event: vertigo::KeyDownEvent| {
                 match event.code.as_str() {
@@ -291,7 +293,7 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
                 }
             });
             dom! {
-                <input type="text" name="rename" autofocus="true" aria-label="Playlist name" value={name.clone()}
+                <input type="text" name="rename" autofocus="true" aria-label={prefs.text(Msg::PlaylistName)} value={name.clone()}
                     on_input={bind!(name, |v: String| name.set(v))} on_key_down={on_key}
                     class="text-2xl md:text-4xl lg:text-5xl font-bold text-white leading-tight tracking-tight bg-transparent border-b border-white/30 outline-none w-full" />
             }
@@ -312,7 +314,7 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
         dom! { <span class="hidden" /> }
     } else {
         dom! {
-            <button name="play-all" aria-label="Play all" on_click={play_all}
+            <button name="play-all" aria-label={prefs.text(Msg::PlayAll)} on_click={play_all}
                 class="h-12 w-12 rounded-lg bg-brand hover:bg-brand-hover hover:scale-105 flex items-center justify-center transition-all">
                 {icon("play", "w-5 h-5 fill-current text-black ml-0.5")}
             </button>
@@ -320,7 +322,7 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
     };
     let shuffle_button = if tracks.len() > 1 {
         dom! {
-            <button title="shuffle play" aria-label="Shuffle play" on_click={shuffle_play}
+            <button title={prefs.hint(Msg::ShufflePlay)} aria-label={prefs.text(Msg::ShufflePlay)} on_click={shuffle_play}
                 class="h-8 w-8 rounded-lg hover:bg-white/10 flex items-center justify-center text-[var(--text-muted)] hover:text-white transition-all">
                 {icon("shuffle", "w-5 h-5")}
             </button>
@@ -336,11 +338,12 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
             "text-[var(--text-muted)] hover:text-white/60"
         }
     );
-    let visibility_title = if is_public {
-        "make private"
+    // Lower case for both title and label, as before (`hint`).
+    let visibility_title = prefs.hint(if is_public {
+        Msg::MakePrivate
     } else {
-        "make public"
-    };
+        Msg::MakePublic
+    });
     let visibility_icon = if is_public {
         icon("globe", "w-5 h-5")
     } else {
@@ -353,21 +356,21 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
                 <div class="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-brand to-brand-dark"></div>
                 <div class="flex items-center gap-3 mb-8 pb-4 border-b border-white/10">
                     <div class="w-2 h-2 bg-brand"></div>
-                    <span class="text-xs text-[var(--text-secondary)]">"Empty Playlist"</span>
+                    <span class="text-xs text-[var(--text-secondary)]">{prefs.text(Msg::EmptyPlaylist)}</span>
                 </div>
                 <div class="flex flex-col items-center text-center">
                     <div class="w-16 h-16 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center mb-6">
                         {icon("list-music", "w-8 h-8 text-white/10")}
                     </div>
-                    <h3 class="text-2xl font-bold tracking-tight text-white mb-2">"No tracks yet"</h3>
-                    <p class="text-xs text-[var(--text-muted)]">"Add some tracks to get started"</p>
+                    <h3 class="text-2xl font-bold tracking-tight text-white mb-2">{prefs.text(Msg::NoTracksYet)}</h3>
+                    <p class="text-xs text-[var(--text-muted)]">{prefs.text(Msg::AddTracksToStart)}</p>
                 </div>
             </div>
         }
     } else {
         dom! {
             <div class="w-full">
-                {section_header(Kind::Playlist, "Tracks", tracks.len() as i64)}
+                {section_header(Kind::Playlist, prefs.text(Msg::TabTracks), tracks.len() as i64)}
                 {playlist_rows(ctx, tracks.clone(), remove)}
             </div>
         }
@@ -381,9 +384,9 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
                     <a href={Route::Playlists.to_string()}
                         class="flex w-fit min-h-[44px] items-center gap-2 text-xs tabular-nums text-[var(--text-muted)] hover:text-white transition-colors mb-6">
                         {icon("arrow-left", "w-3.5 h-3.5")}
-                        "Playlists"
+                        {prefs.text(Msg::NavPlaylists)}
                     </a>
-                    {eyebrow("Playlist")}
+                    {eyebrow(prefs.text(Msg::PlaylistEyebrow))}
                     <div class="flex items-end gap-6">
                         <div class="w-[140px] h-[140px] md:w-[192px] md:h-[192px] bg-[var(--bg-primary)] rounded-lg shrink-0 overflow-hidden relative border-2 border-white/10">
                             {cover_art}
@@ -401,10 +404,10 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
                     {play_button}
                     {shuffle_button}
                     <div class="flex-1"></div>
-                    <button name="toggle-public" class={visibility_class} title={visibility_title} aria-label={visibility_title} on_click={toggle_public}>
+                    <button name="toggle-public" class={visibility_class} title={visibility_title.clone()} aria-label={visibility_title} on_click={toggle_public}>
                         {visibility_icon}
                     </button>
-                    <button name="delete-playlist" title="delete playlist" aria-label="Delete playlist" on_click={ask}
+                    <button name="delete-playlist" title={prefs.hint(Msg::DeletePlaylist)} aria-label={prefs.text(Msg::DeletePlaylist)} on_click={ask}
                         class="h-8 w-8 rounded-lg flex items-center justify-center text-[var(--text-muted)] hover:text-danger-light transition-all">
                         {icon("trash-2", "w-5 h-5")}
                     </button>
@@ -413,18 +416,5 @@ fn body(ctx: &Ctx, id: &str, reload: &Value<u32>, detail: &PlaylistDetail) -> Do
             <div class="relative page-shell pb-32">{list}</div>
             {dialog}
         </div>
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::total_duration;
-
-    #[test]
-    fn durations_read_like_the_legacy_header() {
-        assert_eq!(total_duration(0), "0 min");
-        assert_eq!(total_duration(59), "0 min");
-        assert_eq!(total_duration(245), "4 min");
-        assert_eq!(total_duration(3900), "1 hr 5 min");
     }
 }

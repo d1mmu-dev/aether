@@ -7,9 +7,10 @@ use vertigo::{DomNode, Resource, Value, bind, computed_tuple, dom, get_driver};
 
 use crate::api::client::load;
 use crate::components::{Card, Kind, Tab, library_page, media_card, media_grid};
+use crate::i18n::{Msg, album_count};
 use crate::player::queue_item;
 use crate::route::Route;
-use crate::ui::{Ctx, Refine, cover_url, empty_state, pager, plural};
+use crate::ui::{Ctx, Refine, cover_url, empty_state, error_row, fixed_text, loading_row, pager};
 
 /// Queues and plays an album from its first track.
 pub fn play_album(ctx: &Ctx, album_id: String) {
@@ -23,7 +24,7 @@ pub fn play_album(ctx: &Ctx, album_id: String) {
                 ctx.player
                     .play_queue(found.tracks.iter().map(queue_item).collect(), 0);
             }
-            Ok(_) => ctx.notify("This album has no tracks"),
+            Ok(_) => ctx.notify(ctx.prefs.now(Msg::AlbumHasNoTracks)),
             Err(e) => ctx.notify(e.message),
         }
     }));
@@ -63,20 +64,22 @@ fn page(ctx: &Ctx, artist: Option<String>, refine: Refine) -> DomNode {
                     &ctx,
                     Tab::Albums,
                     None,
-                    dom! { <p class="py-8 text-sm text-[var(--text-muted)]">"Loading…"</p> },
+                    loading_row(&ctx.prefs),
                 ),
                 Resource::Error(message) => library_page(
                     &ctx,
                     Tab::Albums,
                     None,
-                    dom! { <p class="py-8 text-sm text-danger-light">{message}</p> },
+                    error_row(message),
                 ),
                 Resource::Ready(page) => {
-                    let count = plural(page.total, "album", "albums");
+                    let total = page.total;
+                    let count = ctx.prefs.format(move |l| album_count(l, total));
                     let body = if page.albums.is_empty() {
-                        empty_state("music", "No albums", "Nothing here yet.")
+                        empty_state("music", ctx.prefs.text(Msg::NoAlbums), ctx.prefs.text(Msg::NothingHereYet))
                     } else {
                         let token = ctx.session.current_token();
+                        let locale = ctx.prefs.locale.to_computed();
                         let cards: Vec<DomNode> = page
                             .albums
                             .iter()
@@ -87,13 +90,13 @@ fn page(ctx: &Ctx, artist: Option<String>, refine: Refine) -> DomNode {
                                     let (ctx, id) = (ctx.clone(), id.clone());
                                     Rc::new(move || play_album(&ctx, id.clone()))
                                 };
-                                media_card(Card {
+                                media_card(locale.clone(), Card {
                                     href: Route::Tracks { album: Some(id) }.to_string(),
                                     covers: cover_url(&a.cover_art, 300, token.as_deref())
                                         .into_iter()
                                         .collect(),
                                     title: a.title.clone(),
-                                    subtitle: a.artist.name.clone(),
+                                    subtitle: fixed_text(a.artist.name.clone()),
                                     kind: Kind::Album,
                                     on_play: Some(play),
                                     index: i,
@@ -103,7 +106,7 @@ fn page(ctx: &Ctx, artist: Option<String>, refine: Refine) -> DomNode {
                         dom! {
                             <div>
                                 {media_grid(cards)}
-                                {pager(offset.clone(), page.offset, page.albums.len(), page.total, refine.per_page)}
+                                {pager(&ctx.prefs, offset.clone(), page.offset, page.albums.len(), page.total, refine.per_page)}
                             </div>
                         }
                     };

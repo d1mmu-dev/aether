@@ -32,6 +32,7 @@ pub(super) fn render(ctx: &Ctx) -> DomNode {
         refresh(ctx, data.clone(), busy.clone());
     }
     let rows = resource_view(
+        &ctx.prefs,
         data.to_computed(),
         bind!(ctx, data, busy, error, |answer: Rc<AppTokensResponse>| {
             let rows: Vec<DomNode> = answer.api_keys.iter().map(|token| {

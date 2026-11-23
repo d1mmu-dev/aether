@@ -59,6 +59,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
     let error = Value::new(None);
     let data = load(bind!(ctx, async move { profiles::list(&ctx.client).await }));
     let tiles = resource_view(
+        &ctx.prefs,
         data,
         bind!(ctx, busy, error, |data: std::rc::Rc<ProfilesResponse>| {
             let rows: Vec<DomNode> = data.profiles.iter().map(|profile| {

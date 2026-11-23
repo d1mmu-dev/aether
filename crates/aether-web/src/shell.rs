@@ -13,11 +13,11 @@ use vertigo::{Computed, DomNode, Reactive, Resource, Value, bind, dom, get_drive
 
 use crate::api::client::load;
 use crate::brand::PRODUCT_NAME;
-use crate::i18n::Msg;
+use crate::i18n::{Locale, Msg, track_count};
 use crate::icons::icon;
 use crate::route::Route;
 use crate::style::BRAND_GRADIENT;
-use crate::ui::{Ctx, flag, flag_now, plural};
+use crate::ui::{Ctx, flag, flag_now};
 
 /// Polls a scan job once a second for at most this many seconds.
 const SCAN_POLL_SECS: u32 = 600;
@@ -470,10 +470,10 @@ fn sidebar(ctx: &Ctx, route: Computed<Route>) -> DomNode {
     let stack = playlist_stack(ctx, route);
     dom! {
         <aside class="w-64 bg-[var(--bg-primary)] flex flex-col overflow-hidden relative z-(--z-raised) rounded-lg tablet:hidden">
-            <nav class="pt-6 px-3" role="navigation" aria-label="Main navigation">
+            <nav class="pt-6 px-3" role="navigation" aria-label={prefs.text(Msg::MainNavigation)}>
                 <div class="mb-3 flex items-center gap-2 px-2">
                     <div class="w-1.5 h-1.5 bg-brand rounded-full"></div>
-                    <span class="t-eyebrow">"Navigation Index"</span>
+                    <span class="t-eyebrow">{prefs.text(Msg::NavigationIndex)}</span>
                 </div>
                 <div class="space-y-0.5">
                     {collection}
@@ -500,7 +500,8 @@ fn playlist_stack(ctx: &Ctx, route: Computed<Route>) -> DomNode {
                     .get::<Vec<PlaylistListEntry>>("/api/playlists?limit=100")
                     .await
             }));
-            resource.render_value(bind!(route, |state: Resource<
+            let locale = ctx.prefs.locale.to_computed();
+            resource.render_value(bind!(route, locale, |state: Resource<
                 Rc<Vec<PlaylistListEntry>>,
             >| {
                 let Resource::Ready(lists) = state else {
@@ -509,7 +510,7 @@ fn playlist_stack(ctx: &Ctx, route: Computed<Route>) -> DomNode {
                 let items: Vec<DomNode> = lists
                     .iter()
                     .enumerate()
-                    .map(|(i, p)| playlist_link(&route, i, p))
+                    .map(|(i, p)| playlist_link(&route, &locale, i, p))
                     .collect();
                 dom! { <div class="flex-1 overflow-y-auto space-y-0.5 px-3">{..items}</div> }
             }))
@@ -520,7 +521,7 @@ fn playlist_stack(ctx: &Ctx, route: Computed<Route>) -> DomNode {
                 <div class="flex items-center gap-2 px-2">
                     <div class="w-1.5 h-1.5 bg-type-track rounded-full"></div>
                     <a class="group/link" href={Route::Playlists.to_string()}>
-                        <span class="text-xs font-medium text-[var(--text-muted)] group-hover/link:text-brand transition-colors">"Playlist Stack"</span>
+                        <span class="text-xs font-medium text-[var(--text-muted)] group-hover/link:text-brand transition-colors">{ctx.prefs.text(Msg::PlaylistStack)}</span>
                     </a>
                 </div>
                 <div class="relative">
@@ -535,7 +536,12 @@ fn playlist_stack(ctx: &Ctx, route: Computed<Route>) -> DomNode {
     }
 }
 
-fn playlist_link(route: &Computed<Route>, index: usize, p: &PlaylistListEntry) -> DomNode {
+fn playlist_link(
+    route: &Computed<Route>,
+    locale: &Computed<Locale>,
+    index: usize,
+    p: &PlaylistListEntry,
+) -> DomNode {
     let id = p.summary.playlist.id.to_string();
     let current = id.clone();
     let active = route.map(move |r| matches!(&r, Route::Playlist { id } if *id == current));
@@ -549,7 +555,8 @@ fn playlist_link(route: &Computed<Route>, index: usize, p: &PlaylistListEntry) -
     });
     let number = format!("{:02}", index + 1);
     let name = p.summary.playlist.name.clone();
-    let count = plural(p.summary.track_count, "track", "tracks");
+    let tracks = p.summary.track_count;
+    let count = locale.map(move |l| track_count(l, tracks));
     dom! {
         <a class={class} href={Route::Playlist { id }.to_string()}>
             <span class="w-5 t-meta font-semibold text-center shrink-0 transition-colors duration-200 text-[var(--text-muted)] group-hover:text-[var(--text-secondary)]">{number}</span>
@@ -722,7 +729,7 @@ fn bottom_nav(prefs: &crate::prefs::Prefs, route: Computed<Route>) -> DomNode {
         route.map(|r| is_podcasts(&r)),
     );
     dom! {
-        <nav class="fixed bottom-0 left-0 right-0 z-(--z-nav) bg-black border-t border-white/10 min-[1025px]:hidden" role="navigation" aria-label="Main navigation">
+        <nav class="fixed bottom-0 left-0 right-0 z-(--z-nav) bg-black border-t border-white/10 min-[1025px]:hidden" role="navigation" aria-label={prefs.text(Msg::MainNavigation)}>
             <div class="flex items-center justify-around" style="height: var(--nav-h);">
                 {collection}
                 {vibe}

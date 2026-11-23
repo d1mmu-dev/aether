@@ -62,6 +62,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
     }));
     let show_form = Value::new(false);
     let signed_in = resource_view(
+        &ctx.prefs,
         me.clone(),
         bind!(ctx, |me: std::rc::Rc<MeResponse>| {
             let username = me.username.clone();
@@ -78,6 +79,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
         }),
     );
     let password_row = resource_view(
+        &ctx.prefs,
         me,
         bind!(ctx, show_form, |me: std::rc::Rc<MeResponse>| {
             if !me

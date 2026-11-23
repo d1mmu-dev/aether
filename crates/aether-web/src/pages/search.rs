@@ -5,13 +5,14 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use aether_api_types::search::SearchResponse;
-use vertigo::{DomNode, Value, bind, dom, get_driver};
+use vertigo::{Computed, DomNode, Value, bind, dom, get_driver};
 
 use crate::api::client::load;
 use crate::components::{Card, Kind, media_card, media_grid};
+use crate::i18n::{Msg, album_count};
 use crate::route::Route;
 use crate::tracklist::compact_rows;
-use crate::ui::{Ctx, cover_url, empty_state, plural, resource_view};
+use crate::ui::{Ctx, cover_url, empty_state, fixed_text, resource_view};
 
 /// How long the box must be idle before a request goes out.
 const DEBOUNCE_MS: u32 = 300;
@@ -59,23 +60,25 @@ pub fn render(ctx: &Ctx) -> DomNode {
     let body = settled.to_computed().render_value(bind!(ctx, |q: String| {
         let Some(q) = normalize(&q) else {
             return page(
-                "Search",
+                ctx.prefs.text(Msg::NavSearch),
                 empty_state(
                     "search",
-                    "Type to search",
-                    "Use the search bar above to find music, artists, and albums",
+                    ctx.prefs.text(Msg::TypeToSearch),
+                    ctx.prefs.text(Msg::TypeToSearchHelp),
                 ),
             );
         };
-        let heading = q.clone();
+        // The query is the user's own text: shown as typed, never translated.
+        let heading = fixed_text(q.clone());
         let resource = load(bind!(ctx, async move {
             ctx.client
                 .get::<SearchResponse>(&format!("/api/search?q={}&limit={LIMIT}", encode_query(&q)))
                 .await
         }));
         page(
-            &heading,
+            heading,
             resource_view(
+                &ctx.prefs,
                 resource,
                 bind!(ctx, |found: Rc<SearchResponse>| groups(&ctx, &found)),
             ),
@@ -85,8 +88,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
     dom! { <div>{watcher}{body}</div> }
 }
 
-fn page(heading: &str, content: DomNode) -> DomNode {
-    let heading = heading.to_owned();
+fn page(heading: Computed<String>, content: DomNode) -> DomNode {
     dom! {
         <div class="min-h-screen relative overflow-hidden">
             <div class="relative z-(--z-raised) page-shell py-8">
@@ -103,7 +105,7 @@ fn page(heading: &str, content: DomNode) -> DomNode {
     }
 }
 
-fn section(bar: &'static str, title: &'static str, body: DomNode) -> DomNode {
+fn section(bar: &'static str, title: Computed<String>, body: DomNode) -> DomNode {
     dom! {
         <section>
             <div class="flex items-center gap-3 mb-6">
@@ -120,11 +122,12 @@ fn groups(ctx: &Ctx, found: &SearchResponse) -> DomNode {
     if found.artists.is_empty() && found.albums.is_empty() && found.tracks.is_empty() {
         return empty_state(
             "search",
-            "No matches found",
-            "Try a different search term or check your spelling",
+            ctx.prefs.text(Msg::NoMatches),
+            ctx.prefs.text(Msg::NoMatchesHelp),
         );
     }
     let token = ctx.session.current_token();
+    let locale = ctx.prefs.locale.to_computed();
     let artists = if found.artists.is_empty() {
         dom! { <span /> }
     } else {
@@ -133,23 +136,29 @@ fn groups(ctx: &Ctx, found: &SearchResponse) -> DomNode {
             .iter()
             .enumerate()
             .map(|(i, a)| {
-                media_card(Card {
-                    href: Route::Albums {
-                        artist: Some(a.id.to_string()),
-                    }
-                    .to_string(),
-                    covers: Vec::new(),
-                    title: a.name.clone(),
-                    subtitle: plural(a.album_count, "album", "albums"),
-                    kind: Kind::Artist,
-                    on_play: None,
-                    index: i,
-                })
+                media_card(
+                    locale.clone(),
+                    Card {
+                        href: Route::Albums {
+                            artist: Some(a.id.to_string()),
+                        }
+                        .to_string(),
+                        covers: Vec::new(),
+                        title: a.name.clone(),
+                        subtitle: {
+                            let albums = a.album_count;
+                            ctx.prefs.format(move |l| album_count(l, albums))
+                        },
+                        kind: Kind::Artist,
+                        on_play: None,
+                        index: i,
+                    },
+                )
             })
             .collect();
         section(
             "w-1 rounded-full shrink-0 h-8 bg-type-artist",
-            "Artists",
+            ctx.prefs.text(Msg::TabArtists),
             media_grid(cards),
         )
     };
@@ -158,7 +167,7 @@ fn groups(ctx: &Ctx, found: &SearchResponse) -> DomNode {
     } else {
         section(
             "w-1 rounded-full shrink-0 h-8 bg-type-track",
-            "Tracks",
+            ctx.prefs.text(Msg::TabTracks),
             compact_rows(ctx, found.tracks.clone()),
         )
     };
@@ -170,25 +179,28 @@ fn groups(ctx: &Ctx, found: &SearchResponse) -> DomNode {
             .iter()
             .enumerate()
             .map(|(i, a)| {
-                media_card(Card {
-                    href: Route::Tracks {
-                        album: Some(a.id.to_string()),
-                    }
-                    .to_string(),
-                    covers: cover_url(&a.cover_art, 300, token.as_deref())
-                        .into_iter()
-                        .collect(),
-                    title: a.title.clone(),
-                    subtitle: a.artist.name.clone(),
-                    kind: Kind::Album,
-                    on_play: None,
-                    index: i,
-                })
+                media_card(
+                    locale.clone(),
+                    Card {
+                        href: Route::Tracks {
+                            album: Some(a.id.to_string()),
+                        }
+                        .to_string(),
+                        covers: cover_url(&a.cover_art, 300, token.as_deref())
+                            .into_iter()
+                            .collect(),
+                        title: a.title.clone(),
+                        subtitle: fixed_text(a.artist.name.clone()),
+                        kind: Kind::Album,
+                        on_play: None,
+                        index: i,
+                    },
+                )
             })
             .collect();
         section(
             "w-1 rounded-full shrink-0 h-8 bg-type-album",
-            "Albums",
+            ctx.prefs.text(Msg::TabAlbums),
             media_grid(cards),
         )
     };

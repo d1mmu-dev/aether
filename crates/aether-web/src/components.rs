@@ -5,8 +5,9 @@ use std::rc::Rc;
 
 use aether_api_types::library::Track;
 use serde::Deserialize;
-use vertigo::{DomNode, bind, dom, get_driver};
+use vertigo::{Computed, DomNode, EmbedDom, bind, dom, get_driver};
 
+use crate::i18n::{Locale, Msg, play_named};
 use crate::icons::icon;
 use crate::player::queue_item;
 use crate::route::Route;
@@ -22,7 +23,7 @@ pub enum Tab {
 const TAB_ACTIVE: &str = "min-h-[44px] inline-flex items-center rounded-full px-4 py-2 text-sm font-medium transition-colors duration-150 text-brand bg-brand/10";
 const TAB_IDLE: &str = "min-h-[44px] inline-flex items-center rounded-full px-4 py-2 text-sm font-medium transition-colors duration-150 text-[var(--text-muted)] hover:text-white hover:bg-white/5";
 
-fn tab_link(active: Tab, tab: Tab, label: &'static str, route: Route) -> DomNode {
+fn tab_link(active: Tab, tab: Tab, label: Computed<String>, route: Route) -> DomNode {
     let class = if active == tab { TAB_ACTIVE } else { TAB_IDLE };
     let current = if active == tab { "page" } else { "false" };
     dom! { <a class={class} href={route.to_string()} aria-current={current}>{label}</a> }
@@ -53,11 +54,12 @@ fn shuffle_library(ctx: &Ctx) {
 }
 
 /// Sorts a tab offers: `(sortBy value, label)`; year for albums, track count for artists (legacy `sortOptionsFor`).
-pub fn sort_options(tab: Tab) -> Vec<(&'static str, &'static str)> {
-    let mut options = vec![("name", "Name (A–Z)"), ("name-desc", "Name (Z–A)")];
+/// The `sortBy` value is the API's identifier and is never translated.
+pub fn sort_options(tab: Tab) -> Vec<(&'static str, Msg)> {
+    let mut options = vec![("name", Msg::SortNameAsc), ("name-desc", Msg::SortNameDesc)];
     match tab {
-        Tab::Albums => options.push(("recent", "Year (Newest)")),
-        Tab::Artists => options.push(("tracks", "Most Tracks")),
+        Tab::Albums => options.push(("recent", Msg::SortYearNewest)),
+        Tab::Artists => options.push(("tracks", Msg::SortMostTracks)),
         Tab::Tracks => {}
     }
     options
@@ -87,7 +89,7 @@ fn refine_panel(ctx: &Ctx, tab: Tab) -> DomNode {
             ctx.refine_open.set(!now);
         });
         let dot = if active && !open {
-            dom! { <span aria-label="Refinements active" class="w-1.5 h-1.5 rounded-full bg-brand flex-shrink-0"></span> }
+            dom! { <span aria-label={ctx.prefs.text(Msg::RefinementsActive)} class="w-1.5 h-1.5 rounded-full bg-brand flex-shrink-0"></span> }
         } else {
             dom! { <span class="hidden" /> }
         };
@@ -101,7 +103,7 @@ fn refine_panel(ctx: &Ctx, tab: Tab) -> DomNode {
                     );
                     let pressed = (refine.sort == value).to_string();
                     let pick = bind!(ctx, |_| ctx.refine.set(Refine { sort: value, ..refine }));
-                    dom! { <button type="button" class={class} aria-pressed={pressed} on_click={pick}>{label}</button> }
+                    dom! { <button type="button" class={class} aria-pressed={pressed} on_click={pick}>{ctx.prefs.text(label)}</button> }
                 })
                 .collect();
             let sizes: Vec<DomNode> = PER_PAGE_OPTIONS
@@ -121,21 +123,21 @@ fn refine_panel(ctx: &Ctx, tab: Tab) -> DomNode {
             dom! {
                 <div>
                     <div class="fixed inset-0 z-(--z-dropdown)" on_click={close_outside}></div>
-                    <div id="refine-panel" role="dialog" aria-label="Refine options"
+                    <div id="refine-panel" role="dialog" aria-label={ctx.prefs.text(Msg::RefineOptions)}
                         class="absolute left-0 top-full mt-2 z-(--z-dropdown) w-72 max-w-[calc(100vw-2rem)] rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] p-4 flex flex-col gap-5 animate-panel-up">
                         <div class="flex items-center justify-between">
-                            <span class="text-sm font-medium text-white">"Refine"</span>
-                            <button type="button" aria-label="Close refine panel" on_click={close}
+                            <span class="text-sm font-medium text-white">{ctx.prefs.text(Msg::Refine)}</span>
+                            <button type="button" aria-label={ctx.prefs.text(Msg::CloseRefinePanel)} on_click={close}
                                 class="p-1 rounded text-[var(--text-muted)] hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-brand)] transition-colors">
                                 {icon("x", "w-3.5 h-3.5")}
                             </button>
                         </div>
                         <fieldset class="flex flex-col gap-1">
-                            <legend class="text-xs font-medium text-[var(--text-muted)] mb-2">"Sort by"</legend>
+                            <legend class="text-xs font-medium text-[var(--text-muted)] mb-2">{ctx.prefs.text(Msg::SortBy)}</legend>
                             <div class="grid grid-cols-2 gap-1.5">{rows_box(sorts)}</div>
                         </fieldset>
                         <fieldset class="flex flex-col gap-1">
-                            <legend class="text-xs font-medium text-[var(--text-muted)] mb-2">"Items per page"</legend>
+                            <legend class="text-xs font-medium text-[var(--text-muted)] mb-2">{ctx.prefs.text(Msg::ItemsPerPage)}</legend>
                             <div class="grid grid-cols-4 gap-1.5">{rows_box(sizes)}</div>
                         </fieldset>
                     </div>
@@ -148,9 +150,9 @@ fn refine_panel(ctx: &Ctx, tab: Tab) -> DomNode {
         dom! {
             <div class="relative">
                 <button type="button" aria-expanded={expanded} aria-controls="refine-panel"
-                    aria-label="Refine: sort and per-page options" class={button_class} on_click={toggle}>
+                    aria-label={ctx.prefs.text(Msg::RefineButton)} class={button_class} on_click={toggle}>
                     {icon("sliders-horizontal", "w-3.5 h-3.5 flex-shrink-0")}
-                    <span>"Refine"</span>
+                    <span>{ctx.prefs.text(Msg::Refine)}</span>
                     {dot}
                 </button>
                 {panel}
@@ -159,9 +161,16 @@ fn refine_panel(ctx: &Ctx, tab: Tab) -> DomNode {
     }))
 }
 
-/// The collection page: masthead with the count, the tabs, the toolbar row and the list below.
-pub fn library_page(ctx: &Ctx, tab: Tab, count: Option<String>, body: DomNode) -> DomNode {
-    let count = count.unwrap_or_else(|| "\u{a0}".to_owned());
+/// The collection page: masthead with the count (a language-following sentence), the tabs, the toolbar row
+/// and the list below.
+pub fn library_page(
+    ctx: &Ctx,
+    tab: Tab,
+    count: Option<Computed<String>>,
+    body: DomNode,
+) -> DomNode {
+    let count = count.unwrap_or_else(|| ctx.prefs.format(|_| "\u{a0}".to_owned()));
+    let prefs = &ctx.prefs;
     let shuffle = bind!(ctx, |_| shuffle_library(&ctx));
     dom! {
         <div class="min-h-screen">
@@ -169,7 +178,7 @@ pub fn library_page(ctx: &Ctx, tab: Tab, count: Option<String>, body: DomNode) -
                 <div aria-hidden="true" class="pointer-events-none absolute inset-x-0 -top-16 h-[300px]"
                     style="background: radial-gradient(280px 280px at 82% 14%, rgba(74, 106, 144, 0.3), transparent 70%);"></div>
                 <div class="relative page-shell pt-8 pb-6">
-                    <h1 class="text-4xl md:text-5xl font-bold tracking-tight text-white leading-none">"Collection"</h1>
+                    <h1 class="text-4xl md:text-5xl font-bold tracking-tight text-white leading-none">{prefs.text(Msg::NavCollection)}</h1>
                     <p class="mt-3 text-sm tabular-nums text-[var(--text-secondary)] truncate transition-opacity duration-500">{count}</p>
                     <div class="mt-3 h-1 w-full overflow-hidden rounded-full" style="background: rgba(255, 240, 214, 0.06);">
                         <div class="flex h-full w-full"></div>
@@ -179,15 +188,15 @@ pub fn library_page(ctx: &Ctx, tab: Tab, count: Option<String>, body: DomNode) -
             <div class="relative page-shell pb-24">
                 <div class="mb-6">
                     <div class="inline-flex items-center gap-1">
-                        {tab_link(tab, Tab::Artists, "Artists", Route::Artists)}
-                        {tab_link(tab, Tab::Albums, "Albums", Route::Albums { artist: None })}
-                        {tab_link(tab, Tab::Tracks, "Tracks", Route::Tracks { album: None })}
+                        {tab_link(tab, Tab::Artists, prefs.text(Msg::TabArtists), Route::Artists)}
+                        {tab_link(tab, Tab::Albums, prefs.text(Msg::TabAlbums), Route::Albums { artist: None })}
+                        {tab_link(tab, Tab::Tracks, prefs.text(Msg::TabTracks), Route::Tracks { album: None })}
                     </div>
                 </div>
                 <div class="mb-8">
                     <div class="flex items-center gap-3 pb-4 border-b border-white/5">
                         {refine_panel(ctx, tab)}
-                        <button type="button" aria-label="Shuffle entire library" title="shuffle library" on_click={shuffle}
+                        <button type="button" aria-label={prefs.text(Msg::ShuffleLibrary)} title={prefs.hint(Msg::ShuffleLibraryHint)} on_click={shuffle}
                             class="ml-auto p-2.5 min-h-[44px] min-w-[44px] flex items-center justify-center rounded-lg bg-[var(--color-brand)] hover:bg-[var(--color-brand-hover)] text-black transition-all hover:scale-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-brand)]">
                             {icon("shuffle", "w-4 h-4")}
                         </button>
@@ -232,14 +241,16 @@ pub struct Card {
     pub href: String,
     pub covers: Vec<String>,
     pub title: String,
-    pub subtitle: String,
+    /// Library text (an artist's name) or a language-following count, so it is reactive.
+    pub subtitle: Computed<String>,
     pub kind: Kind,
     /// When set, the card gets the round play button.
     pub on_play: Option<Rc<dyn Fn()>>,
     pub index: usize,
 }
 
-pub fn media_card(card: Card) -> DomNode {
+/// `locale` drives the play button's label; the title and subtitle are shown as given.
+pub fn media_card(locale: Computed<Locale>, card: Card) -> DomNode {
     let Card {
         href,
         covers,
@@ -278,13 +289,15 @@ pub fn media_card(card: Card) -> DomNode {
     };
     let play = match on_play {
         Some(on_play) => {
-            let label = format!("Play {title}");
+            let named = title.clone();
+            let label = locale.map(move |l| play_named(l, &named));
+            let hint = locale.map(|l| Msg::Play.hint(l));
             let click = move |event: vertigo::ClickEvent| {
                 event.prevent_default();
                 on_play();
             };
             dom! {
-                <button type="button" aria-label={label} title="play" on_click={click}
+                <button type="button" aria-label={label} title={hint} on_click={click}
                     class="absolute bottom-3 right-3 w-11 h-11 rounded-full border border-white/15 bg-black/55 backdrop-blur-[2px] flex items-center justify-center transition-[transform,background-color] duration-150 hover:bg-black/75 hover:scale-105 active:scale-95">
                     {icon("play", "w-5 h-5 text-white fill-current ml-0.5")}
                 </button>
@@ -350,7 +363,7 @@ pub fn mosaic_covers(covers: impl IntoIterator<Item = String>) -> Vec<String> {
 }
 
 /// `SectionHeader`: coloured bar, title, count, hairline (legacy `components/ui/SectionHeader`).
-pub fn section_header(kind: Kind, title: &str, count: i64) -> DomNode {
+pub fn section_header(kind: Kind, title: impl EmbedDom, count: i64) -> DomNode {
     let bar = match kind {
         Kind::Artist => "bg-type-artist",
         Kind::Album => "bg-type-album",
@@ -358,7 +371,7 @@ pub fn section_header(kind: Kind, title: &str, count: i64) -> DomNode {
         Kind::Podcast => "bg-type-podcast",
     };
     let class = format!("w-1 rounded-full shrink-0 h-8 {bar}");
-    let (title, count) = (title.to_owned(), count.to_string());
+    let count = count.to_string();
     dom! {
         <div class="flex items-center gap-3 mb-6">
             <span aria-hidden="true" class={class}></span>
@@ -370,8 +383,7 @@ pub fn section_header(kind: Kind, title: &str, count: i64) -> DomNode {
 }
 
 /// `PageHeader`'s eyebrow: amber dot and a spaced label.
-pub fn eyebrow(text: &str) -> DomNode {
-    let text = text.to_owned();
+pub fn eyebrow(text: impl EmbedDom) -> DomNode {
     dom! {
         <p class="t-eyebrow mb-4 flex items-center gap-2">
             <span aria-hidden="true" class="w-1.5 h-1.5 rounded-full bg-brand"></span>

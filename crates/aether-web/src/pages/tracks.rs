@@ -8,8 +8,9 @@ use vertigo::{DomNode, Resource, Value, bind, computed_tuple, dom};
 
 use crate::api::client::load;
 use crate::components::{Tab, library_page};
+use crate::i18n::{Msg, track_count};
 use crate::tracklist::library_rows;
-use crate::ui::{Ctx, Refine, empty_state, pager, plural};
+use crate::ui::{Ctx, Refine, empty_state, error_row, loading_row, pager};
 
 pub fn render(ctx: &Ctx, album: Option<String>) -> DomNode {
     // A new Refine choice rebuilds the page, so it starts at page 1 again.
@@ -45,23 +46,24 @@ fn page(ctx: &Ctx, album: Option<String>, refine: Refine) -> DomNode {
                     &ctx,
                     Tab::Tracks,
                     None,
-                    dom! { <p class="py-8 text-sm text-[var(--text-muted)]">"Loading…"</p> },
+                    loading_row(&ctx.prefs),
                 ),
                 Resource::Error(message) => library_page(
                     &ctx,
                     Tab::Tracks,
                     None,
-                    dom! { <p class="py-8 text-sm text-danger-light">{message}</p> },
+                    error_row(message),
                 ),
                 Resource::Ready(page) => {
-                    let count = plural(page.total, "track", "tracks");
+                    let total = page.total;
+                    let count = ctx.prefs.format(move |l| track_count(l, total));
                     let body = if page.tracks.is_empty() {
-                        empty_state("music", "No tracks", "Nothing here yet.")
+                        empty_state("music", ctx.prefs.text(Msg::NoTracks), ctx.prefs.text(Msg::NothingHereYet))
                     } else {
                         dom! {
                             <div>
                                 {library_rows(&ctx, page.tracks.clone())}
-                                {pager(offset.clone(), page.offset, page.tracks.len(), page.total, refine.per_page)}
+                                {pager(&ctx.prefs, offset.clone(), page.offset, page.tracks.len(), page.total, refine.per_page)}
                             </div>
                         }
                     };

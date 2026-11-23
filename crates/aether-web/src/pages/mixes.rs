@@ -218,11 +218,11 @@ fn mixes_grid(ctx: &Ctx, list: &[Mix]) -> DomNode {
         .iter()
         .enumerate()
         .map(|(index, mix)| {
-            let card = media_card(Card {
+            let card = media_card(ctx.prefs.locale.to_computed(), Card {
                 href: Route::Mix { id: mix.id.clone() }.to_string(),
                 covers: mix_covers(mix, token.as_deref()),
                 title: mix.name.clone(),
-                subtitle: plural(mix.track_count, "track"),
+                subtitle: crate::ui::fixed_text(plural(mix.track_count, "track")),
                 kind: Kind::Playlist,
                 on_play: None,
                 index,
