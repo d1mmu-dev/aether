@@ -19,11 +19,11 @@ class ProfilesCapture(unittest.TestCase):
             (root / 'tools').mkdir()
             (root / 'tools/capture-api-fixtures.sh').write_bytes(
                 (ROOT / 'tools/capture-api-fixtures.sh').read_bytes())
-            fixture = root / 'crates/kima-api-types/tests/fixtures/profiles_me_response.json'
+            fixture = root / 'crates/aether-api-types/tests/fixtures/profiles_me_response.json'
             fixture.parent.mkdir(parents=True)
             subprocess.run(['git', 'init', '-q', str(root)], check=True)
             fixture.write_text('protected untracked content')
-            env = {**os.environ, 'KIMA_CAPTURE_SET': 'profiles'}
+            env = {**os.environ, 'AETHER_CAPTURE_SET': 'profiles'}
             env.pop('DATABASE_URL', None)
             env.pop('PGDATABASE', None)
             binaries = root / 'bin'
@@ -47,7 +47,7 @@ class ProfilesCapture(unittest.TestCase):
                 self.assertIn('protected', fixture.read_text())
 
     def test_external_database_refused_even_in_list_mode(self):
-        env = {**os.environ, 'KIMA_CAPTURE_SET': 'profiles', 'DATABASE_URL': 'forbidden'}
+        env = {**os.environ, 'AETHER_CAPTURE_SET': 'profiles', 'DATABASE_URL': 'forbidden'}
         result = subprocess.run(['bash', 'tools/capture-api-fixtures.sh', '--list'],
                                 cwd=ROOT, env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
@@ -60,7 +60,7 @@ class ProfilesCapture(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_profiles_selection_is_exact_and_disjoint(self):
-        env = {**os.environ, 'KIMA_CAPTURE_SET': 'profiles'}
+        env = {**os.environ, 'AETHER_CAPTURE_SET': 'profiles'}
         env.pop('DATABASE_URL', None)
         env.pop('PGDATABASE', None)
         result = subprocess.run(['bash', 'tools/capture-api-fixtures.sh', '--list'],

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Asserts `vertigo build` in crates/aether-web produces build/index.json (the manifest `vertigo serve` renders
+# index.html from), a hashed .wasm and a hashed wasm_run.<hash>.js. (vertigo 0.13 writes no static index.html or
+# unhashed wasm_run.js; the plan's original artifact list was written against an older layout.)
+# VERTIGO overrides the CLI (default: `vertigo` on PATH); its version should match the vertigo crate.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+web="$root/crates/aether-web"
+vertigo="${VERTIGO:-vertigo}"
+
+if [ ! -f "$web/Cargo.toml" ]; then
+  echo "FAIL: $web/Cargo.toml does not exist (aether-web crate not scaffolded)" >&2
+  exit 1
+fi
+"$vertigo" --version
+
+cd "$web"
+rm -rf build
+# vertigo's build script writes target/wasm32-unknown-unknown/release/static/wasm_run.js. A restored build cache
+# (CI's rust-cache) keeps the compiled vertigo crate but not that directory, so the script never re-runs and
+# `vertigo build` exits 10 (CantReadWasmRunFromStatics). Cleaning just that package forces the script to run.
+cargo clean -p vertigo --release --target wasm32-unknown-unknown
+"$vertigo" build
+
+fail=0
+[ -f build/index.json ] || { echo "FAIL: build/index.json missing" >&2; fail=1; }
+if ! ls build/*.wasm 2>/dev/null | grep -Eq '/[^/]*\.[A-Za-z0-9_-]{8,}\.wasm$'; then
+  echo "FAIL: no hashed .wasm in build/" >&2
+  fail=1
+fi
+if ! ls build/wasm_run.*.js 2>/dev/null | grep -Eq '/wasm_run\.[A-Za-z0-9_-]{8,}\.js$'; then
+  echo "FAIL: no hashed wasm_run.<hash>.js in build/" >&2
+  fail=1
+fi
+[ "$fail" = 0 ] || { ls -la build >&2 || true; exit 1; }
+echo "OK:"; ls -la build

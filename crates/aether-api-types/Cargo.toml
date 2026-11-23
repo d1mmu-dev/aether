@@ -1,0 +1,19 @@
+[package]
+name = "aether-api-types"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Wire-format DTOs shared by aether-api and aether-web (native and wasm32-unknown-unknown)"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+# Not `uuid.workspace`: the workspace enables v4/v7 (getrandom), which does not build for wasm32-unknown-unknown.
+uuid = { version = "1", default-features = false, features = ["serde"] }
+
+[dev-dependencies]
+# The ignored reference test hashes upstream `frontend/lib/api.ts` (tests/vibe.rs).
+sha2.workspace = true

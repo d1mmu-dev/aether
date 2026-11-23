@@ -1,0 +1,44 @@
+[package]
+name = "aether-ident"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+futures.workspace = true
+hex.workspace = true
+aether-core.workspace = true
+aether-db.workspace = true
+aether-jobs.workspace = true
+aether-library.workspace = true
+aether-ml = { workspace = true, features = ["pg-publish"] }
+aether-net.workspace = true
+aether-vibe = { workspace = true, features = ["parallel"] }
+md-5.workspace = true
+pathfinding.workspace = true
+percent-encoding.workspace = true
+regex.workspace = true
+rusty-chromaprint.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+symphonia.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+unicode-normalization.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
+sha2.workspace = true
+aether-net = { workspace = true, features = ["testing"] }
+aether-test-support.workspace = true
+tempfile.workspace = true
+image.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

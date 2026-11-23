@@ -2,12 +2,12 @@ services:
   postgres:
     image: pgvector/pgvector:pg17
     environment:
-      POSTGRES_USER: kima
-      POSTGRES_PASSWORD: kima
-      POSTGRES_DB: kima
+      POSTGRES_USER: aether
+      POSTGRES_PASSWORD: aether
+      POSTGRES_DB: aether
     ports:
       - "5456:5432"
     volumes:
-      - kima_pg:/var/lib/postgresql/data
+      - aether_pg:/var/lib/postgresql/data
 volumes:
-  kima_pg: {}
+  aether_pg: {}

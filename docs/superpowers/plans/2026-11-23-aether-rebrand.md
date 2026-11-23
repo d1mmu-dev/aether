@@ -61,6 +61,16 @@ wipe request: take a backup (`pg_dump -Fc`, data directory copy) before any dest
    it inherits a different global identity.
 7. One complete local CI pass on the final technical-rename tip, then hosted CI, then the owner's merge decision.
 
+Stage 2 status (2026-11-23, branch `feature/aether-rebrand`): items 1-5 done in one local commit (D-285): 16 crates
+and the binary renamed, `AETHER_*` env, `aether-web.*` storage, Subsonic identity re-captured, Docker/tooling/README.
+Item 6 (repository move) and item 7 (hosted CI, merge) are the parent's next steps.
+
+## Stage 2b: localization and theme foundation (owner-approved order)
+
+After the technical rename and the repository move, before M7/M10 screens: Polish + English localization and a
+selectable theme (Midnight Slate default, Graphite, Daylight). Its plan lives in the owner's
+private notes; not part of stage 2.
+
 ## Stage 3: M7
 
 M7 starts from the renamed tree; its plan does not carry rebrand work.

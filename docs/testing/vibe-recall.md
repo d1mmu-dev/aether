@@ -29,8 +29,8 @@ and requires the usual authorized isolated test-cluster preflight.
 Set these variables explicitly; do not paste credentials into a terminal transcript:
 
 - `DATABASE_URL` and `PGDATABASE`: the exact authorized isolated copy.
-- `KIMA_RECALL_DB_AUTHORIZATION`: path to a JSON object with **all** fields below.
-  Host must be `127.0.0.1`, port at least 55474, and database must not be `kima`.
+- `AETHER_RECALL_DB_AUTHORIZATION`: path to a JSON object with **all** fields below.
+  Host must be `127.0.0.1`, port at least 55474, and database must not be `aether`.
   The URL host/port/database/user and `PGDATABASE` must match before connection.
   After connecting, the server's database/user/system identifier and database comment
   must match before any corpus read. The operator obtains the identifier from
@@ -45,13 +45,13 @@ Set these variables explicitly; do not paste credentials into a terminal transcr
   | `database_comment` | nonempty string, exact operator-owned copy marker |
   | `isolated_copy_read_only` | boolean `true`, explicit authorization |
 
-- `KIMA_CLAP_MODEL_DIR`: absolute directory containing the native pinned audio,
+- `AETHER_CLAP_MODEL_DIR`: absolute directory containing the native pinned audio,
   text ONNX and tokenizer assets. The harness uses the **production native text
   adapter**, never the injectable test adapter. Pinned SHA-256 verification and
   owned verified bytes are the existing production loader's responsibility.
   A lazy pool permits native asset verification before the first DB connection.
 - `ORT_DYLIB_PATH`: the separately trusted native ONNX Runtime, as for production.
-- `KIMA_RECALL_QUERIES`: UTF-8 JSON array of exactly **50 unique real text strings**,
+- `AETHER_RECALL_QUERIES`: UTF-8 JSON array of exactly **50 unique real text strings**,
   each 2–500 UTF-16 units after minimum-length whitespace validation (raw maximum
   500). Supply meaningful pre-trimmed queries. Duplicate trimmed strings, invalid
   JSON, missing files and wrong counts fail; there is no generated query fallback.
@@ -60,7 +60,7 @@ Set these variables explicitly; do not paste credentials into a terminal transcr
   This implementation deliberately does not invent an English/Polish semantic
   corpus on the owner's behalf. The original file SHA-256 is reported alongside
   each submitted query's SHA-256; the private input preserves the actual text.
-- `KIMA_RECALL_MANIFEST`: JSON object with all fields below. Unknown fields fail.
+- `AETHER_RECALL_MANIFEST`: JSON object with all fields below. Unknown fields fail.
 
   | Field | Meaning |
   |---|---|
@@ -78,7 +78,7 @@ Set these variables explicitly; do not paste credentials into a terminal transcr
   SHA-256. There are no text float roundtrips. Generation-stale eligible embeddings
   are rejected. Compute this inventory only after authorization; keep the original
   dump/provenance. The harness compares its actual snapshot hash to the manifest.
-- `KIMA_RECALL_REPORT`: new absolute JSONL output path outside the repository.
+- `AETHER_RECALL_REPORT`: new absolute JSONL output path outside the repository.
   Its parent directory must exist. Output is mode 0600 and never overwrites a file.
   The report includes vectors and track UUIDs: keep it private like the corpus.
 
@@ -92,13 +92,13 @@ silently skipped or synthesized.
 Normal infrastructure checks (synthetic only):
 
 ```sh
-SQLX_OFFLINE=true cargo test -p kima-ident --test vibe_recall
+SQLX_OFFLINE=true cargo test -p aether-ident --test vibe_recall
 ```
 
 Real gate, with the required private environment already set:
 
 ```sh
-SQLX_OFFLINE=true cargo test -p kima-ident --test vibe_recall \
+SQLX_OFFLINE=true cargo test -p aether-ident --test vibe_recall \
   real_music_checkpoint_recall_at_20 -- --ignored --exact --nocapture
 ```
 

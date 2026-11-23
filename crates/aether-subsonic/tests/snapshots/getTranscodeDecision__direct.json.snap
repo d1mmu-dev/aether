@@ -1,0 +1,20 @@
+---
+source: crates/aether-subsonic/tests/snapshots.rs
+---
+{
+  "subsonic-response": {
+    "openSubsonic": true,
+    "serverVersion": "[redacted]",
+    "status": "ok",
+    "transcodeDecision": {
+      "canDirectPlay": true,
+      "canTranscode": true,
+      "errorReason": "",
+      "transcodeParams": "q-original",
+      "transcodeReason": []
+    },
+    "type": "Aether",
+    "version": "1.16.1",
+    "xmlns": "http://subsonic.org/restapi"
+  }
+}

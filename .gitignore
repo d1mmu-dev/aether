@@ -2,5 +2,5 @@
 .env
 /.data
 /.idea
-/crates/kima-web/build
+/crates/aether-web/build
 __pycache__/

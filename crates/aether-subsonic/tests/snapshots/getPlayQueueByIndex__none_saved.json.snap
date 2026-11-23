@@ -1,0 +1,21 @@
+---
+source: crates/aether-subsonic/tests/snapshots.rs
+---
+{
+  "subsonic-response": {
+    "openSubsonic": true,
+    "playQueueByIndex": {
+      "changed": "[redacted]",
+      "changedBy": "Aether",
+      "currentIndex": 0,
+      "entry": [],
+      "position": 0,
+      "username": "admin"
+    },
+    "serverVersion": "[redacted]",
+    "status": "ok",
+    "type": "Aether",
+    "version": "1.16.1",
+    "xmlns": "http://subsonic.org/restapi"
+  }
+}

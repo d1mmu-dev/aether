@@ -180,7 +180,7 @@ def main():
         os.environ.pop(key, None)
     # Use the exact pinned Python implementation even when the source clone is checked out elsewhere.
     # Only GPL source code is copied; no weights, audio or generated derivatives enter the repo.
-    with tempfile.TemporaryDirectory(prefix='kima-zero-shot-reference-') as td:
+    with tempfile.TemporaryDirectory(prefix='aether-zero-shot-reference-') as td:
         hf_home = stage_tokenizer(tokenizer, args.tokenizer_dir, td)
         # Verified private copies: the analyzer loads exactly the bytes that were hashed.
         model = stage_models(model_dir, PINS, td)

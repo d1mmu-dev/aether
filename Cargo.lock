@@ -284,6 +284,390 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-api"
+version = "0.3.0"
+dependencies = [
+ "aether-api-types",
+ "aether-core",
+ "aether-db",
+ "aether-ident",
+ "aether-jobs",
+ "aether-library",
+ "aether-mixes",
+ "aether-ml",
+ "aether-net",
+ "aether-podcast",
+ "aether-test-support",
+ "aether-vibe",
+ "anyhow",
+ "axum",
+ "axum-test",
+ "base64 0.22.1",
+ "flate2",
+ "form_urlencoded",
+ "futures",
+ "hex",
+ "http-body-util",
+ "httpdate",
+ "image",
+ "jsonwebtoken",
+ "lofty",
+ "md-5 0.11.0",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "aether-api-types"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "time",
+ "uuid",
+]
+
+[[package]]
+name = "aether-core"
+version = "0.3.0"
+dependencies = [
+ "argon2",
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "hex",
+ "hkdf 0.13.0",
+ "jsonwebtoken",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "aether-db"
+version = "0.3.0"
+dependencies = [
+ "aether-api-types",
+ "aether-core",
+ "aether-mixes",
+ "aether-vibe",
+ "futures",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "time",
+ "tokio",
+ "tracing",
+ "unicode-normalization",
+ "uuid",
+]
+
+[[package]]
+name = "aether-ident"
+version = "0.3.0"
+dependencies = [
+ "aether-core",
+ "aether-db",
+ "aether-jobs",
+ "aether-library",
+ "aether-ml",
+ "aether-net",
+ "aether-test-support",
+ "aether-vibe",
+ "base64 0.22.1",
+ "futures",
+ "hex",
+ "image",
+ "libc",
+ "md-5 0.11.0",
+ "pathfinding",
+ "percent-encoding",
+ "regex",
+ "rusty-chromaprint",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "symphonia",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "unicode-normalization",
+ "uuid",
+]
+
+[[package]]
+name = "aether-jobs"
+version = "0.3.0"
+dependencies = [
+ "aether-db",
+ "chrono",
+ "croner",
+ "futures",
+ "serde_json",
+ "sqlx",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "aether-library"
+version = "0.3.0"
+dependencies = [
+ "aether-core",
+ "aether-db",
+ "aether-jobs",
+ "aether-mixes",
+ "aether-test-support",
+ "futures",
+ "hex",
+ "image",
+ "libc",
+ "lofty",
+ "notify-debouncer-full",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "unicode-normalization",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
+name = "aether-mixes"
+version = "0.3.0"
+dependencies = [
+ "aether-api-types",
+ "aether-vibe",
+ "chrono",
+ "hex",
+ "md-5 0.11.0",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
+name = "aether-ml"
+version = "0.3.0"
+dependencies = [
+ "aether-db",
+ "aether-test-support",
+ "ebur128",
+ "libc",
+ "ort",
+ "rubato",
+ "rustfft",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "symphonia",
+ "symphonia-adapter-libopus",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokenizers",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "aether-net"
+version = "0.3.0"
+dependencies = [
+ "aether-core",
+ "aether-db",
+ "aether-net",
+ "axum",
+ "base64 0.22.1",
+ "bytes",
+ "form_urlencoded",
+ "futures",
+ "percent-encoding",
+ "rand 0.8.8",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "time",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "aether-podcast"
+version = "0.3.0"
+dependencies = [
+ "aether-core",
+ "aether-db",
+ "aether-jobs",
+ "aether-net",
+ "aether-test-support",
+ "anyhow",
+ "base64 0.22.1",
+ "bytes",
+ "futures",
+ "lofty",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "aether-server"
+version = "0.3.0"
+dependencies = [
+ "aether-api",
+ "aether-core",
+ "aether-db",
+ "aether-ident",
+ "aether-jobs",
+ "aether-library",
+ "aether-mixes",
+ "aether-ml",
+ "aether-net",
+ "aether-podcast",
+ "aether-subsonic",
+ "aether-test-support",
+ "anyhow",
+ "axum",
+ "axum-test",
+ "base64 0.22.1",
+ "form_urlencoded",
+ "futures",
+ "reqwest",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "vertigo-cli",
+]
+
+[[package]]
+name = "aether-subsonic"
+version = "0.3.0"
+dependencies = [
+ "aether-api",
+ "aether-core",
+ "aether-db",
+ "aether-ident",
+ "aether-jobs",
+ "aether-library",
+ "aether-ml",
+ "aether-net",
+ "aether-podcast",
+ "aether-test-support",
+ "aether-vibe",
+ "axum",
+ "axum-test",
+ "base64 0.22.1",
+ "form_urlencoded",
+ "hex",
+ "hmac 0.13.0",
+ "image",
+ "insta",
+ "md-5 0.11.0",
+ "quick-xml",
+ "rand 0.8.8",
+ "regex",
+ "reqwest",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "tempfile",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "aether-test-support"
+version = "0.3.0"
+dependencies = [
+ "aether-core",
+ "aether-db",
+ "lofty",
+ "uuid",
+]
+
+[[package]]
+name = "aether-vibe"
+version = "0.3.0"
+dependencies = [
+ "rayon",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "aether-web"
+version = "0.3.0"
+dependencies = [
+ "aether-api-types",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+ "uuid",
+ "vertigo",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2727,390 +3111,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kima-api"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "axum",
- "axum-test",
- "base64 0.22.1",
- "flate2",
- "form_urlencoded",
- "futures",
- "hex",
- "http-body-util",
- "httpdate",
- "image",
- "jsonwebtoken",
- "kima-api-types",
- "kima-core",
- "kima-db",
- "kima-ident",
- "kima-jobs",
- "kima-library",
- "kima-mixes",
- "kima-ml",
- "kima-net",
- "kima-podcast",
- "kima-test-support",
- "kima-vibe",
- "lofty",
- "md-5 0.11.0",
- "rand 0.8.8",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sqlx",
- "tempfile",
- "thiserror 2.0.21",
- "time",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tower",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "kima-api-types"
-version = "0.3.0"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "time",
- "uuid",
-]
-
-[[package]]
-name = "kima-core"
-version = "0.3.0"
-dependencies = [
- "argon2",
- "base64 0.22.1",
- "chacha20poly1305",
- "hex",
- "hkdf 0.13.0",
- "jsonwebtoken",
- "rand 0.8.8",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sqlx",
- "tempfile",
- "thiserror 2.0.21",
- "time",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "kima-db"
-version = "0.3.0"
-dependencies = [
- "futures",
- "hex",
- "kima-api-types",
- "kima-core",
- "kima-mixes",
- "kima-vibe",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sqlx",
- "time",
- "tokio",
- "tracing",
- "unicode-normalization",
- "uuid",
-]
-
-[[package]]
-name = "kima-ident"
-version = "0.3.0"
-dependencies = [
- "base64 0.22.1",
- "futures",
- "hex",
- "image",
- "kima-core",
- "kima-db",
- "kima-jobs",
- "kima-library",
- "kima-ml",
- "kima-net",
- "kima-test-support",
- "kima-vibe",
- "libc",
- "md-5 0.11.0",
- "pathfinding",
- "percent-encoding",
- "regex",
- "rusty-chromaprint",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sqlx",
- "symphonia",
- "tempfile",
- "thiserror 2.0.21",
- "time",
- "tokio",
- "tokio-util",
- "tracing",
- "unicode-normalization",
- "uuid",
-]
-
-[[package]]
-name = "kima-jobs"
-version = "0.3.0"
-dependencies = [
- "chrono",
- "croner",
- "futures",
- "kima-db",
- "serde_json",
- "sqlx",
- "time",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "kima-library"
-version = "0.3.0"
-dependencies = [
- "futures",
- "hex",
- "image",
- "kima-core",
- "kima-db",
- "kima-jobs",
- "kima-mixes",
- "kima-test-support",
- "libc",
- "lofty",
- "notify-debouncer-full",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sqlx",
- "tempfile",
- "thiserror 2.0.21",
- "time",
- "tokio",
- "tokio-util",
- "tracing",
- "unicode-normalization",
- "uuid",
- "walkdir",
-]
-
-[[package]]
-name = "kima-mixes"
-version = "0.3.0"
-dependencies = [
- "chrono",
- "hex",
- "kima-api-types",
- "kima-vibe",
- "md-5 0.11.0",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tokio",
- "tokio-util",
- "uuid",
-]
-
-[[package]]
-name = "kima-ml"
-version = "0.3.0"
-dependencies = [
- "ebur128",
- "kima-db",
- "kima-test-support",
- "libc",
- "ort",
- "rubato",
- "rustfft",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sqlx",
- "symphonia",
- "symphonia-adapter-libopus",
- "tempfile",
- "thiserror 2.0.21",
- "tokenizers",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "kima-net"
-version = "0.3.0"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "bytes",
- "form_urlencoded",
- "futures",
- "kima-core",
- "kima-db",
- "kima-net",
- "percent-encoding",
- "rand 0.8.8",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "sqlx",
- "time",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "kima-podcast"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "bytes",
- "futures",
- "kima-core",
- "kima-db",
- "kima-jobs",
- "kima-net",
- "kima-test-support",
- "lofty",
- "quick-xml",
- "serde",
- "serde_json",
- "sqlx",
- "tempfile",
- "thiserror 2.0.21",
- "time",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "kima-server"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "axum",
- "axum-test",
- "base64 0.22.1",
- "form_urlencoded",
- "futures",
- "kima-api",
- "kima-core",
- "kima-db",
- "kima-ident",
- "kima-jobs",
- "kima-library",
- "kima-mixes",
- "kima-ml",
- "kima-net",
- "kima-podcast",
- "kima-subsonic",
- "kima-test-support",
- "reqwest",
- "serde_json",
- "sqlx",
- "tempfile",
- "time",
- "tokio",
- "tokio-util",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "vertigo-cli",
-]
-
-[[package]]
-name = "kima-subsonic"
-version = "0.3.0"
-dependencies = [
- "axum",
- "axum-test",
- "base64 0.22.1",
- "form_urlencoded",
- "hex",
- "hmac 0.13.0",
- "image",
- "insta",
- "kima-api",
- "kima-core",
- "kima-db",
- "kima-ident",
- "kima-jobs",
- "kima-library",
- "kima-ml",
- "kima-net",
- "kima-podcast",
- "kima-test-support",
- "kima-vibe",
- "md-5 0.11.0",
- "quick-xml",
- "rand 0.8.8",
- "regex",
- "reqwest",
- "serde_json",
- "sha2 0.11.0",
- "sqlx",
- "tempfile",
- "time",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "kima-test-support"
-version = "0.3.0"
-dependencies = [
- "kima-core",
- "kima-db",
- "lofty",
- "uuid",
-]
-
-[[package]]
-name = "kima-vibe"
-version = "0.3.0"
-dependencies = [
- "rayon",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "kima-web"
-version = "0.3.0"
-dependencies = [
- "kima-api-types",
- "serde",
- "serde_json",
- "unicode-normalization",
- "uuid",
- "vertigo",
-]
-
-[[package]]
 name = "kqueue"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4333,8 +4333,8 @@ dependencies = [
 name = "record-fixtures"
 version = "0.3.0"
 dependencies = [
- "kima-core",
- "kima-net",
+ "aether-core",
+ "aether-net",
  "serde",
  "serde_json",
  "sqlx",

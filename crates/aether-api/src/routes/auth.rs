@@ -1,0 +1,411 @@
+use std::time::Instant;
+
+use aether_api_types::auth::{Credentials, LoginResponse, MeResponse, UserSummary};
+use aether_api_types::profiles::{Profile, ProfileKind};
+use aether_core::auth::{TokenKind, hash_password, verify_dummy, verify_password};
+use aether_core::profile::{AccountId, ProfileId};
+use aether_db::profiles;
+use aether_db::users::{self, Deletion, MAX_USERNAME_CHARS};
+use axum::extract::{Path, State};
+use axum::routing::{delete, get, post};
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use time::format_description::well_known::Rfc3339;
+use uuid::Uuid;
+
+use crate::auth::{AdminUser, AuthUser, ClientIp};
+use crate::error::ApiError;
+use crate::extract::ApiJson;
+use crate::revoke_sessions;
+use crate::state::AppState;
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/auth/login", post(login))
+        .route("/auth/refresh", post(refresh))
+        .route("/auth/logout", post(logout))
+        .route("/auth/me", get(me))
+        .route("/auth/stream-ticket", post(stream_ticket))
+        .route("/auth/change-password", post(change_password))
+        .route("/auth/users", get(list_users))
+        .route("/auth/create-user", post(create_user))
+        .route("/auth/users/{id}", delete(delete_user))
+}
+
+/// The wire shape of a profile (D-242).
+pub(crate) fn profile_body(profile: &profiles::Profile) -> Result<Profile, ApiError> {
+    Ok(Profile {
+        id: profile.id.into_uuid(),
+        name: profile.name.clone(),
+        kind: match profile.kind {
+            aether_core::profile::ProfileKind::Main => ProfileKind::Main,
+            aether_core::profile::ProfileKind::Kids => ProfileKind::Kids,
+            aether_core::profile::ProfileKind::Standard => ProfileKind::Standard,
+        },
+        avatar: profile.avatar.clone(),
+        is_main: profile.is_main(),
+        created_at: profile
+            .created_at
+            .format(&Rfc3339)
+            .map_err(anyhow::Error::from)?,
+    })
+}
+
+/// `profile` of `account` as the API shows it; gone (deleted meanwhile) is 401, like a token
+/// that names it.
+pub(crate) async fn load_profile(
+    state: &AppState,
+    account: AccountId,
+    profile: ProfileId,
+) -> Result<Profile, ApiError> {
+    let found = profiles::find(&state.pool, account, profile)
+        .await?
+        .ok_or(ApiError::Unauthorized("Not authenticated"))?;
+    profile_body(&found)
+}
+
+fn rate_limited(blocked: crate::login_limit::Blocked) -> ApiError {
+    ApiError::RateLimited {
+        retry_after_secs: blocked.retry_after_secs(),
+    }
+}
+
+async fn login(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    ApiJson(body): ApiJson<Credentials>,
+) -> Result<Json<LoginResponse>, ApiError> {
+    let username = body.username.trim().to_string();
+    if username.is_empty() || body.password.is_empty() {
+        return Err(ApiError::Invalid(
+            "Username and password are required".into(),
+        ));
+    }
+
+    // No account can have a name this long (every create path caps it), so refuse it before
+    // it becomes a limiter key or reaches the database.
+    if username.chars().count() > MAX_USERNAME_CHARS {
+        return Err(ApiError::Unauthorized("Invalid credentials"));
+    }
+
+    // A blocked typed name is refused before any database work or hashing (no charge here).
+    let now = Instant::now();
+    state
+        .login_limit
+        .check(ip, &username, now)
+        .map_err(rate_limited)?;
+
+    // The database folds case its own way (`lower()` under its locale), Rust another. Also
+    // count the attempt on the key of the database's fold of the typed name: every spelling that
+    // reaches an account shares that fold, so none gets a separate budget. The fold comes from
+    // the typed name alone, charged whether or not the account exists, so the limiter's answers
+    // reveal nothing about existence (spec §5.7). The attempts are counted as failures now
+    // (parallel or abandoned requests cannot dodge the backoff) and cleared only on success;
+    // if any key is blocked, none is charged.
+    let lookup = users::sign_in_lookup(&state.pool, &username).await?;
+    let attempts = state
+        .login_limit
+        .begin_all(ip, &[&username, &lookup.fold], now)
+        .map_err(rate_limited)?;
+    let found = lookup.user;
+    let password = body.password;
+    let permit = state.password_permit().await?;
+    let (found, valid) = tokio::task::spawn_blocking(move || {
+        // Released when the verify ends, even if the client hung up and the handler was dropped.
+        let _permit = permit;
+        let valid = match &found {
+            Some(user) => verify_password(&password, &user.password_hash),
+            None => {
+                verify_dummy(&password);
+                false
+            }
+        };
+        (found, valid)
+    })
+    .await
+    .map_err(anyhow::Error::from)?;
+
+    let Some(user) = found.filter(|_| valid) else {
+        return Err(ApiError::Unauthorized("Invalid credentials"));
+    };
+    for attempt in attempts {
+        attempt.success();
+    }
+    // A sign-in lands in the main profile; the client offers the others from there.
+    let profile = load_profile(&state, user.account(), user.main_profile()).await?;
+    Ok(Json(LoginResponse {
+        token: state.jwt.issue_access(
+            user.account(),
+            user.main_profile(),
+            &user.username,
+            &user.role,
+            user.token_version,
+        ),
+        refresh_token: state.jwt.issue_refresh(
+            user.account(),
+            user.main_profile(),
+            user.token_version,
+        ),
+        user: UserSummary {
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            onboarding_complete: user.onboarding_complete,
+        },
+        profile: Some(profile),
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RefreshBody {
+    refresh_token: Option<String>,
+}
+
+async fn refresh(
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<RefreshBody>,
+) -> Result<Json<Value>, ApiError> {
+    let token = body
+        .refresh_token
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| ApiError::BadRequest("Refresh token required".into()))?;
+    let claims = state
+        .jwt
+        .decode(&token)
+        .ok()
+        .filter(|c| c.kind() == TokenKind::Refresh)
+        .ok_or(ApiError::Unauthorized("Invalid refresh token"))?;
+    // The profile must still belong to the account (deleted, or a `profileId` of another
+    // account, is refused); a refresh keeps the token's profile.
+    let Some(session) =
+        users::find_session(&state.pool, claims.account(), claims.profile()).await?
+    else {
+        let account_exists = users::find_by_id(&state.pool, claims.user_id)
+            .await?
+            .is_some();
+        return Err(ApiError::Unauthorized(if account_exists {
+            "Profile not found"
+        } else {
+            "User not found"
+        }));
+    };
+    if session.token_version != claims.token_version {
+        return Err(ApiError::Unauthorized("Token invalidated"));
+    }
+    Ok(Json(json!({
+        "token": state.jwt.issue_access(
+            session.account,
+            session.profile,
+            &session.username,
+            &session.role,
+            session.token_version,
+        ),
+        "refreshToken": state.jwt.issue_refresh(session.account, session.profile, session.token_version),
+    })))
+}
+
+/// Tokens are stateless; the client forgets them.
+async fn logout() -> Json<Value> {
+    Json(json!({ "message": "Logged out" }))
+}
+
+/// The account (`id`, `username`, ... as upstream) plus the profile the session acts as.
+async fn me(State(state): State<AppState>, auth: AuthUser) -> Result<Json<MeResponse>, ApiError> {
+    let user = users::find_by_id(&state.pool, auth.account.into_uuid())
+        .await?
+        .ok_or(ApiError::NotFound("User not found"))?;
+    let profile = load_profile(&state, auth.account, auth.profile).await?;
+    let created_at = user
+        .created_at
+        .format(&Rfc3339)
+        .map_err(anyhow::Error::from)?;
+    Ok(Json(MeResponse {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        onboarding_complete: user.onboarding_complete,
+        created_at,
+        profile: Some(profile),
+    }))
+}
+
+/// A 4 h stream-scoped token for `<audio src>` URLs. `ticket` is upstream's key; `token` is what
+/// the aether frontend client reads.
+async fn stream_ticket(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Value>, ApiError> {
+    // `authenticate` has just checked the account's token version; the ticket keeps the
+    // profile, so a stream follows that profile's settings.
+    let token = state
+        .jwt
+        .issue_stream(auth.account, auth.profile, auth.token_version);
+    Ok(Json(json!({
+        "token": token,
+        "ticket": token,
+        "expiresIn": aether_core::auth::STREAM_TTL_SECS,
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChangePassword {
+    #[serde(default)]
+    current_password: String,
+    #[serde(default)]
+    new_password: String,
+}
+
+async fn change_password(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    ApiJson(body): ApiJson<ChangePassword>,
+) -> Result<Json<Value>, ApiError> {
+    // The password is the account's: only its main profile may change it (D-241).
+    if !auth.is_main_profile() {
+        return Err(ApiError::Forbidden(
+            "Only the main profile can change the password",
+        ));
+    }
+    if body.current_password.is_empty() || body.new_password.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Current and new password are required".into(),
+        ));
+    }
+    if body.new_password.chars().count() < 6 {
+        return Err(ApiError::BadRequest(
+            "New password must be at least 6 characters".into(),
+        ));
+    }
+    let user = users::find_by_id(&state.pool, auth.account.into_uuid())
+        .await?
+        .ok_or(ApiError::NotFound("User not found"))?;
+
+    let seen_version = user.token_version;
+    let permit = state.password_permit().await?;
+    let (current, new) = (body.current_password, body.new_password);
+    let hash = tokio::task::spawn_blocking(move || {
+        // Released when the work ends, even if the client hung up and the handler was dropped.
+        let _permit = permit;
+        verify_password(&current, &user.password_hash).then(|| hash_password(&new))
+    })
+    .await
+    .map_err(anyhow::Error::from)?;
+    let Some(hash) = hash else {
+        // 401 means "not signed in"; a wrong password from a signed-in user is a bad request.
+        return Err(ApiError::BadRequest("Current password is incorrect".into()));
+    };
+
+    // The password and the revocation of the account's app tokens (every profile's) commit
+    // together; the bumped token version ends every profile's sessions.
+    let mut tx = state.pool.begin().await?;
+    let version = users::set_password(&mut tx, auth.account.into_uuid(), &hash, Some(seen_version))
+        .await?
+        .ok_or_else(|| ApiError::Conflict("Password was changed concurrently, please retry"))?;
+    tx.commit().await?;
+    revoke_sessions(&state, auth.account);
+    Ok(Json(json!({
+        "message": "Password changed successfully",
+        "token": state.jwt.issue_access(auth.account, auth.profile, &auth.username, &auth.role, version),
+        "refreshToken": state.jwt.issue_refresh(auth.account, auth.profile, version),
+    })))
+}
+
+async fn list_users(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Json<Value>, ApiError> {
+    let rows = users::list(&state.pool).await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for user in rows {
+        out.push(json!({
+            "id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "onboardingComplete": user.onboarding_complete,
+            "createdAt": user.created_at.format(&Rfc3339).map_err(anyhow::Error::from)?,
+        }));
+    }
+    Ok(Json(Value::Array(out)))
+}
+
+#[derive(Deserialize)]
+struct CreateUser {
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    password: String,
+    role: Option<String>,
+}
+
+async fn create_user(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    ApiJson(body): ApiJson<CreateUser>,
+) -> Result<Json<Value>, ApiError> {
+    let username = body.username.trim().to_string();
+    if username.is_empty() || body.password.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Username and password are required".into(),
+        ));
+    }
+    if username.chars().count() > MAX_USERNAME_CHARS {
+        return Err(ApiError::BadRequest(format!(
+            "Username must be at most {MAX_USERNAME_CHARS} characters"
+        )));
+    }
+    if body.password.chars().count() < 6 {
+        return Err(ApiError::BadRequest(
+            "Password must be at least 6 characters".into(),
+        ));
+    }
+    let role = match body.role.as_deref() {
+        None | Some("") | Some(users::ROLE_USER) => users::ROLE_USER,
+        Some(users::ROLE_ADMIN) => users::ROLE_ADMIN,
+        Some(_) => return Err(ApiError::BadRequest("Invalid role".into())),
+    };
+
+    let permit = state.password_permit().await?;
+    let password = body.password;
+    let hash = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        hash_password(&password)
+    })
+    .await
+    .map_err(anyhow::Error::from)?;
+
+    let user = users::create_by_admin(&state.pool, Uuid::now_v7(), &username, &hash, role)
+        .await?
+        .map_err(|_| ApiError::BadRequest("Username already taken".into()))?;
+    Ok(Json(json!({
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "createdAt": user.created_at.format(&Rfc3339).map_err(anyhow::Error::from)?,
+    })))
+}
+
+async fn delete_user(
+    State(state): State<AppState>,
+    AdminUser(auth): AdminUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let id: Uuid = id
+        .parse()
+        .map_err(|_| ApiError::NotFound("User not found"))?;
+    if id == auth.account.into_uuid() {
+        return Err(ApiError::BadRequest(
+            "Cannot delete your own account".into(),
+        ));
+    }
+    match users::delete_unless_last_admin(&state.pool, id).await? {
+        Deletion::NotFound => Err(ApiError::NotFound("User not found")),
+        Deletion::LastAdmin => Err(ApiError::BadRequest("Cannot delete the last admin".into())),
+        Deletion::Deleted => {
+            revoke_sessions(&state, AccountId::new(id));
+            Ok(Json(json!({ "message": "User deleted successfully" })))
+        }
+    }
+}

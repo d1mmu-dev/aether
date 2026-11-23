@@ -1,0 +1,37 @@
+---
+source: crates/aether-subsonic/tests/snapshots.rs
+---
+{
+  "subsonic-response": {
+    "genres": {
+      "genre": [
+        {
+          "albumCount": 1,
+          "songCount": 1,
+          "value": "Electronic"
+        },
+        {
+          "albumCount": 2,
+          "songCount": 1,
+          "value": "Pop"
+        },
+        {
+          "albumCount": 0,
+          "songCount": 1,
+          "value": "Post-Rock"
+        },
+        {
+          "albumCount": 2,
+          "songCount": 4,
+          "value": "Rock"
+        }
+      ]
+    },
+    "openSubsonic": true,
+    "serverVersion": "[redacted]",
+    "status": "ok",
+    "type": "Aether",
+    "version": "1.16.1",
+    "xmlns": "http://subsonic.org/restapi"
+  }
+}

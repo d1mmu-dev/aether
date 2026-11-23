@@ -1,15 +1,15 @@
 # Subsonic and OpenSubsonic clients
 
-kima-rs speaks the [OpenSubsonic](https://opensubsonic.netlify.app/) API (version 1.16.1) at `/rest`, so music apps that support Subsonic can play from your library. The Kima web app does not use this API; it is there for other apps. Every difference from upstream Kima is logged in [`DIVERGENCES.md`](DIVERGENCES.md) (D-072 to D-103).
+Aether speaks the [OpenSubsonic](https://opensubsonic.netlify.app/) API (version 1.16.1) at `/rest`, so music apps that support Subsonic can play from your library. The Aether web app does not use this API; it is there for other apps. Every difference from upstream Kima is logged in [`DIVERGENCES.md`](DIVERGENCES.md) (D-072 to D-103).
 
 ## Connect a client
 
-1. In Kima, open **Settings > Native Apps**.
+1. In Aether, open **Settings > Native Apps**.
 2. Type a name for the client, such as "Phone", and choose **Generate Token**.
 3. Copy the token. It is shown once.
 4. In the client, enter:
-   - **Server address:** where you open Kima, such as `http://192.168.1.10:3030`
-   - **Username:** your Kima username (case does not matter)
+   - **Server address:** where you open Aether, such as `http://192.168.1.10:3030`
+   - **Username:** your Aether username (case does not matter)
    - **Password:** the token
 
 Give each client its own token. The same page lists your tokens (at most 50 per user), and revoking one disconnects only that client. Clients that have a separate "API key" field can use the token there (`apiKey=`, with or without the username).
@@ -19,7 +19,7 @@ Give each client its own token. The same page lists your tokens (at most 50 per 
 A request may carry one of these:
 
 1. An API key: `apiKey=`.
-2. The password field: `p=`. Kima first checks whether the value is one of your tokens, then checks it against your account password. `enc:` hex-encoded passwords are accepted.
+2. The password field: `p=`. Aether first checks whether the value is one of your tokens, then checks it against your account password. `enc:` hex-encoded passwords are accepted.
 3. Token and salt: `t=` and `s=`, where `t = md5(token + s)`. This works for app tokens only. Your account password cannot be used with it, and the error says so.
 
 Mixing mechanisms (for example `apiKey` with `p`) is error 43. Empty values count as absent.
@@ -28,7 +28,7 @@ If you turn on two-factor authentication later (a planned milestone), your accou
 
 ### Why the server can decrypt tokens
 
-Token and salt sign-in is the older scheme most apps still use. To check `t`, the server must compute `md5(token + s)` itself, so it has to recover the token; a one-way hash is not enough. Upstream Kima stores only SHA-256 digests and so refuses `t`/`s`. kima-rs stores two things per token:
+Token and salt sign-in is the older scheme most apps still use. To check `t`, the server must compute `md5(token + s)` itself, so it has to recover the token; a one-way hash is not enough. Upstream Aether stores only SHA-256 digests and so refuses `t`/`s`. Aether stores two things per token:
 
 - the SHA-256 of the token, which answers `apiKey=` and `p=` in one lookup without decrypting anything;
 - the token encrypted with XChaCha20-Poly1305 under a key derived from `SETTINGS_ENCRYPTION_KEY`, bound to its database row.
@@ -50,9 +50,9 @@ Wrong password guesses (on `/rest` with `p=`, and on the web login) are limited 
 
 The limiter uses the TCP peer address and does not trust `X-Forwarded-For`. Behind a reverse proxy, every client shares the proxy's address, so the key degenerates to the username: someone guessing wrongly at your username can block password logins for it for up to 15 minutes. Tokens are unaffected. Trusting forwarded headers from configured proxies is planned for later.
 
-## `KIMA_PUBLIC_URL`
+## `AETHER_PUBLIC_URL`
 
-Optional. The address clients use to reach Kima, such as `https://music.example.com` (must start with `http://` or `https://`; a trailing `/` is removed). The `hls` endpoint uses it to build the stream URL in its playlist; if it is unset, Kima uses `http://` and the `Host` of the request (so behind a TLS proxy, set it). The settings page shows it to help with client setup. Set it when Kima is behind a proxy that changes the host name.
+Optional. The address clients use to reach Aether, such as `https://music.example.com` (must start with `http://` or `https://`; a trailing `/` is removed). The `hls` endpoint uses it to build the stream URL in its playlist; if it is unset, Aether uses `http://` and the `Host` of the request (so behind a TLS proxy, set it). The settings page shows it to help with client setup. Set it when Aether is behind a proxy that changes the host name.
 
 ## What is supported
 
@@ -73,7 +73,7 @@ All 81 paths upstream registers are answered, each with and without `.view`, by 
 `format=raw` serves the original. Without a cap, the source format serves directly;
 `format=mp3` serves directly only for an MP3 that fits the cap. With `maxBitRate`, a
 source already within the cap serves directly when no other format was requested;
-otherwise Kima makes MP3 at the highest available tier not above it (320, 192 or 128 kbps).
+otherwise Aether makes MP3 at the highest available tier not above it (320, 192 or 128 kbps).
 A request for another output codec, or a cap below 128 kbps when the source does not fit,
 is refused by the decision endpoint.
 `stream` is more lenient for older clients: it retries without a refused format and, if
@@ -111,4 +111,4 @@ Any other path under `/rest/` answers error 0 "Not implemented: `<path>`".
 - Song `artist` is the track artist; ids are the web app's UUIDs. The prefixes `ar-`, `al-`, `tr-`, `artist:` and `album:` are accepted where clients send them.
 - Ratings and stars are separate from each other and from the web app, which has no track likes (D-071).
 - Credentials are never written to the logs: request logging records the method and path only.
-- The code lives in `crates/kima-subsonic`; the shared sign-in limiter in `kima_api::login_limit`.
+- The code lives in `crates/aether-subsonic`; the shared sign-in limiter in `aether_api::login_limit`.

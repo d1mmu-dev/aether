@@ -1,0 +1,45 @@
+---
+source: crates/aether-subsonic/tests/snapshots.rs
+---
+{
+  "subsonic-response": {
+    "openSubsonic": true,
+    "openSubsonicExtensions": [
+      {
+        "name": "apiKeyAuthentication",
+        "versions": [
+          1
+        ]
+      },
+      {
+        "name": "formPost",
+        "versions": [
+          1
+        ]
+      },
+      {
+        "name": "indexBasedQueue",
+        "versions": [
+          1
+        ]
+      },
+      {
+        "name": "songLyrics",
+        "versions": [
+          1
+        ]
+      },
+      {
+        "name": "getPodcastEpisode",
+        "versions": [
+          1
+        ]
+      }
+    ],
+    "serverVersion": "[redacted]",
+    "status": "ok",
+    "type": "Aether",
+    "version": "1.16.1",
+    "xmlns": "http://subsonic.org/restapi"
+  }
+}

@@ -37,15 +37,15 @@ class PackagingTests(unittest.TestCase):
 
     def test_ci_provisions_before_rust_tests(self):
         ci = (ROOT / '.github/workflows/ci.yml').read_text()
-        self.assertIn('ORT_DYLIB_PATH: /opt/kima/ort/libonnxruntime.so.1.22.0', ci)
-        self.assertLess(ci.index('scripts/acquire-ort.sh /opt/kima/ort'), ci.index('cargo test --workspace'))
+        self.assertIn('ORT_DYLIB_PATH: /opt/aether/ort/libonnxruntime.so.1.22.0', ci)
+        self.assertLess(ci.index('scripts/acquire-ort.sh /opt/aether/ort'), ci.index('cargo test --workspace'))
 
     def test_final_image_has_trusted_runtime_and_notices(self):
         docker = (ROOT / 'Dockerfile').read_text()
-        self.assertIn('scripts/acquire-ort.sh /opt/kima/ort', docker)
-        self.assertIn('COPY --from=ort-runtime /opt/kima/ort /opt/kima/ort', docker)
-        self.assertIn('ORT_DYLIB_PATH=/opt/kima/ort/libonnxruntime.so.1.22.0', docker)
-        self.assertIn('chmod -R a-w /opt/kima/ort', docker)
+        self.assertIn('scripts/acquire-ort.sh /opt/aether/ort', docker)
+        self.assertIn('COPY --from=ort-runtime /opt/aether/ort /opt/aether/ort', docker)
+        self.assertIn('ORT_DYLIB_PATH=/opt/aether/ort/libonnxruntime.so.1.22.0', docker)
+        self.assertIn('chmod -R a-w /opt/aether/ort', docker)
 
 
 if __name__ == '__main__':

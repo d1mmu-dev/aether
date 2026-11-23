@@ -1,0 +1,17 @@
+---
+source: crates/aether-subsonic/tests/snapshots.rs
+---
+{
+  "subsonic-response": {
+    "error": {
+      "code": 10,
+      "message": "currentIndex must be between 0 and queue length - 1"
+    },
+    "openSubsonic": true,
+    "serverVersion": "[redacted]",
+    "status": "failed",
+    "type": "Aether",
+    "version": "1.16.1",
+    "xmlns": "http://subsonic.org/restapi"
+  }
+}

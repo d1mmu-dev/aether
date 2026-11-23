@@ -7,22 +7,23 @@ version = "0.3.0"
 edition = "2024"
 license = "GPL-3.0-only"
 rust-version = "1.85"
+publish = false
 
 [workspace.dependencies]
-kima-core = { path = "crates/kima-core" }
-kima-api = { path = "crates/kima-api" }
-kima-api-types = { path = "crates/kima-api-types" }
-kima-db = { path = "crates/kima-db" }
-kima-ident = { path = "crates/kima-ident" }
-kima-jobs = { path = "crates/kima-jobs" }
-kima-library = { path = "crates/kima-library" }
-kima-net = { path = "crates/kima-net" }
-kima-podcast = { path = "crates/kima-podcast" }
-kima-subsonic = { path = "crates/kima-subsonic" }
-kima-ml = { path = "crates/kima-ml" }
-kima-mixes = { path = "crates/kima-mixes" }
-kima-vibe = { path = "crates/kima-vibe" }
-kima-test-support = { path = "crates/kima-test-support" }
+aether-core = { path = "crates/aether-core" }
+aether-api = { path = "crates/aether-api" }
+aether-api-types = { path = "crates/aether-api-types" }
+aether-db = { path = "crates/aether-db" }
+aether-ident = { path = "crates/aether-ident" }
+aether-jobs = { path = "crates/aether-jobs" }
+aether-library = { path = "crates/aether-library" }
+aether-net = { path = "crates/aether-net" }
+aether-podcast = { path = "crates/aether-podcast" }
+aether-subsonic = { path = "crates/aether-subsonic" }
+aether-ml = { path = "crates/aether-ml" }
+aether-mixes = { path = "crates/aether-mixes" }
+aether-vibe = { path = "crates/aether-vibe" }
+aether-test-support = { path = "crates/aether-test-support" }
 
 anyhow = "1"
 argon2 = "0.5"
@@ -85,12 +86,12 @@ walkdir = "2.5"
 opt-level = 3
 
 # The layout and colour-field loops are plain arithmetic; the 20k-track memory/time test needs them optimised.
-[profile.dev.package.kima-vibe]
+[profile.dev.package.aether-vibe]
 opt-level = 3
 
 # CLAP decode/preprocessing is per-sample arithmetic: unoptimised it made a debug server ~30x slower
 # per track (5-min MP3: decode 63 s vs 1.5 s, one log-mel window 1.4 s vs 0.04 s).
-[profile.dev.package.kima-ml]
+[profile.dev.package.aether-ml]
 opt-level = 3
 
 [profile.dev.package.symphonia-core]

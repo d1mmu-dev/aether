@@ -2,17 +2,17 @@
 name = "record-fixtures"
 version.workspace = true
 edition.workspace = true
+publish.workspace = true
 license.workspace = true
 rust-version.workspace = true
-publish = false
 
 [[bin]]
 name = "record-fixtures"
 path = "src/main.rs"
 
 [dependencies]
-kima-core.workspace = true
-kima-net.workspace = true
+aether-core.workspace = true
+aether-net.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true

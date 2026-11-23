@@ -2,7 +2,7 @@
 # Capture M-SYNC, M-STATS, M6, profiles and M5b wire fixtures from THIS checkout's server and a fresh
 # run-owned pgvector cluster. No caller database is accepted. Requires docker, ffmpeg, jq, curl,
 # psql, python3, git and cargo.
-# KIMA_CAPTURE_SET (required) names the fixture sets copied into the tree: a comma list of
+# AETHER_CAPTURE_SET (required) names the fixture sets copied into the tree: a comma list of
 # msync, mstats, m6, profiles, m5b. Profiles-only skips unrelated captures; m5b runs alone (its own
 # larger library and seeded mood data would change the other sets' captures); other sets retain their
 # existing dependency chain. Only the named
@@ -14,7 +14,7 @@ if [[ -n "${DATABASE_URL:-}" || -n "${PGDATABASE:-}" ]]; then
   echo 'No external DATABASE_URL or PGDATABASE allowed; this script owns a fresh database.' >&2; exit 2
 fi
 if [[ "${1:-}" == --help ]]; then
-  echo 'KIMA_CAPTURE_SET=msync,mstats,m6,profiles (any subset) or m5b (alone); --list prints targets without running. No external DATABASE_URL or PGDATABASE allowed.'; exit 0
+  echo 'AETHER_CAPTURE_SET=msync,mstats,m6,profiles (any subset) or m5b (alone); --list prints targets without running. No external DATABASE_URL or PGDATABASE allowed.'; exit 0
 fi
 [[ $# == 0 || ( $# == 1 && "$1" == --list ) ]] || { echo 'Only --help or --list accepted' >&2; exit 2; }
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -38,7 +38,7 @@ m5b_names=(mixes mix mix_save mixes_refresh presets bucket_no_heads bucket_save 
   heads_radio_workout heads_whats_new_pending heads_whats_new_current heads_whats_new_choice
   heads_whats_new_changelog heads_whats_new_open heads_whats_new_dismiss)
 copy=()
-IFS=',' read -r -a sets <<< "${KIMA_CAPTURE_SET:-}"
+IFS=',' read -r -a sets <<< "${AETHER_CAPTURE_SET:-}"
 for set in "${sets[@]}"; do
   case "$set" in
     msync) for n in "${msync_names[@]}"; do copy+=("${n}_response.json"); done ;;
@@ -47,20 +47,20 @@ for set in "${sets[@]}"; do
         copy+=(podcasts_capture_manifest.json) ;;
     profiles) for n in "${profiles_names[@]}"; do copy+=("profiles_${n}_response.json"); done
         copy+=(profiles_capture_manifest.json) ;;
-    m5b) [[ "${KIMA_CAPTURE_SET}" == m5b ]] || { echo 'KIMA_CAPTURE_SET: m5b runs alone' >&2; exit 2; }
+    m5b) [[ "${AETHER_CAPTURE_SET}" == m5b ]] || { echo 'AETHER_CAPTURE_SET: m5b runs alone' >&2; exit 2; }
         for n in "${m5b_names[@]}"; do copy+=("m5b_${n}_response.json"); done
         copy+=(m5b_capture_manifest.json) ;;
-    *) echo "KIMA_CAPTURE_SET: unknown set '$set' (msync, mstats, m6, profiles, m5b)" >&2; exit 2 ;;
+    *) echo "AETHER_CAPTURE_SET: unknown set '$set' (msync, mstats, m6, profiles, m5b)" >&2; exit 2 ;;
   esac
 done
-[[ ${#copy[@]} -gt 0 ]] || { echo 'Set KIMA_CAPTURE_SET (msync, mstats, m6, profiles; comma-separated; or m5b alone)' >&2; exit 2; }
+[[ ${#copy[@]} -gt 0 ]] || { echo 'Set AETHER_CAPTURE_SET (msync, mstats, m6, profiles; comma-separated; or m5b alone)' >&2; exit 2; }
 if [[ "${1:-}" == --list ]]; then printf '%s\n' "${copy[@]}"; exit 0; fi
 for cmd in docker ffmpeg jq curl psql python3 git cargo; do command -v "$cmd" >/dev/null || { echo "Missing $cmd" >&2; exit 1; }; done
 # Refuse before anything expensive when a fixture this run would overwrite has uncommitted
 # changes or exists untracked: either would be lost. A file absent from disk is not flagged.
 dirty=()
 for f in "${copy[@]}"; do
-  f="crates/kima-api-types/tests/fixtures/$f"
+  f="crates/aether-api-types/tests/fixtures/$f"
   if [[ -e "$f" ]] && { ! git diff --quiet HEAD -- "$f" 2>/dev/null ||
     [[ -n "$(git status --porcelain -- "$f")" ]]; }; then dirty+=("$f"); fi
 done
@@ -94,23 +94,23 @@ cleanup() {
   rm -rf "$tmp"
 }
 trap cleanup EXIT
-export KIMA_NET_DENY_REAL=1 SQLX_OFFLINE=true
-export PGDATABASE=kima
+export AETHER_NET_DENY_REAL=1 SQLX_OFFLINE=true
+export PGDATABASE=aether
 export DATABASE_URL=''
-docker run -d --name "$container_name" --label "kima.run=$container_name" -e POSTGRES_USER=kima -e POSTGRES_PASSWORD=kima -e POSTGRES_DB=kima -p 127.0.0.1::5432 pgvector/pgvector:pg17 >/dev/null
+docker run -d --name "$container_name" --label "aether.run=$container_name" -e POSTGRES_USER=aether -e POSTGRES_PASSWORD=aether -e POSTGRES_DB=aether -p 127.0.0.1::5432 pgvector/pgvector:pg17 >/dev/null
 port="$(docker inspect -f '{{(index (index .NetworkSettings.Ports "5432/tcp") 0).HostPort}}' "$container_name")"
 [[ "$port" =~ ^[0-9]+$ && "$port" != 5456 && "$port" != 55433 && "$port" != 52064 ]] || { echo 'Unsafe database port' >&2; exit 1; }
-export DATABASE_URL="postgres://kima:kima@127.0.0.1:${port}/kima"
+export DATABASE_URL="postgres://aether:aether@127.0.0.1:${port}/aether"
 for _ in {1..90}; do
   if psql "$DATABASE_URL" -Atqc 'select current_database(),current_user' 2>/dev/null > "$tmp/identity"; then break; fi
   sleep 1
 done
-[[ "$(cat "$tmp/identity")" == 'kima|kima' ]] || { echo 'Isolated PostgreSQL identity check failed' >&2; exit 1; }
-[[ "$(docker inspect -f '{{index .Config.Labels "kima.run"}}' "$container_name")" == "$container_name" ]] \
+[[ "$(cat "$tmp/identity")" == 'aether|aether' ]] || { echo 'Isolated PostgreSQL identity check failed' >&2; exit 1; }
+[[ "$(docker inspect -f '{{index .Config.Labels "aether.run"}}' "$container_name")" == "$container_name" ]] \
   || { echo 'Capture container label check failed' >&2; exit 1; }
-echo "capture provenance: HEAD=$(git rev-parse HEAD), container=$container_name, host-port=$port, db=kima, role=kima" >&2
+echo "capture provenance: HEAD=$(git rev-parse HEAD), container=$container_name, host-port=$port, db=aether, role=aether" >&2
 "$root/tools/make-fixture-library.sh" "$tmp/music"
-if [[ "$KIMA_CAPTURE_SET" == m5b ]]; then
+if [[ "$AETHER_CAPTURE_SET" == m5b ]]; then
   # M5b: 40 more songs (35 s sine tones, tagged): two decades of four artists with five songs each, so the decade
   # and genre stations (15 songs) and every mix (8 songs) have enough.
   for artist in 'Nineties A' 'Nineties B' 'Nineties C' 'Nineties D' 'Noughties A' 'Noughties B' 'Noughties C' 'Noughties D'; do
@@ -124,11 +124,11 @@ if [[ "$KIMA_CAPTURE_SET" == m5b ]]; then
     done
   done
 fi
-export MUSIC_PATH="$tmp/music" KIMA_DATA_DIR="$tmp/data" KIMA_IDENTIFY=off KIMA_BIND_HOST=127.0.0.1
-export KIMA_DISABLE_CLAP=1
-mkdir -p "$KIMA_DATA_DIR"
+export MUSIC_PATH="$tmp/music" AETHER_DATA_DIR="$tmp/data" AETHER_IDENTIFY=off AETHER_BIND_HOST=127.0.0.1
+export AETHER_DISABLE_CLAP=1
+mkdir -p "$AETHER_DATA_DIR"
 # M6: loopback Apple/feed/audio stand-in (synthetic data). The server may reach exactly this
-# socket despite its SSRF guard (KIMA_NET_ALLOW_LOOPBACK, accepted only with KIMA_NET_DENY_REAL=1).
+# socket despite its SSRF guard (AETHER_NET_ALLOW_LOOPBACK, accepted only with AETHER_NET_DENY_REAL=1).
 python3 "$root/tools/podcast-capture-mock.py" > "$tmp/mock.port" 2> "$tmp/mock.log" & mock_pid=$!
 mock_port=''
 for _ in {1..50}; do
@@ -139,12 +139,12 @@ for _ in {1..50}; do
 done
 [[ "$mock_port" =~ ^[0-9]+$ ]] || { echo 'Podcast mock did not start' >&2; exit 1; }
 mock="http://127.0.0.1:$mock_port"
-export KIMA_ITUNES_BASE_URL="$mock" KIMA_NET_ALLOW_LOOPBACK="127.0.0.1:$mock_port"
-# Build from the checked-out sources; never run a stale target/debug/kima.
-cargo build -p kima-server > "$tmp/build.log" 2>&1 || { cat "$tmp/build.log" >&2; exit 1; }
+export AETHER_ITUNES_BASE_URL="$mock" AETHER_NET_ALLOW_LOOPBACK="127.0.0.1:$mock_port"
+# Build from the checked-out sources; never run a stale target/debug/aether.
+cargo build -p aether-server > "$tmp/build.log" 2>&1 || { cat "$tmp/build.log" >&2; exit 1; }
 # Choose an OS-assigned free port; only the run-owned server may answer health.
 export PORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
-./target/debug/kima > "$tmp/server.log" 2>&1 & server_pid=$!
+./target/debug/aether > "$tmp/server.log" 2>&1 & server_pid=$!
 base="http://127.0.0.1:$PORT/api"
 for _ in {1..90}; do
   if curl -fsS "$base/health" > /dev/null 2>&1; then break; fi
@@ -161,14 +161,14 @@ register="$(curl --fail-with-body -sS -X POST -H 'Content-Type: application/json
 token="$(curl --fail-with-body -sS -X POST -H 'Content-Type: application/json' -d '{"username":"fixtureadmin","password":"fixture-pass-18"}' "$base/auth/login" | jq -er '.token')"
 request POST /onboarding/complete '{}' >/dev/null
 stage="$tmp/fixtures"; mkdir -p "$stage"
-if [[ ",${KIMA_CAPTURE_SET}," == *,profiles,* ]]; then
+if [[ ",${AETHER_CAPTURE_SET}," == *,profiles,* ]]; then
   # Captures only real 2xx bodies. Tokens stay private; only documented secret fields redact.
   source "$root/tools/capture-profile-fixtures.inc.sh"
 fi
-if [[ "$KIMA_CAPTURE_SET" == m5b ]]; then
+if [[ "$AETHER_CAPTURE_SET" == m5b ]]; then
   # shellcheck source=tools/capture-m5b-fixtures.inc.sh
   source "$root/tools/capture-m5b-fixtures.inc.sh"
-elif [[ "$KIMA_CAPTURE_SET" != profiles ]]; then
+elif [[ "$AETHER_CAPTURE_SET" != profiles ]]; then
 capture() { local name="$1" method="$2" path="$3" payload="${4:-}"; request "$method" "$path" "$payload" | jq -eS . > "$stage/${name}_response.json"; echo "$name $method $path" >&2; }
 capture me GET /auth/me
 capture settings GET /settings
@@ -191,10 +191,10 @@ request POST "/playlists/$id/items" "$(jq -nc --argjson ids "$ids" '{trackIds:$i
 capture playlist_update PUT "/playlists/$id" '{"reverseOrder":true}'
 capture playlists_list GET /playlists
 capture playlist_detail GET "/playlists/$id"
-# Valid rerun on the fresh cluster; no external provider traffic (KIMA_IDENTIFY=off).
+# Valid rerun on the fresh cluster; no external provider traffic (AETHER_IDENTIFY=off).
 capture enrichment_rerun POST /enrichment/rerun '{"step":"identification"}'
-# M-STATS: the ten /stats routes. Two plays through the API (kima-rs records them heard), then
-# two heard=false rows by SQL (no kima-rs writer produces one, and only they can be a provable
+# M-STATS: the ten /stats routes. Two plays through the API (aether records them heard), then
+# two heard=false rows by SQL (no aether writer produces one, and only they can be a provable
 # skip): "First" (900 s) left after 60 s for "Third" (6 s, too short to count).
 id_of() { jq -er --arg t "$1" '.tracks[] | select(.title == $t) | .id' <<< "$tracks"; }
 first="$(id_of First)"; second="$(id_of Second)"; third="$(id_of Third)"
@@ -227,6 +227,6 @@ for f in "${copy[@]}"; do
   jq -e . "$stage/$f" >/dev/null || { echo "Staged fixture is not JSON (or is null/false): $f" >&2; exit 1; }
 done
 for f in "${copy[@]}"; do
-  cp "$stage/$f" "crates/kima-api-types/tests/fixtures/$f"
+  cp "$stage/$f" "crates/aether-api-types/tests/fixtures/$f"
 done
-echo "Copied ${#copy[@]} fixtures (sets: ${KIMA_CAPTURE_SET}); raw dynamic UUIDs/timestamps retained; DB, mock and server removed on exit." >&2
+echo "Copied ${#copy[@]} fixtures (sets: ${AETHER_CAPTURE_SET}); raw dynamic UUIDs/timestamps retained; DB, mock and server removed on exit." >&2

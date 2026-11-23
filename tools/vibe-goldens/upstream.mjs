@@ -1,7 +1,7 @@
 // Reads upstream's TypeScript sources for the golden generator and the benches from IMMUTABLE git objects of the pinned
 // commit, never from a working tree: a freshly pulled reference checkout (or one with local edits) cannot silently
 // change what the goldens are computed from. The checkout only has to contain the pin commit.
-//   UPSTREAM            path of a kima-hub git checkout containing the pin (default: KIMA_HUB_REFERENCE from the
+//   UPSTREAM            path of a kima-hub git checkout containing the pin (default: AETHER_UPSTREAM_REFERENCE from the
 //                       environment or the private tools config, tools/tools-env.mjs)
 // Inherited repository variables (GIT_DIR, GIT_WORK_TREE, ...) are removed for these git calls.
 import { execFileSync } from 'node:child_process';
@@ -17,8 +17,8 @@ function gitEnv() {
 }
 
 export function upstreamRoot() {
-  const root = process.env.UPSTREAM || toolsEnv('KIMA_HUB_REFERENCE');
-  if (!root) throw new Error('set UPSTREAM (or KIMA_HUB_REFERENCE) to a kima-hub git checkout containing ' + PIN);
+  const root = process.env.UPSTREAM || toolsEnv('AETHER_UPSTREAM_REFERENCE');
+  if (!root) throw new Error('set UPSTREAM (or AETHER_UPSTREAM_REFERENCE) to a kima-hub git checkout containing ' + PIN);
   return root;
 }
 

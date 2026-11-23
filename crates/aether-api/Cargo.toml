@@ -1,0 +1,53 @@
+[package]
+name = "aether-api"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rand.workspace = true
+flate2 = "1"
+sha2.workspace = true
+md-5.workspace = true
+hex.workspace = true
+form_urlencoded.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+futures.workspace = true
+httpdate.workspace = true
+aether-api-types.workspace = true
+aether-core.workspace = true
+aether-db.workspace = true
+aether-ident.workspace = true
+aether-mixes.workspace = true
+aether-jobs.workspace = true
+aether-library.workspace = true
+aether-net.workspace = true
+aether-podcast.workspace = true
+aether-vibe.workspace = true
+aether-ml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util = { workspace = true, features = ["io"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+time = { workspace = true, features = ["parsing"] }
+axum-test.workspace = true
+image.workspace = true
+http-body-util.workspace = true
+tower.workspace = true
+aether-test-support = { workspace = true, features = ["profiles"] }
+lofty.workspace = true
+aether-net = { workspace = true, features = ["testing"] }
+base64.workspace = true
+jsonwebtoken.workspace = true

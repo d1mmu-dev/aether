@@ -4,7 +4,7 @@
 #   tools/fixtures/chromaprint/tone.fpcalc.json  `fpcalc -json tone.wav`, plus "_fpcalc" (its version)
 # The committed JSON was made with: fpcalc version 1.6.2 (FFmpeg Lavc63.1.102 Lavf63.1.102 SwR7.1.102)
 # (chromaprint 1.6.2: the spec asked for 1.5.x; 1.6.2 is what the dev machine ships, see D-106).
-# The WAV is already 11025 Hz mono, so neither fpcalc nor kima resamples it and the
+# The WAV is already 11025 Hz mono, so neither fpcalc nor aether resamples it and the
 # fingerprints must be equal. Regenerating needs ffmpeg and fpcalc (chromaprint) on PATH.
 # Usage: tools/make-fingerprint-fixture.sh [output-dir]
 set -euo pipefail

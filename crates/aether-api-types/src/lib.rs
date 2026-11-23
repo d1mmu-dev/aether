@@ -1,0 +1,22 @@
+//! Wire-format DTOs shared by `aether-api` and `aether-web`.
+//!
+//! Dependency-light on purpose: it must build for `wasm32-unknown-unknown`. JSON is camelCase on
+//! `/api` and errors are `{"error": "<message>"}`; these types mirror that, never redefine it.
+
+pub mod app_tokens;
+pub mod auth;
+pub mod error;
+pub mod library;
+pub mod mixes;
+pub mod onboarding;
+pub mod playback_state;
+pub mod playlists;
+pub mod podcasts;
+pub mod profiles;
+pub mod radio;
+pub mod recommendations;
+pub mod releases;
+pub mod search;
+pub mod settings;
+pub mod stats;
+pub mod vibe;

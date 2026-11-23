@@ -1,5 +1,5 @@
 // Times upstream's own nearestColumns (TypeScript, single thread, Node type stripping) on synthetic 512-d tracks,
-// for comparison with crates/kima-vibe/examples/neighbour_bench.rs (Task 8, owner decision Q7).
+// for comparison with crates/aether-vibe/examples/neighbour_bench.rs (Task 8, owner decision Q7).
 //
 //   node tools/vibe-goldens/bench-neighbours.mjs [N=20000] [ROWS=200]
 import fs from "node:fs";

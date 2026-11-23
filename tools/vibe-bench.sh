@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# M5 Task 6 measurements: runs crates/kima-db/examples/vibe_bench.rs against a run-owned pgvector container.
+# M5 Task 6 measurements: runs crates/aether-db/examples/vibe_bench.rs against a run-owned pgvector container.
 # Never touches any other database; the container is removed on exit.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-NAME="kima-m5-bench-$$"
+NAME="aether-m5-bench-$$"
 PORT=$(python3 -c "
 import socket,random
 while True:
@@ -19,4 +19,4 @@ for _ in $(seq 60); do docker exec "$NAME" pg_isready -U postgres -d m5bench >/d
 sleep 2
 export BENCH_DATABASE_URL="postgres://postgres:pw@127.0.0.1:$PORT/m5bench"
 export DATABASE_URL="$BENCH_DATABASE_URL" SQLX_OFFLINE=true
-cargo run --release -j2 -p kima-db --example vibe_bench
+cargo run --release -j2 -p aether-db --example vibe_bench

@@ -1,0 +1,153 @@
+use aether_api_types::auth::{RegisterResponse, UserSummary};
+pub use aether_api_types::onboarding::Credentials;
+use aether_api_types::onboarding::OnboardingStatus;
+use aether_core::auth::hash_password;
+use aether_db::users::{self, Registration};
+use axum::extract::State;
+use axum::http::HeaderMap;
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use uuid::Uuid;
+
+use crate::auth::{AdminUser, AuthUser, authenticate, bearer_token};
+use crate::error::ApiError;
+use crate::extract::ApiJson;
+use crate::state::AppState;
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/onboarding/status", get(status))
+        .route("/onboarding/register", post(register))
+        .route("/onboarding/lidarr", post(lidarr))
+        .route("/onboarding/audiobookshelf", post(audiobookshelf))
+        .route("/onboarding/soulseek", post(soulseek))
+        .route("/onboarding/complete", post(complete))
+}
+
+async fn status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<OnboardingStatus>, ApiError> {
+    let has_account = users::count(&state.pool).await? > 0;
+    let registration_open = !has_account || users::registration_open(&state.pool).await?;
+
+    let user = match bearer_token(&headers) {
+        Some(token) => authenticate(&state, token, "/api/onboarding/status").await?,
+        None => None,
+    };
+    let needs_onboarding = match user {
+        Some(user) => !users::find_by_id(&state.pool, user.account.into_uuid())
+            .await?
+            .is_some_and(|u| u.onboarding_complete),
+        None => !has_account,
+    };
+    Ok(Json(OnboardingStatus {
+        needs_onboarding,
+        has_account,
+        registration_open,
+    }))
+}
+
+async fn register(
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<Credentials>,
+) -> Result<Json<RegisterResponse>, ApiError> {
+    let username = body.username.trim().to_string();
+    if !(3..=users::MAX_USERNAME_CHARS).contains(&username.chars().count()) {
+        return Err(ApiError::Invalid(
+            "Username must be 3 to 50 characters".into(),
+        ));
+    }
+    if body.password.chars().count() < 6 {
+        return Err(ApiError::Invalid(
+            "Password must be at least 6 characters".into(),
+        ));
+    }
+
+    // Cheap refusal before the expensive hash; `users::register` re-checks under its lock.
+    if users::count(&state.pool).await? > 0 && !users::registration_open(&state.pool).await? {
+        return Err(ApiError::Forbidden("Registration is closed"));
+    }
+
+    let password = body.password;
+    let permit = state.password_permit().await?;
+    let hash = tokio::task::spawn_blocking(move || {
+        // Released when the hash ends, even if the client hung up and the handler was dropped.
+        let _permit = permit;
+        hash_password(&password)
+    })
+    .await
+    .map_err(anyhow::Error::from)?;
+
+    match users::register(&state.pool, Uuid::now_v7(), &username, &hash).await? {
+        Registration::Closed => Err(ApiError::Forbidden("Registration is closed")),
+        Registration::UsernameTaken => Err(ApiError::BadRequest("Username already taken".into())),
+        Registration::Created(user) => {
+            let token = state.jwt.issue_access(
+                user.account(),
+                user.main_profile(),
+                &user.username,
+                &user.role,
+                user.token_version,
+            );
+            let profile =
+                crate::routes::auth::load_profile(&state, user.account(), user.main_profile())
+                    .await?;
+            Ok(Json(RegisterResponse {
+                token,
+                user: UserSummary {
+                    id: user.id,
+                    username: user.username,
+                    role: user.role,
+                    onboarding_complete: false,
+                },
+                profile: Some(profile),
+            }))
+        }
+    }
+}
+
+/// The integration steps' common field; the url/apiKey or username/password fields are
+/// accepted and ignored until the integrations exist (D-025).
+#[derive(Deserialize)]
+struct IntegrationStep {
+    enabled: bool,
+}
+
+/// Stub for an integration step: "disabled" succeeds as upstream does; enabling one is refused.
+fn integration_step(step: &IntegrationStep, name: &str) -> Result<Json<Value>, ApiError> {
+    if step.enabled {
+        return Err(ApiError::BadRequest(format!(
+            "{name} integration is not available yet"
+        )));
+    }
+    Ok(Json(json!({ "success": true, "tested": false })))
+}
+
+async fn lidarr(
+    _admin: AdminUser,
+    ApiJson(step): ApiJson<IntegrationStep>,
+) -> Result<Json<Value>, ApiError> {
+    integration_step(&step, "Lidarr")
+}
+
+async fn audiobookshelf(
+    _admin: AdminUser,
+    ApiJson(step): ApiJson<IntegrationStep>,
+) -> Result<Json<Value>, ApiError> {
+    integration_step(&step, "Audiobookshelf")
+}
+
+async fn soulseek(
+    _admin: AdminUser,
+    ApiJson(step): ApiJson<IntegrationStep>,
+) -> Result<Json<Value>, ApiError> {
+    integration_step(&step, "Soulseek")
+}
+
+async fn complete(State(state): State<AppState>, user: AuthUser) -> Result<Json<Value>, ApiError> {
+    users::set_onboarding_complete(&state.pool, user.account.into_uuid()).await?;
+    Ok(Json(json!({ "success": true })))
+}

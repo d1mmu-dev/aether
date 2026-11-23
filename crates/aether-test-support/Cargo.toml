@@ -1,0 +1,18 @@
+[package]
+name = "aether-test-support"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Shared test helpers; only ever a dev-dependency."
+
+[features]
+# Seeds accounts and profiles in the database (M-PROF Task 9); pulls in aether-db.
+profiles = ["dep:aether-core", "dep:aether-db", "dep:uuid"]
+
+[dependencies]
+lofty.workspace = true
+aether-core = { workspace = true, optional = true }
+aether-db = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }

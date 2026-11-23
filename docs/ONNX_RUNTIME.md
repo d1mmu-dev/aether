@@ -47,8 +47,8 @@ From the repository, with the wheel already present and a new destination:
 ```sh
 python scripts/provision-ort.py /approved/path/onnxruntime-1.22.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl /approved/path/ort-1.22.0
 export ORT_DYLIB_PATH=/approved/path/ort-1.22.0/libonnxruntime.so.1.22.0
-cargo test --offline --locked -p kima-ml
-cargo clippy --offline --locked -p kima-ml --all-targets -- -D warnings
+cargo test --offline --locked -p aether-ml
+cargo clippy --offline --locked -p aether-ml --all-targets -- -D warnings
 ```
 
 The provisioning script never accesses the network, checks both digests before
@@ -86,9 +86,9 @@ populated Cargo cache/vendor directory for `--offline`.
 
 CI explicitly acquires the pinned wheel with `scripts/acquire-ort.sh`, then
 runs the network-free `provision-ort.py` integrity checks. The root-owned
-`/opt/kima/ort` directory retains LICENSE and ThirdPartyNotices.txt, removes
+`/opt/aether/ort` directory retains LICENSE and ThirdPartyNotices.txt, removes
 write permissions, and is outside model/data volumes. The Rust job sets
-`ORT_DYLIB_PATH=/opt/kima/ort/libonnxruntime.so.1.22.0` before tests. This is an
+`ORT_DYLIB_PATH=/opt/aether/ort/libonnxruntime.so.1.22.0` before tests. This is an
 explicit build-time TLS acquisition, not an offline acquisition claim. Hosted
 CI has not been run for this local, unpushed change.
 
@@ -103,27 +103,27 @@ No production model is downloaded or packaged.
 
 Local verification built the complete, unchanged frontend pipeline (`npm ci`,
 `npm run build`), Rust server, and final image with the legacy Docker builder
-(`DOCKER_BUILDKIT=0 docker build -t kima-m4-ort:review .`). Buildx was unavailable.
-The server does not yet depend on kima-ml, so server startup alone would not
+(`DOCKER_BUILDKIT=0 docker build -t aether-m4-ort:review .`). Buildx was unavailable.
+The server does not yet depend on aether-ml, so server startup alone would not
 exercise ORT. Instead, the matching backend-stage image built the existing
 `onnx_session`, `onnx_runtime`, and `onnx_resources` integration test binaries:
 
 ```sh
 # BACKEND_IMAGE is the image ID printed immediately before the final FROM.
-docker run --name kima-m4-ort-test-build --entrypoint sh "$BACKEND_IMAGE" -c '
-  cargo test --locked --release -p kima-ml --test onnx_session --test onnx_runtime --test onnx_resources --no-run &&
+docker run --name aether-m4-ort-test-build --entrypoint sh "$BACKEND_IMAGE" -c '
+  cargo test --locked --release -p aether-ml --test onnx_session --test onnx_runtime --test onnx_resources --no-run &&
   mkdir /ort-tests &&
   for name in onnx_session onnx_runtime onnx_resources; do
     for f in target/release/deps/$name-*; do
       if [ -x "$f" ] && [ ! -d "$f" ]; then cp "$f" /ort-tests/$name; fi
     done
   done'
-docker cp kima-m4-ort-test-build:/ort-tests /approved/test-output/
-sh scripts/check-ort-image.sh kima-m4-ort:review /approved/test-output/ort-tests
+docker cp aether-m4-ort-test-build:/ort-tests /approved/test-output/
+sh scripts/check-ort-image.sh aether-m4-ort:review /approved/test-output/ort-tests
 ```
 
 The final-image check mounts those test-only binaries read-only into the
-**unmodified final image**, as user kima, with network disabled, read-only root,
+**unmodified final image**, as user aether, with network disabled, read-only root,
 a temporary /tmp, 512 MiB memory, 2 CPUs and 64 PIDs. It verifies native library
 SHA-256, root ownership/non-writability of the runtime path and its parents,
 notices and loader dependencies. All 13 integration tests passed, including

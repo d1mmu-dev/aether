@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prepares the EXTERNAL upstream kima-hub checkout as the visual/functional reference for kima-web comparisons.
+# Prepares the EXTERNAL upstream kima-hub checkout as the visual/functional reference for aether-web comparisons.
 # The repository no longer bundles the Next.js app (owner decision 2026-11-18, docs/DIVERGENCES.md D-180): every
 # comparison reads an external, freshly pulled kima-hub checkout and builds only an isolated copy of it.
 #
@@ -23,22 +23,22 @@
 # `node_modules/` and `.next/` excluded) is compared with the existing copy's. An identical copy is kept as it is
 # (node_modules and .next included); any difference (another SHA, a file edited, added or removed in the copy)
 # replaces the copy with the fresh extraction, keeping only its node_modules (.next, a build cache of the old
-# content, is dropped). Nothing is ever written into the checkout. KIMA_REFERENCE_COPY_RESTORED reports `new`, `no`
+# content, is dropped). Nothing is ever written into the checkout. AETHER_REFERENCE_COPY_RESTORED reports `new`, `no`
 # (verified identical) or `yes` (replaced); a caller serving the copy restarts its server on `yes` and whenever the
-# SHA, the manifest or the copy path changes (tools/run-kima-web-visual.sh does).
+# SHA, the manifest or the copy path changes (tools/run-aether-web-visual.sh does).
 #
-# Environment, or KEY=VALUE lines in the private config file (default ${XDG_CONFIG_HOME:-~/.config}/kima-rs/tools.env,
-# override with KIMA_RS_TOOLS_ENV; it is never part of the repository):
-#   KIMA_HUB_REFERENCE   path of the external kima-hub git checkout (required)
-#   KIMA_REFERENCE_COPY  isolated copy (default ${XDG_CACHE_HOME:-~/.cache}/kima-rs/kima-hub-reference)
-# Output (stdout, sourceable): the KIMA_HUB_REFERENCE_* provenance; with a copy also KIMA_REFERENCE_MANIFEST,
-# KIMA_REFERENCE_COPY_RESTORED and KIMA_REFERENCE_FRONTEND (the copy's frontend/ directory). The copy carries the
+# Environment, or KEY=VALUE lines in the private config file (default ${XDG_CONFIG_HOME:-~/.config}/aether/tools.env,
+# override with AETHER_TOOLS_ENV; it is never part of the repository):
+#   AETHER_UPSTREAM_REFERENCE   path of the external kima-hub git checkout (required)
+#   AETHER_REFERENCE_COPY  isolated copy (default ${XDG_CACHE_HOME:-~/.cache}/aether/kima-hub-reference)
+# Output (stdout, sourceable): the AETHER_UPSTREAM_REFERENCE_* provenance; with a copy also AETHER_REFERENCE_MANIFEST,
+# AETHER_REFERENCE_COPY_RESTORED and AETHER_REFERENCE_FRONTEND (the copy's frontend/ directory). The copy carries the
 # same lines in REFERENCE.env.
 set -euo pipefail
 
 # The upstream commit the ported backend, model hashes and compatibility fixtures are pinned to. The reference UI
 # follows the latest upstream; this pin is NOT moved by a pull. This script reports only the commit distance
-# (KIMA_HUB_REFERENCE_RELATION); docs/DIVERGENCES.md D-180 lists what else checks drift.
+# (AETHER_UPSTREAM_REFERENCE_RELATION); docs/DIVERGENCES.md D-180 lists what else checks drift.
 PIN=c7527577d925b20f5adf410c7fd4e0c8ac250f69
 CANONICAL_BRANCH=main
 canonical_url() {
@@ -66,10 +66,10 @@ for arg in "$@"; do
   esac
 done
 
-ref="${KIMA_HUB_REFERENCE:-}"
-[ -n "$ref" ] || { echo "KIMA_HUB_REFERENCE is not set (environment or $KIMA_RS_TOOLS_ENV)" >&2; exit 2; }
-git -C "$ref" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "not a git work tree: KIMA_HUB_REFERENCE" >&2; exit 2; }
-[ -f "$ref/frontend/package.json" ] || { echo "KIMA_HUB_REFERENCE has no frontend/package.json" >&2; exit 2; }
+ref="${AETHER_UPSTREAM_REFERENCE:-}"
+[ -n "$ref" ] || { echo "AETHER_UPSTREAM_REFERENCE is not set (environment or $AETHER_TOOLS_ENV)" >&2; exit 2; }
+git -C "$ref" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "not a git work tree: AETHER_UPSTREAM_REFERENCE" >&2; exit 2; }
+[ -f "$ref/frontend/package.json" ] || { echo "AETHER_UPSTREAM_REFERENCE has no frontend/package.json" >&2; exit 2; }
 
 dirty="$(git -C "$ref" status --porcelain)"
 if [ -n "$dirty" ]; then
@@ -109,28 +109,28 @@ if git -C "$ref" merge-base --is-ancestor "$PIN" "$sha" 2>/dev/null; then
 else
   relation="not-descendant-of-pin"
 fi
-provenance="KIMA_HUB_REFERENCE_SHA=$sha
-KIMA_HUB_REFERENCE_DESCRIBE=$describe
-KIMA_HUB_REFERENCE_REMOTE=$remote
-KIMA_HUB_REFERENCE_REMOTE_URL=$remote_url
-KIMA_HUB_REFERENCE_BRANCH=$branch
-KIMA_HUB_REFERENCE_UPSTREAM=$upstream
-KIMA_HUB_REFERENCE_PULLED=$pulled
-KIMA_HUB_REFERENCE_PIN=$PIN
-KIMA_HUB_REFERENCE_RELATION=$relation
-KIMA_HUB_REFERENCE_TREE=$tree
-KIMA_HUB_REFERENCE_CHECKED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+provenance="AETHER_UPSTREAM_REFERENCE_SHA=$sha
+AETHER_UPSTREAM_REFERENCE_DESCRIBE=$describe
+AETHER_UPSTREAM_REFERENCE_REMOTE=$remote
+AETHER_UPSTREAM_REFERENCE_REMOTE_URL=$remote_url
+AETHER_UPSTREAM_REFERENCE_BRANCH=$branch
+AETHER_UPSTREAM_REFERENCE_UPSTREAM=$upstream
+AETHER_UPSTREAM_REFERENCE_PULLED=$pulled
+AETHER_UPSTREAM_REFERENCE_PIN=$PIN
+AETHER_UPSTREAM_REFERENCE_RELATION=$relation
+AETHER_UPSTREAM_REFERENCE_TREE=$tree
+AETHER_UPSTREAM_REFERENCE_CHECKED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "reference $describe ($sha) from $remote_url $upstream, $relation, pulled=$pulled" >&2
 if [ "$copy" = 0 ]; then echo "$provenance"; exit 0; fi
 
-dest="${KIMA_REFERENCE_COPY:-${XDG_CACHE_HOME:-$HOME/.cache}/kima-rs/kima-hub-reference}"
+dest="${AETHER_REFERENCE_COPY:-${XDG_CACHE_HOME:-$HOME/.cache}/aether/kima-hub-reference}"
 dest="$(realpath -m -- "$dest")"
 case "$dest/" in
-  "$(realpath -- "$ref")/"*) echo "KIMA_REFERENCE_COPY must not be inside the reference checkout" >&2; exit 2 ;;
+  "$(realpath -- "$ref")/"*) echo "AETHER_REFERENCE_COPY must not be inside the reference checkout" >&2; exit 2 ;;
 esac
 # Only a directory this script made (it has REFERENCE.env) or an absent/empty one is ever replaced.
 if [ -e "$dest" ] && [ ! -f "$dest/REFERENCE.env" ] && [ -n "$(ls -A -- "$dest")" ]; then
-  echo "KIMA_REFERENCE_COPY exists and is not a reference copy; refusing to replace it" >&2; exit 2
+  echo "AETHER_REFERENCE_COPY exists and is not a reference copy; refusing to replace it" >&2; exit 2
 fi
 
 # Content manifest of a frontend/ tree (see the header); the top-level node_modules/ and .next/ are excluded.
@@ -164,16 +164,16 @@ fi
 [ "$(manifest "$dest/frontend")" = "$fresh" ] || { echo "the reference copy does not match $sha:frontend after extraction" >&2; exit 6; }
 [ "$restored" = yes ] && echo "the reference copy differed from $sha:frontend and was re-extracted (node_modules kept)" >&2
 provenance="$provenance
-KIMA_REFERENCE_MANIFEST=$fresh
-KIMA_REFERENCE_COPY_RESTORED=$restored"
+AETHER_REFERENCE_MANIFEST=$fresh
+AETHER_REFERENCE_COPY_RESTORED=$restored"
 printf '%s\n' "$provenance" >"$dest/REFERENCE.env"
 if [ "$install" = 1 ]; then
   # Reinstall whenever the lockfile differs from the one node_modules was installed from.
   lock="$(sha256sum "$dest/frontend/package-lock.json" | cut -d' ' -f1)"
-  if [ "$(cat "$dest/frontend/node_modules/.kima-reference-lock.sha256" 2>/dev/null)" != "$lock" ]; then
+  if [ "$(cat "$dest/frontend/node_modules/.aether-reference-lock.sha256" 2>/dev/null)" != "$lock" ]; then
     (cd "$dest/frontend" && npm ci --no-audit --no-fund >&2)
-    printf '%s\n' "$lock" >"$dest/frontend/node_modules/.kima-reference-lock.sha256"
+    printf '%s\n' "$lock" >"$dest/frontend/node_modules/.aether-reference-lock.sha256"
   fi
 fi
 echo "$provenance"
-echo "KIMA_REFERENCE_FRONTEND=$dest/frontend"
+echo "AETHER_REFERENCE_FRONTEND=$dest/frontend"

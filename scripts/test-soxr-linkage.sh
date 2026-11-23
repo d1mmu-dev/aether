@@ -25,9 +25,9 @@ if check "$work/prefix"; then echo 'FAIL real unresolved gomp accepted' >&2; exi
 echo 'PASS real missing gomp rejected'
 # A real unresolved transitive dependency must fail even if soxr/gomp resolve.
 printf 'int missing_probe(void) { return 0; }\n' > "$work/missing.c"
-cc -shared -fPIC -Wl,-soname,libkima_missing.so.1 "$work/missing.c" -o "$work/prefix/lib/libkima_missing.so.1"
-cc -shared -fPIC -Wl,-soname,libsoxr.so.0 -Wl,--no-as-needed -lgomp -L"$work/prefix/lib" -l:libkima_missing.so.1 "$work/soxr.c" -o "$work/prefix/lib/libsoxr.so.0"
-mv "$work/prefix/lib/libkima_missing.so.1" "$work/hidden.so"
+cc -shared -fPIC -Wl,-soname,libaether_missing.so.1 "$work/missing.c" -o "$work/prefix/lib/libaether_missing.so.1"
+cc -shared -fPIC -Wl,-soname,libsoxr.so.0 -Wl,--no-as-needed -lgomp -L"$work/prefix/lib" -l:libaether_missing.so.1 "$work/soxr.c" -o "$work/prefix/lib/libsoxr.so.0"
+mv "$work/prefix/lib/libaether_missing.so.1" "$work/hidden.so"
 if check "$work/prefix"; then echo 'FAIL unresolved transitive dependency accepted' >&2; exit 1; fi
 echo 'PASS real missing transitive dependency rejected'
 # The system gomp cannot safely be removed: supply exact loader diagnostics.

@@ -1,0 +1,49 @@
+[package]
+name = "aether-server"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "aether"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+form_urlencoded.workspace = true
+futures.workspace = true
+aether-api.workspace = true
+aether-core.workspace = true
+aether-db.workspace = true
+aether-ident.workspace = true
+aether-mixes.workspace = true
+aether-ml.workspace = true
+aether-jobs.workspace = true
+aether-library.workspace = true
+aether-net.workspace = true
+aether-podcast.workspace = true
+aether-subsonic.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+sqlx.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+vertigo-cli.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+axum-test.workspace = true
+aether-net = { workspace = true, features = ["testing"] }
+aether-test-support.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
+time = { workspace = true, features = ["macros"] }
