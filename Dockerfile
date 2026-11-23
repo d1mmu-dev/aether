@@ -15,12 +15,12 @@ COPY scripts/build-soxr.sh /src/scripts/build-soxr.sh
 COPY native/soxr /src/native/soxr
 RUN sh /src/scripts/build-soxr.sh /opt/aether/soxr
 
-# Toolchain for `vertigo build`: vertigo-cli (same version as the `vertigo` crate, =0.13.4 in
+# Toolchain for `vertigo build`: vertigo-cli (same version as the `vertigo` crate, =0.14.5 in
 # crates/aether-web/Cargo.toml) and wasm-opt from a binaryen release (bookworm's apt binaryen is too old).
 FROM rust:1-bookworm AS web-toolchain
 ARG BINARYEN_VERSION=133
 RUN rustup target add wasm32-unknown-unknown \
- && cargo install vertigo-cli --version 0.13.4 --locked \
+ && cargo install vertigo-cli --version 0.14.5 --locked \
  && case "$(uname -m)" in x86_64) arch=x86_64 ;; aarch64) arch=aarch64 ;; *) echo "unsupported arch" >&2; exit 1 ;; esac \
  && curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/version_${BINARYEN_VERSION}/binaryen-version_${BINARYEN_VERSION}-${arch}-linux.tar.gz" \
     | tar xz -C /opt \

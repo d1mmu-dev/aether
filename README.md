@@ -280,7 +280,7 @@ M6a's jobs; audiobooks and the stream's CORS headers wait for M6b.
 
 ## Local development
 
-Requirements: Rust 1.85+ with the `wasm32-unknown-unknown` target, `vertigo-cli` 0.13.4 and `wasm-opt` (for
+Requirements: Rust 1.97+ with the `wasm32-unknown-unknown` target, `vertigo-cli` 0.14.5 and `wasm-opt` (for
 `aether-web`, see [`crates/aether-web/README.md`](crates/aether-web/README.md)), Docker (for the dev database). Node.js is
 needed only for the stale-CSS check and the visual comparison tooling, never to run or build the product. Building or testing `aether-ml` (and `aether-ident`, which links it) needs libsoxr development files (Debian/Ubuntu: `libsoxr-dev`; Arch: `soxr`).
 

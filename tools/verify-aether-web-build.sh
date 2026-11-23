@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Asserts `vertigo build` in crates/aether-web produces build/index.json (the manifest `vertigo serve` renders
-# index.html from), a hashed .wasm and a hashed wasm_run.<hash>.js. (vertigo 0.13 writes no static index.html or
+# index.html from), a hashed .wasm and a hashed wasm_run.<hash>.js. (vertigo 0.13+ writes no static index.html or
 # unhashed wasm_run.js; the plan's original artifact list was written against an older layout.)
 # VERTIGO overrides the CLI (default: `vertigo` on PATH); its version should match the vertigo crate.
 set -euo pipefail

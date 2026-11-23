@@ -78,7 +78,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 unicode-normalization = "0.1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
-vertigo-cli = "=0.13.4"
+vertigo-cli = "=0.14.5"
 walkdir = "2.5"
 
 # argon2 is unbearably slow unoptimised; tests hash passwords.

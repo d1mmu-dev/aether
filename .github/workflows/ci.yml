@@ -167,7 +167,7 @@ jobs:
         run: |
           tools/install-aether-web-css-deps.sh "$RUNNER_TEMP/tailwind"
           AETHER_CSS_DEPS="$RUNNER_TEMP/tailwind" node tools/gen-aether-web-css.mjs --check
-      - run: cargo install vertigo-cli --version 0.13.4 --locked
+      - run: cargo install vertigo-cli --version 0.14.5 --locked
       - run: tools/verify-aether-web-build.sh
       # The embedded SSR tests render the real build; a missing build is a failure here, not a skip.
       - run: AETHER_WEB_REQUIRE_BUILD=1 cargo test -p aether-server --test web_ssr_embed

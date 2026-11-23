@@ -22,7 +22,7 @@
 #   AETHER_DATA_DIR      aether-server state (secrets, caches). Default: $HOME/.local/share/aether-web-dev
 #   AETHER_PORT          aether-server port (default 3030)        WEB_PORT   dev server port (default 4444)
 #   SSR_PORT           loopback port of the embedded SSR server in --ssr mode (default 3031)
-#   VERTIGO            vertigo CLI (0.13.4, default: `vertigo` on PATH)
+#   VERTIGO            vertigo CLI (0.14.5, default: `vertigo` on PATH)
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"

@@ -81,8 +81,13 @@ impl WebSsr {
                 wasm_preload: false,
                 disable_hydration: false,
                 ssr_fetch_base: Some(fetch_base),
+                // vertigo-cli 0.14 options, kept at the 0.13 behaviour: no SSR-readable cookies, every
+                // cookie on SSR fetches, responses compressed per request rather than at startup.
+                ssr_cookie: vec![],
+                ssr_fetch_cookie: vec![],
                 pretty_html: false,
                 disable_compression: false,
+                precompress: false,
                 threads: Some(2),
             },
             common: CommonOpts {

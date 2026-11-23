@@ -4,7 +4,8 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
-rust-version.workspace = true
+# Not rust-version.workspace: the embedded SSR links vertigo-cli 0.14.5, whose wasmtime 50 needs Rust 1.97.
+rust-version = "1.97"
 
 [[bin]]
 name = "aether"

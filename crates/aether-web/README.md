@@ -17,19 +17,21 @@ The Docker image builds aether-web with `vertigo build aether-web --dest-dir /sr
 (`rustup target add wasm32-unknown-unknown`). The plan named vertigo 0.6.3 and a nightly requirement; both
 turned out stale: `vertigo-macro` 0.6.x/0.6.4 fails on current nightly (`Span::source_file` was removed from
 `proc_macro`) and `vertigo-cli` < 0.12 has no library target, which the in-process SSR design (spec §3) needs.
-vertigo/vertigo-macro/vertigo-cli **0.13.4** build for `wasm32-unknown-unknown` on both stable and
-nightly (verified with a scratch crate on `cargo +stable` and the default nightly 1.96), so no nightly is
-required and the workspace toolchain is not changed. `vertigo build` needs `wasm-opt` (binaryen) on `PATH`:
+vertigo/vertigo-macro/vertigo-cli **0.14.5** (upgraded from 0.13.4): `aether-web` builds for
+`wasm32-unknown-unknown` on stable and nightly (verified on the local nightly 1.96 and stable 1.100), so no nightly
+is required. The embedded SSR in `aether-server` links `vertigo-cli` 0.14.5, whose wasmtime 50 needs Rust 1.97+
+(`aether-server`'s `rust-version`; the rest of the workspace keeps 1.85). `vertigo build` needs `wasm-opt` (binaryen) on `PATH`:
 Arch `pacman -S binaryen`, or without root download a release from
 <https://github.com/WebAssembly/binaryen/releases> and put `bin/wasm-opt` on `PATH`. Check the whole setup with
 `tools/verify-wasm-toolchain.sh`. Install the CLI matching the library version:
-`cargo install vertigo-cli --version 0.13.4 --locked`.
+`cargo install vertigo-cli --version 0.14.5 --locked`.
 
 **Build.** `tools/verify-aether-web-build.sh` runs `vertigo build` in this crate and checks the output in `build/`
 (gitignored): `index.json` (manifest; `vertigo serve` renders the HTML from it), a hashed `aether_web.<hash>.wasm`
-and a hashed `wasm_run.<hash>.js`. vertigo 0.13 writes no static `index.html` and no unhashed `wasm_run.js`.
+and a hashed `wasm_run.<hash>.js`, plus brotli copies (`*.br`, vertigo-cli 0.14.5; `--precompress false` skips them).
+vertigo writes no static `index.html` and no unhashed `wasm_run.js`.
 Set `VERTIGO=/path/to/vertigo` to pick a CLI that is not first on `PATH`; keep it at the same version as the
-`vertigo` crate (`=0.13.4` in `Cargo.toml`).
+`vertigo` crate (`=0.14.5` in `Cargo.toml`).
 
 ## Aether brand and Midnight Slate theme (D-284)
 
@@ -93,7 +95,7 @@ next rebrand stage (`docs/superpowers/plans/2026-11-23-aether-rebrand.md`).
 `vertigo build` shells out to `rustup` and `wasm-opt`, so both must be on `PATH`.
 
 ```sh
-MUSIC_PATH=$HOME/Music VERTIGO=~/.local/opt/vertigo-cli-0.13.4/bin/vertigo tools/run-aether-web-dev.sh
+MUSIC_PATH=$HOME/Music VERTIGO=~/.local/opt/vertigo-cli-0.14.5/bin/vertigo tools/run-aether-web-dev.sh
 # then open http://127.0.0.1:4444
 ```
 
@@ -147,7 +149,7 @@ bind included) or just returns without a shutdown having been requested, `aether
 the API up while `aether-web` answers 5xx. Tests: `a_panicking_ssr_task_...`, `a_failing_ssr_task_...`,
 `an_ssr_task_that_just_returns_...`, `the_process_exits_non_zero_when_the_ssr_server_cannot_start` (real binary).
 
-**Try it.** `MUSIC_PATH=$HOME/Music VERTIGO=~/.local/opt/vertigo-cli-0.13.4/bin/vertigo
+**Try it.** `MUSIC_PATH=$HOME/Music VERTIGO=~/.local/opt/vertigo-cli-0.14.5/bin/vertigo
 tools/run-aether-web-dev.sh --ssr` builds aether-web, starts `aether-server` with the embedded SSR and serves
 <http://127.0.0.1:3030/> (single origin; no vertigo dev server; `SSR_PORT` picks the loopback port). Check it
 with `curl -s http://127.0.0.1:3030/login` (the sign-in form is in the markup) and

@@ -17,7 +17,7 @@
 # copy's content manifest changes, or when the copy had been modified and was restored. compare refuses to run
 # without that provenance and writes it (SHA, remote URL, branch, pulled, relation, tree, manifest) into report.json.
 # Needs: cargo, node/npm (reference copy only), docker (pgvector/pgvector:pg17 on a random 127.0.0.1 port),
-# ffmpeg, vertigo 0.13.4 (+ wasm-opt), Chrome.
+# ffmpeg, vertigo 0.14.5 (+ wasm-opt), Chrome.
 # Environment, or the private tools config (tools/tools-env.inc.sh): AETHER_UPSTREAM_REFERENCE (required),
 # AETHER_REFERENCE_COPY, VISUAL_DIR (default ${XDG_CACHE_HOME:-~/.cache}/aether/visual), VERTIGO (default
 # `vertigo` on PATH), FFMPEG (default `ffmpeg` on PATH), AETHER_TOOLS_PATH (prepended to PATH), CHROME.
