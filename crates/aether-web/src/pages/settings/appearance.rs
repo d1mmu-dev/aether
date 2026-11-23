@@ -1,15 +1,17 @@
 //! Settings -> Appearance & language: the language and theme selectors (localization/themes plan, task 5).
 //! A choice applies at once (reactive `<html lang>` / `data-theme`), with no reload and no player change,
-//! and is saved to the signed-in profile (D-287); a failed save is undone and reported.
+//! and is saved to the signed-in profile (D-287); a failed save is undone and reported. The selectors are
+//! disabled while the profile's settings load and while a save is pending (one change at a time).
 
 use aether_api_types::settings::{AppearancePatch, UserSettings};
 use vertigo::{DomNode, bind, dom, get_driver};
 
 use crate::i18n::{Locale, Msg};
+use crate::prefs::Change;
 use crate::theme::Theme;
-use crate::ui::Ctx;
+use crate::ui::{Ctx, flag};
 
-const CHOICE: &str = "inline-flex items-center gap-2 rounded-lg border border-white/20 px-3 py-2 text-sm text-white hover:bg-white/10 aria-pressed:bg-brand/20 aria-pressed:border-brand";
+const CHOICE: &str = "disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2 rounded-lg border border-white/20 px-3 py-2 text-sm text-white hover:bg-white/10 aria-pressed:bg-brand/20 aria-pressed:border-brand";
 
 fn locale_button(ctx: &Ctx, locale: Locale) -> DomNode {
     let pressed = ctx
@@ -18,13 +20,15 @@ fn locale_button(ctx: &Ctx, locale: Locale) -> DomNode {
         .to_computed()
         .map(move |l| (l == locale).to_string());
     let on_click = bind!(ctx, |_| {
-        if let Some(ticket) = ctx.prefs.set_locale(locale) {
+        // Refused (`Busy`) while the profile's settings load or another save is pending.
+        if let Change::Save(ticket) = ctx.prefs.set_locale(locale) {
             let body = AppearancePatch {
                 ui_locale: Some(locale.id().to_owned()),
                 ..AppearancePatch::default()
             };
             get_driver().spawn(bind!(ctx, async move {
-                if save(&ctx, &body).await.is_err() && ctx.prefs.rollback_locale(ticket) {
+                let saved = save(&ctx, &body).await.is_ok();
+                if ctx.prefs.finish_locale(ticket, saved) {
                     ctx.notify(
                         Msg::AppearanceSaveFailed
                             .text(vertigo::transaction(|c| ctx.prefs.locale.get(c))),
@@ -36,7 +40,7 @@ fn locale_button(ctx: &Ctx, locale: Locale) -> DomNode {
     // Native names keep their own case; the body is lowercased by the base stylesheet.
     dom! {
         <button type="button" class={CHOICE} style="text-transform: none" lang={locale.id()}
-            data-locale={locale.id()} aria-pressed={pressed} on_click={on_click}>{locale.native_name()}</button>
+            data-locale={locale.id()} aria-pressed={pressed} disabled={flag(ctx.prefs.busy())} on_click={on_click}>{locale.native_name()}</button>
     }
 }
 
@@ -47,13 +51,15 @@ fn theme_button(ctx: &Ctx, theme: Theme) -> DomNode {
         .to_computed()
         .map(move |t| (t == theme).to_string());
     let on_click = bind!(ctx, |_| {
-        if let Some(ticket) = ctx.prefs.set_theme(theme) {
+        // Refused (`Busy`) while the profile's settings load or another save is pending.
+        if let Change::Save(ticket) = ctx.prefs.set_theme(theme) {
             let body = AppearancePatch {
                 ui_theme: Some(theme.id().to_owned()),
                 ..AppearancePatch::default()
             };
             get_driver().spawn(bind!(ctx, async move {
-                if save(&ctx, &body).await.is_err() && ctx.prefs.rollback_theme(ticket) {
+                let saved = save(&ctx, &body).await.is_ok();
+                if ctx.prefs.finish_theme(ticket, saved) {
                     ctx.notify(
                         Msg::AppearanceSaveFailed
                             .text(vertigo::transaction(|c| ctx.prefs.locale.get(c))),
@@ -67,7 +73,7 @@ fn theme_button(ctx: &Ctx, theme: Theme) -> DomNode {
         "display:inline-block;width:2.25rem;height:1.25rem;border-radius:0.375rem;border:1px solid {text};background:linear-gradient(90deg,{ground} 0 50%,{accent} 50% 100%)"
     );
     dom! {
-        <button type="button" class={CHOICE} data-theme-choice={theme.id()} aria-pressed={pressed} on_click={on_click}>
+        <button type="button" class={CHOICE} data-theme-choice={theme.id()} aria-pressed={pressed} disabled={flag(ctx.prefs.busy())} on_click={on_click}>
             <span aria-hidden="true" style={swatch}></span>
             <span>{theme.name()}</span>
         </button>

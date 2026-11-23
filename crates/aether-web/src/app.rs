@@ -62,18 +62,24 @@ pub fn render() -> DomNode {
                     if token.is_none() {
                         return;
                     }
-                    if let Ok(s) = ctx
+                    match ctx
                         .client
                         .get::<aether_api_types::settings::UserSettings>("/api/settings")
                         .await
                     {
-                        ctx.prefs.apply_profile(
-                            generation,
-                            s.ui_locale.as_deref(),
-                            s.ui_theme.as_deref(),
-                        );
+                        Ok(s) => {
+                            ctx.prefs.apply_profile(
+                                generation,
+                                s.ui_locale.as_deref(),
+                                s.ui_theme.as_deref(),
+                            );
+                        }
+                        // A failed read keeps the device/browser fallback and unlocks the selectors;
+                        // a 401 already signs out.
+                        Err(_) => {
+                            ctx.prefs.load_failed(generation);
+                        }
                     }
-                    // A failed read keeps the device/browser fallback; a 401 already signs out.
                 }));
             }));
         // The root lives as long as the page; keep its subscription for that long.

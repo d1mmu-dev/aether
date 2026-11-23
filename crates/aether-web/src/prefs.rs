@@ -13,6 +13,11 @@
 //! choice is not changed, so another profile or the login screen never inherits it); a failed save rolls
 //! the choice back. SSR has no session or storage and always renders the deterministic default.
 //!
+//! Profile changes are serialized: while the profile's settings load or a save is pending, a new choice is
+//! refused ([`Change::Busy`], the selectors are disabled) and only the load of the current generation may
+//! apply the server's values. So the initial answer can never overwrite a newer choice and two saves can
+//! never reach the server out of order; a save or load of an older session never unlocks the new one.
+//!
 //! The values are reactive and bound to `<html lang>` / `<html data-theme>` and to translated text, so a
 //! change applies immediately without a reload and without touching the player.
 
@@ -35,12 +40,34 @@ struct ProfileChoice {
     theme: Option<Theme>,
 }
 
+/// Whether a profile choice can be made now (see the module notes on serialization).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Ready,
+    /// The signed-in profile's settings are loading.
+    Loading,
+    /// A profile save is pending.
+    Saving,
+}
+
 /// Identifies a pending profile save: its session generation and the choice it replaced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SaveTicket<T> {
     generation: u64,
+    save: u64,
     previous: Option<T>,
     chosen: T,
+}
+
+/// The outcome of a choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change<T> {
+    /// Signed out: applied and remembered on this device; nothing to save.
+    Device,
+    /// Signed in: applied; the caller saves it, then calls `finish_locale`/`finish_theme`.
+    Save(SaveTicket<T>),
+    /// Refused: the profile's settings are still loading or another save is pending.
+    Busy,
 }
 
 #[derive(Clone)]
@@ -52,6 +79,9 @@ pub struct Prefs {
     generation: Rc<Cell<u64>>,
     /// `Some` while a profile is signed in (its choices may still be loading).
     profile: Rc<RefCell<Option<ProfileChoice>>>,
+    phase: Value<Phase>,
+    /// Counts profile saves; only the pending one's ticket may finish it.
+    saves: Rc<Cell<u64>>,
 }
 
 impl Prefs {
@@ -65,6 +95,8 @@ impl Prefs {
             browser_tag,
             generation: Rc::new(Cell::new(0)),
             profile: Rc::new(RefCell::new(None)),
+            phase: Value::new(Phase::Ready),
+            saves: Rc::new(Cell::new(0)),
         };
         p.locale.set(p.fallback_locale());
         p.theme.set(p.fallback_theme());
@@ -115,8 +147,28 @@ impl Prefs {
         let generation = self.generation.get().wrapping_add(1);
         self.generation.set(generation);
         *self.profile.borrow_mut() = signed_in.then(ProfileChoice::default);
+        self.set_phase(if signed_in {
+            Phase::Loading
+        } else {
+            Phase::Ready
+        });
         self.apply();
         generation
+    }
+
+    fn phase(&self) -> Phase {
+        vertigo::transaction(|c| self.phase.get(c))
+    }
+
+    fn set_phase(&self, phase: Phase) {
+        if self.phase() != phase {
+            self.phase.set(phase);
+        }
+    }
+
+    /// True while a choice would be refused (settings loading or a save pending): disables the selectors.
+    pub fn busy(&self) -> Computed<bool> {
+        self.phase.to_computed().map(|p| p != Phase::Ready)
     }
 
     #[cfg(test)]
@@ -124,89 +176,113 @@ impl Prefs {
         self.generation.get()
     }
 
-    /// The signed-in profile's saved ids (from `/api/settings`). Ignored when `generation` is stale or
-    /// nobody is signed in; unknown ids count as "not chosen". Returns whether it was applied.
+    /// The signed-in profile's saved ids (from `/api/settings`), ending the load. Ignored unless it is the
+    /// load of the current generation (stale, signed out, a repeated answer); unknown ids count as "not
+    /// chosen". Returns whether it was applied.
     pub fn apply_profile(
         &self,
         generation: u64,
         locale: Option<&str>,
         theme: Option<&str>,
     ) -> bool {
-        if generation != self.generation.get() || self.profile.borrow().is_none() {
+        if !self.loading(generation) {
             return false;
         }
         *self.profile.borrow_mut() = Some(ProfileChoice {
             locale: locale.and_then(Locale::parse),
             theme: theme.and_then(Theme::parse),
         });
+        self.set_phase(Phase::Ready);
         self.apply();
         true
     }
 
-    /// Applies `locale` at once. Signed out it is the device choice (stored, nothing to send); signed in
-    /// it is the profile's and the caller must save it, then call [`Prefs::rollback_locale`] on failure.
-    pub fn set_locale(&self, locale: Locale) -> Option<SaveTicket<Locale>> {
-        let ticket = {
-            let mut profile = self.profile.borrow_mut();
-            match profile.as_mut() {
-                Some(choice) => {
-                    let previous = choice.locale.replace(locale);
-                    Some(SaveTicket {
-                        generation: self.generation.get(),
-                        previous,
-                        chosen: locale,
-                    })
-                }
-                None => {
-                    self.storage.set(LOCALE_KEY, locale.id());
-                    None
-                }
-            }
-        };
-        self.apply();
-        ticket
+    /// The profile's settings could not be read: keeps the fallback and unlocks the selectors, if this is
+    /// still the current generation's load. Returns whether it applied.
+    pub fn load_failed(&self, generation: u64) -> bool {
+        let current = self.loading(generation);
+        if current {
+            self.set_phase(Phase::Ready);
+        }
+        current
+    }
+
+    fn loading(&self, generation: u64) -> bool {
+        generation == self.generation.get()
+            && self.phase() == Phase::Loading
+            && self.profile.borrow().is_some()
+    }
+
+    /// Applies `locale` at once, unless [`Change::Busy`]. Signed out it is the device choice (stored,
+    /// nothing to send); signed in it is the profile's and the caller must save it, then call
+    /// [`Prefs::finish_locale`].
+    pub fn set_locale(&self, locale: Locale) -> Change<Locale> {
+        self.choose(locale, LOCALE_KEY, locale.id(), |c| &mut c.locale)
     }
 
     /// See [`Prefs::set_locale`].
-    pub fn set_theme(&self, theme: Theme) -> Option<SaveTicket<Theme>> {
-        let ticket = {
-            let mut profile = self.profile.borrow_mut();
-            match profile.as_mut() {
-                Some(choice) => {
-                    let previous = choice.theme.replace(theme);
-                    Some(SaveTicket {
-                        generation: self.generation.get(),
-                        previous,
-                        chosen: theme,
-                    })
-                }
-                None => {
-                    self.storage.set(THEME_KEY, theme.id());
-                    None
-                }
+    pub fn set_theme(&self, theme: Theme) -> Change<Theme> {
+        self.choose(theme, THEME_KEY, theme.id(), |c| &mut c.theme)
+    }
+
+    fn choose<T: Copy>(
+        &self,
+        value: T,
+        key: &str,
+        id: &str,
+        field: impl Fn(&mut ProfileChoice) -> &mut Option<T>,
+    ) -> Change<T> {
+        if self.phase() != Phase::Ready {
+            return Change::Busy;
+        }
+        let change = match self.profile.borrow_mut().as_mut() {
+            Some(choice) => Change::Save(SaveTicket {
+                generation: self.generation.get(),
+                save: {
+                    self.saves.set(self.saves.get().wrapping_add(1));
+                    self.saves.get()
+                },
+                previous: field(choice).replace(value),
+                chosen: value,
+            }),
+            None => {
+                self.storage.set(key, id);
+                Change::Device
             }
         };
+        if matches!(change, Change::Save(_)) {
+            self.set_phase(Phase::Saving);
+        }
         self.apply();
-        ticket
+        change
     }
 
-    /// A failed save: restores the replaced choice if the session and the choice are still the ones the
-    /// save was for (a newer choice or another profile is left alone). Returns whether it rolled back.
-    pub fn rollback_locale(&self, ticket: SaveTicket<Locale>) -> bool {
-        self.rollback(ticket, |c| &mut c.locale)
+    /// The save of `ticket` ended (`saved` or failed). In its own session it unlocks the selectors and, on
+    /// failure, restores the replaced choice; a save of an older session changes nothing. Returns whether
+    /// it rolled back (the caller reports the failure).
+    pub fn finish_locale(&self, ticket: SaveTicket<Locale>, saved: bool) -> bool {
+        self.finish(ticket, saved, |c| &mut c.locale)
     }
 
-    /// See [`Prefs::rollback_locale`].
-    pub fn rollback_theme(&self, ticket: SaveTicket<Theme>) -> bool {
-        self.rollback(ticket, |c| &mut c.theme)
+    /// See [`Prefs::finish_locale`].
+    pub fn finish_theme(&self, ticket: SaveTicket<Theme>, saved: bool) -> bool {
+        self.finish(ticket, saved, |c| &mut c.theme)
     }
 
-    fn rollback<T: Copy + PartialEq>(
+    fn finish<T: Copy + PartialEq>(
         &self,
         ticket: SaveTicket<T>,
+        saved: bool,
         field: impl Fn(&mut ProfileChoice) -> &mut Option<T>,
     ) -> bool {
-        if ticket.generation != self.generation.get() {
+        if ticket.generation != self.generation.get()
+            || ticket.save != self.saves.get()
+            || self.phase() != Phase::Saving
+        {
+            return false;
+        }
+        self.set_phase(Phase::Ready);
+        if saved {
             return false;
         }
         let rolled = match self.profile.borrow_mut().as_mut() {
@@ -362,49 +438,144 @@ mod tests {
         );
     }
 
+    fn ticket<T>(change: Change<T>) -> SaveTicket<T> {
+        match change {
+            Change::Save(ticket) => ticket,
+            _ => panic!("expected a profile save"),
+        }
+    }
+
+    fn busy(p: &Prefs) -> bool {
+        transaction(|c| p.busy().get(c))
+    }
+
+    /// Signed in with the profile's settings loaded (nothing chosen).
+    fn loaded(storage: Rc<MemoryStorage>) -> (Prefs, u64) {
+        let p = Prefs::new(storage, None);
+        let g = p.begin_session(true);
+        assert!(p.apply_profile(g, None, None));
+        (p, g)
+    }
+
     #[test]
     fn signed_in_choice_is_the_profiles_and_does_not_change_the_device() {
         let storage = device("en", "midnight-slate");
-        let p = Prefs::new(storage.clone(), None);
-        let g = p.begin_session(true);
-        p.apply_profile(g, None, None);
-        let ticket = p
-            .set_theme(Theme::Daylight)
-            .expect("signed in: the caller saves it");
+        let (p, _) = loaded(storage.clone());
+        let t = ticket(p.set_theme(Theme::Daylight));
         assert_eq!(theme(&p), Theme::Daylight, "applies at once");
         assert_eq!(storage.get(THEME_KEY).as_deref(), Some("midnight-slate"));
-        assert!(p.set_locale(Locale::Pl).is_some());
-        let _ = ticket;
-        // Signed out, a choice is the device's and needs no save.
+        assert!(!p.finish_theme(t, true));
+        assert!(matches!(p.set_locale(Locale::Pl), Change::Save(_)));
+        // Signed out, a choice is the device's and needs no save (and is never busy).
         p.begin_session(false);
-        assert!(p.set_locale(Locale::Pl).is_none());
+        assert!(!busy(&p));
+        assert_eq!(p.set_locale(Locale::Pl), Change::Device);
+        assert_eq!(p.set_theme(Theme::Graphite), Change::Device);
         assert_eq!(storage.get(LOCALE_KEY).as_deref(), Some("pl"));
     }
 
     #[test]
-    fn failed_save_rolls_back_only_its_own_choice_in_its_own_session() {
+    fn a_choice_waits_for_the_profiles_settings_so_the_answer_cannot_overwrite_it() {
+        let p = Prefs::new(device("en", "midnight-slate"), None);
+        let g = p.begin_session(true);
+        assert!(busy(&p), "selectors are disabled while the settings load");
+        // A click while GET /api/settings is held is refused, even from a caller ignoring `busy`.
+        assert_eq!(p.set_theme(Theme::Graphite), Change::Busy);
+        assert_eq!(p.set_locale(Locale::Pl), Change::Busy);
+        assert_eq!((locale(&p), theme(&p)), (Locale::En, Theme::MidnightSlate));
+        // The held answer is released: the profile's choice applies and the selectors unlock.
+        assert!(p.apply_profile(g, Some("pl"), Some("daylight")));
+        assert!(!busy(&p));
+        let t = ticket(p.set_theme(Theme::Graphite));
+        // A repeated/late answer of the same session can no longer overwrite the newer choice.
+        assert!(!p.apply_profile(g, Some("pl"), Some("daylight")));
+        assert_eq!(theme(&p), Theme::Graphite);
+        assert!(!p.finish_theme(t, true));
+        assert!(!p.apply_profile(g, Some("en"), Some("daylight")));
+        assert_eq!((locale(&p), theme(&p)), (Locale::Pl, Theme::Graphite));
+    }
+
+    #[test]
+    fn a_failed_settings_read_unlocks_only_its_own_session() {
+        let p = Prefs::new(Rc::new(MemoryStorage::default()), None);
+        let a = p.begin_session(true);
+        let b = p.begin_session(true);
+        assert!(
+            !p.load_failed(a),
+            "an old session's failure does not unlock the new load"
+        );
+        assert!(busy(&p));
+        assert!(p.load_failed(b));
+        assert!(!busy(&p));
+        assert!(!p.apply_profile(b, Some("pl"), None), "the load is over");
+        assert!(matches!(p.set_locale(Locale::Pl), Change::Save(_)));
+    }
+
+    #[test]
+    fn one_save_at_a_time_so_saves_cannot_reach_the_server_out_of_order() {
+        let (p, _) = loaded(Rc::new(MemoryStorage::default()));
+        let first = ticket(p.set_theme(Theme::Daylight));
+        assert!(busy(&p));
+        // Two more clicks while the POST is held: refused, nothing to send, the pending choice stays.
+        assert_eq!(p.set_theme(Theme::Graphite), Change::Busy);
+        assert_eq!(p.set_locale(Locale::Pl), Change::Busy);
+        assert_eq!((locale(&p), theme(&p)), (Locale::En, Theme::Daylight));
+        assert!(!p.finish_theme(first, true));
+        assert!(!busy(&p));
+        // Finishing the same save twice cannot unlock a later one.
+        let second = ticket(p.set_locale(Locale::Pl));
+        assert!(!p.finish_theme(first, true));
+        assert!(busy(&p));
+        assert!(!p.finish_locale(second, true));
+        assert_eq!((locale(&p), theme(&p)), (Locale::Pl, Theme::Daylight));
+    }
+
+    #[test]
+    fn failed_save_rolls_back_and_unlocks() {
         let p = Prefs::new(Rc::new(MemoryStorage::default()), None);
         let g = p.begin_session(true);
         p.apply_profile(g, Some("en"), Some("graphite"));
-        let ticket = p.set_theme(Theme::Daylight).unwrap();
-        assert!(p.rollback_theme(ticket));
+        let t = ticket(p.set_theme(Theme::Daylight));
+        assert!(p.finish_theme(t, false));
         assert_eq!(theme(&p), Theme::Graphite);
-        // A newer choice made while the first save was pending is kept.
-        let first = p.set_theme(Theme::Daylight).unwrap();
-        let _second = p.set_theme(Theme::MidnightSlate).unwrap();
-        assert!(!p.rollback_theme(first));
-        assert_eq!(theme(&p), Theme::MidnightSlate);
-        // A failure arriving after a profile switch does not touch the new profile.
-        let pending = p.set_locale(Locale::Pl).unwrap();
-        let b = p.begin_session(true);
-        p.apply_profile(b, Some("pl"), None);
-        assert!(!p.rollback_locale(pending));
-        assert_eq!(locale(&p), Locale::Pl);
+        assert!(!busy(&p), "a failed save re-enables the selectors");
         // Rolling back to "not chosen" shows the fallback again.
         let fresh = p.begin_session(true);
         p.apply_profile(fresh, None, None);
-        let t = p.set_locale(Locale::Pl).unwrap();
-        assert!(p.rollback_locale(t));
+        let t = ticket(p.set_locale(Locale::Pl));
+        assert!(p.finish_locale(t, false));
         assert_eq!(locale(&p), Locale::En);
+        assert!(!busy(&p));
+    }
+
+    #[test]
+    fn an_old_sessions_save_never_unlocks_or_rolls_back_the_new_one() {
+        let p = Prefs::new(Rc::new(MemoryStorage::default()), None);
+        let a = p.begin_session(true);
+        p.apply_profile(a, Some("en"), None);
+        let pending = ticket(p.set_locale(Locale::Pl));
+        // Profile switch while A's save is held: B loads, then B saves its own choice.
+        let b = p.begin_session(true);
+        assert!(
+            !p.finish_locale(pending, false),
+            "A's failure during B's load"
+        );
+        assert!(busy(&p), "B is still loading");
+        assert!(p.apply_profile(b, Some("pl"), None));
+        let mine = ticket(p.set_theme(Theme::Abyss));
+        assert!(
+            !p.finish_locale(pending, false),
+            "A's failure during B's save"
+        );
+        assert!(busy(&p), "B's save is still pending");
+        assert_eq!((locale(&p), theme(&p)), (Locale::Pl, Theme::Abyss));
+        assert!(!p.finish_theme(mine, true));
+        assert!(!busy(&p));
+        // Signed out while a save is held: the device choice is free at once.
+        let held = ticket(p.set_theme(Theme::Daylight));
+        p.begin_session(false);
+        assert!(!busy(&p));
+        assert!(!p.finish_theme(held, false));
+        assert_eq!(p.set_theme(Theme::Graphite), Change::Device);
     }
 }
