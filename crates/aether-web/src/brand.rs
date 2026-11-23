@@ -12,6 +12,38 @@ pub const DOCUMENT_TITLE: &str = "aether";
 /// The footer line under the login and onboarding cards.
 pub const FOOTER: &str = "© 2026 Aether. Your music, your way.";
 
+/// The tab icon: the Aether "A" with its orbital ring on Midnight Slate.
+pub const FAVICON_SVG: &str = include_str!("../assets/favicon.svg");
+
+/// The favicon as a percent-encoded `data:` URI (allowed by the CSP `img-src data:`),
+/// so the SSR head carries the icon without an extra request.
+pub fn favicon_href() -> String {
+    let mut href = String::from("data:image/svg+xml,");
+    for byte in FAVICON_SVG.trim_end().bytes() {
+        match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'~'
+            | b'/'
+            | b':'
+            | b'='
+            | b','
+            | b';'
+            | b'('
+            | b')'
+            | b'!'
+            | b'*'
+            | b'\'' => href.push(byte as char),
+            _ => href.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    href
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +131,61 @@ mod tests {
         ] {
             assert!(css.contains(token), "stylesheet lacks {token}");
         }
+    }
+
+    /// The tab icon is the Aether mark, embedded so the browser makes no extra request.
+    #[test]
+    fn the_favicon_is_an_embedded_svg_data_uri() {
+        let href = favicon_href();
+        let body = href
+            .strip_prefix("data:image/svg+xml,")
+            .expect("not an SVG data URI");
+        for raw in ['#', '<', '>', '"', ' ', '\n'] {
+            assert!(!body.contains(raw), "{raw:?} is not percent-encoded");
+        }
+        assert_eq!(percent_decode(body), FAVICON_SVG.trim_end());
+        assert!(FAVICON_SVG.starts_with("<svg"));
+        assert!(
+            FAVICON_SVG.contains("#8bafd1"),
+            "not the Midnight Slate mark"
+        );
+    }
+
+    /// The icon is self-contained: no tracking, no external fetch.
+    #[test]
+    fn the_favicon_references_nothing_external() {
+        let without_ns = FAVICON_SVG.replace(r#"xmlns="http://www.w3.org/2000/svg""#, "");
+        for external in ["http:", "https:", "//", "href", "url("] {
+            assert!(
+                !without_ns.contains(external),
+                "favicon contains {external}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_document_head_links_the_favicon() {
+        let compact: String = include_str!("app.rs")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(compact.contains(r#"<linkrel="icon"type="image/svg+xml"href={favicon_href()}/>"#));
+    }
+
+    fn percent_decode(s: &str) -> String {
+        let b = s.as_bytes();
+        let mut out = Vec::with_capacity(b.len());
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'%' {
+                out.push(u8::from_str_radix(&s[i + 1..i + 3], 16).unwrap());
+                i += 3;
+            } else {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8(out).unwrap()
     }
 
     #[test]

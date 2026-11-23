@@ -12,7 +12,7 @@ use vertigo::{Computed, DomNode, Reactive, Value, bind, dom, get_driver};
 
 use crate::api::client::ApiClient;
 use crate::auth::{BrowserStorage, Session, effective_route};
-use crate::brand::DOCUMENT_TITLE;
+use crate::brand::{DOCUMENT_TITLE, favicon_href};
 use crate::pages;
 use crate::player::Player;
 use crate::prefs::Prefs;
@@ -162,6 +162,7 @@ pub fn render() -> DomNode {
                 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
                 <meta name="theme-color" content={theme_color} />
                 <title>{DOCUMENT_TITLE}</title>
+                <link rel="icon" type="image/svg+xml" href={favicon_href()} />
                 <style>{stylesheet()}</style>
             </head>
             <body class="antialiased">
