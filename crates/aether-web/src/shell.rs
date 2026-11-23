@@ -91,7 +91,7 @@ fn vibe_button(ctx: &Ctx) -> DomNode {
         });
         dom! {
             <button class={class} disabled={disabled} on_click={open}
-                aria-label="Match this vibe" title="match this vibe - find similar sounding tracks">
+                aria-label={ctx.prefs.text(Msg::MatchThisVibe)} title={ctx.prefs.hint(Msg::MatchThisVibeHint)}>
                 {icon("audio-waveform", "w-4 h-4")}
             </button>
         }
@@ -118,7 +118,7 @@ pub fn frame(ctx: &Ctx, page: DomNode) -> DomNode {
     });
     dom! {
         <div class="h-screen bg-black overflow-hidden flex flex-col pt-16 tablet:pt-0">
-            <a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-(--z-panel) focus:px-4 focus:py-2 focus:bg-white focus:text-black focus:rounded-lg focus:font-medium">"Skip to main content"</a>
+            <a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-(--z-panel) focus:px-4 focus:py-2 focus:bg-white focus:text-black focus:rounded-lg focus:font-medium">{ctx.prefs.text(Msg::SkipToContent)}</a>
             {ctx.player.audio_view()}
             {top_bar_desktop(ctx, route.clone())}
             {top_bar_mobile(ctx)}
@@ -591,14 +591,15 @@ fn side_panel(ctx: &Ctx, open: Value<bool>) -> DomNode {
         .to_owned()
     });
     let player = ctx.player.clone();
+    let prefs = ctx.prefs.clone();
     let list = player
         .queue_state()
-        .render_value(bind!(player, |(items, current): (Vec<QueueItem>, usize)| {
+        .render_value(bind!(player, prefs, |(items, current): (Vec<QueueItem>, usize)| {
             if items.is_empty() {
                 return dom! {
                     <div class="flex-1 flex flex-col items-center justify-center px-6 text-center">
                         {icon("music", "w-10 h-10 text-[var(--text-muted)] mb-4")}
-                        <p class="text-sm text-[var(--text-muted)]">"Start listening to see what's playing here"</p>
+                        <p class="text-sm text-[var(--text-muted)]">{prefs.text(Msg::QueueEmpty)}</p>
                     </div>
                 };
             }
@@ -639,9 +640,9 @@ fn side_panel(ctx: &Ctx, open: Value<bool>) -> DomNode {
                     <div class="flex items-center justify-between px-4 py-3 border-b border-white/5">
                         <div class="flex items-center gap-2">
                             <div class="w-1.5 h-1.5 bg-brand rounded-full"></div>
-                            <span class="t-eyebrow">"Queue"</span>
+                            <span class="t-eyebrow">{ctx.prefs.text(Msg::QueueEyebrow)}</span>
                         </div>
-                        <button class="p-1 hover:bg-white/10 transition-colors duration-200" title="collapse panel" on_click={toggle}>
+                        <button class="p-1 hover:bg-white/10 transition-colors duration-200" title={ctx.prefs.hint(Msg::CollapsePanel)} on_click={toggle}>
                             {icon("chevron-right", "w-4 h-4 text-[var(--text-muted)]")}
                         </button>
                     </div>
@@ -784,28 +785,28 @@ fn drawer(ctx: &Ctx) -> DomNode {
                         </div>
                         <nav class="flex-1 overflow-y-auto py-4" role="navigation" aria-label={ctx.prefs.text(Msg::MobileMenu)}>
                             <div class="px-3 mb-6">
-                                <div class="text-xs font-semibold text-[var(--text-muted)] px-3 mb-2">"Quick Links"</div>
+                                <div class="text-xs font-semibold text-[var(--text-muted)] px-3 mb-2">{ctx.prefs.text(Msg::QuickLinks)}</div>
                                 <a class={radio_class} href={Route::Radio.to_string()} aria-current={radio_current} on_click={close.clone()}>
                                     {icon("radio", "w-5 h-5")}
-                                    <span class="text-sm font-medium">"Radio"</span>
+                                    <span class="text-sm font-medium">{ctx.prefs.text(Msg::NavRadio)}</span>
                                 </a>
                             </div>
                             <div class="px-3">
-                                <div class="text-xs font-semibold text-[var(--text-muted)] px-3 mb-2">"Actions"</div>
+                                <div class="text-xs font-semibold text-[var(--text-muted)] px-3 mb-2">{ctx.prefs.text(Msg::DrawerActions)}</div>
                                 <button class="w-full flex items-center gap-3 px-3 py-3 rounded-lg transition-colors duration-200 text-left text-[var(--text-secondary)] hover:text-white hover:bg-white/5 disabled:opacity-50" on_click={scan} disabled={flag(admin.map(|allowed| !allowed))}>
                                     {icon("refresh-cw", "w-5 h-5")}
-                                    <span class="text-sm font-medium">"Sync Library"</span>
+                                    <span class="text-sm font-medium">{ctx.prefs.text(Msg::SyncLibraryAction)}</span>
                                 </button>
                                 <a class="flex items-center gap-3 px-3 py-3 rounded-lg transition-colors duration-200 text-[var(--text-secondary)] hover:text-white hover:bg-white/5" href={Route::Settings.to_string()} on_click={close}>
                                     {icon("settings", "w-5 h-5")}
-                                    <span class="text-sm font-medium">"Settings"</span>
+                                    <span class="text-sm font-medium">{ctx.prefs.text(Msg::SettingsTitle)}</span>
                                 </a>
                             </div>
                         </nav>
                         <div class="border-t border-white/[0.06] p-3">
                             <button class="w-full flex items-center gap-3 px-3 py-3 rounded-lg text-danger-light hover:brightness-125 hover:bg-danger/10 transition-colors duration-200" on_click={sign_out}>
                                 {icon("power", "w-5 h-5")}
-                                <span class="text-sm font-medium">"Logout"</span>
+                                <span class="text-sm font-medium">{ctx.prefs.text(Msg::Logout)}</span>
                             </button>
                         </div>
                     </div>

@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use aether_api_types::radio::RowStation;
 use unicode_normalization::UnicodeNormalization;
 
+use crate::i18n::{self, Locale, Msg};
+
 /// A tile's colours: the hover border class (written out in full so Tailwind finds it) and the station's hue (the
 /// first colour of upstream's accent gradient, `stationHue`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,12 +24,36 @@ const fn style(hover_border: &'static str, hue: &'static str) -> Style {
 /// Upstream `DEFAULT_STYLE`.
 pub const DEFAULT_STYLE: Style = style("hover:border-[#6b7280]/40", "#6b7280");
 
+/// A tile's name or line: the page's own text (follows the language) or the server's (shown as received).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Label {
+    /// A quick station's name or line.
+    Fixed(Msg),
+    /// A server-named mood station or genre: as received.
+    Server(String),
+    /// A genre's or decade's song count.
+    Tracks(i64),
+    /// A decade station's name.
+    Decade(i32),
+}
+
+impl Label {
+    pub fn text(&self, locale: Locale) -> String {
+        match self {
+            Label::Fixed(msg) => msg.text(locale).to_owned(),
+            Label::Server(text) => text.clone(),
+            Label::Tracks(n) => i18n::track_total(locale, *n),
+            Label::Decade(decade) => i18n::decade_name(locale, *decade),
+        }
+    }
+}
+
 /// One station tile (upstream `RadioStation`): what it plays (`kind`, `value`) and how many songs it needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RadioStation {
     pub id: String,
-    pub name: String,
-    pub description: String,
+    pub name: Label,
+    pub description: Label,
     pub style: Style,
     pub kind: &'static str,
     pub value: Option<String>,
@@ -38,32 +64,32 @@ pub struct RadioStation {
 const STATION_MIN_TRACKS: usize = 1;
 
 /// Upstream `STATIC_STATIONS`: (type, name, description, style, minTracks).
-const STATIC_STATIONS: [(&str, &str, &str, Style, usize); 4] = [
+const STATIC_STATIONS: [(&str, Msg, Msg, Style, usize); 4] = [
     (
         "all",
-        "Shuffle All",
-        "Your entire library",
+        Msg::StationShuffleAll,
+        Msg::StationShuffleAllLine,
         style("hover:border-brand/40", "#8bafd1"),
         10,
     ),
     (
         "workout",
-        "Workout",
-        "High energy tracks",
+        Msg::StationWorkout,
+        Msg::StationWorkoutLine,
         style("hover:border-[#ef4444]/40", "#ef4444"),
         STATION_MIN_TRACKS,
     ),
     (
         "discovery",
-        "Discovery",
-        "Lesser-played gems",
+        Msg::StationDiscovery,
+        Msg::StationDiscoveryLine,
         style("hover:border-[#22c55e]/40", "#22c55e"),
         20,
     ),
     (
         "favorites",
-        "Favorites",
-        "Most played",
+        Msg::StationFavorites,
+        Msg::StationFavoritesLine,
         style("hover:border-[#f43f5e]/40", "#f43f5e"),
         10,
     ),
@@ -150,8 +176,8 @@ pub fn quick_stations(listed: &[&str]) -> Vec<RadioStation> {
         .map(
             |&(kind, name, description, style, min_tracks)| RadioStation {
                 id: kind.to_owned(),
-                name: name.to_owned(),
-                description: description.to_owned(),
+                name: Label::Fixed(name),
+                description: Label::Fixed(description),
                 style,
                 kind,
                 value: None,
@@ -167,8 +193,8 @@ pub fn mood_stations(stations: &[(String, String, String)]) -> Vec<RadioStation>
         .iter()
         .map(|(value, name, description)| RadioStation {
             id: format!("mood-{value}"),
-            name: name.clone(),
-            description: description.clone(),
+            name: Label::Server(name.clone()),
+            description: Label::Server(description.clone()),
             style: MOOD_STATION_STYLES
                 .iter()
                 .find(|(mood, _)| mood == value)
@@ -186,8 +212,8 @@ pub fn genre_stations(genres: &[(String, i64)]) -> Vec<RadioStation> {
         .iter()
         .map(|(genre, count)| RadioStation {
             id: format!("genre-{genre}"),
-            name: genre.clone(),
-            description: plural(*count, "track"),
+            name: Label::Server(genre.clone()),
+            description: Label::Tracks(*count),
             style: genre_style(genre),
             kind: "genre",
             value: Some(genre.clone()),
@@ -202,8 +228,8 @@ pub fn decade_stations(decades: &[(i32, i64)]) -> Vec<RadioStation> {
         .iter()
         .map(|&(decade, count)| RadioStation {
             id: format!("decade-{decade}"),
-            name: decade_name(decade),
-            description: plural(count, "track"),
+            name: Label::Decade(decade),
+            description: Label::Tracks(count),
             style: decade_style(decade),
             kind: "decade",
             value: Some(decade.to_string()),
@@ -351,37 +377,6 @@ pub fn decade_style(decade: i32) -> Style {
         .map_or(DEFAULT_STYLE, |(_, style)| *style)
 }
 
-/// The twentieth century's decades by two digits ("80s"), every other by four ("1850s", "2010s").
-pub fn decade_name(decade: i32) -> String {
-    if (1900..2000).contains(&decade) {
-        format!("{:02}s", decade % 100)
-    } else {
-        format!("{decade}s")
-    }
-}
-
-/// A count as upstream's `toLocaleString()` writes it in English: `1,234,567`.
-pub fn group_thousands(n: i64) -> String {
-    let digits = n.unsigned_abs().to_string();
-    let mut grouped = String::new();
-    if n < 0 {
-        grouped.push('-');
-    }
-    for (i, d) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(d);
-    }
-    grouped
-}
-
-/// Upstream `plural`: `1 track`, `1,234 tracks`.
-pub fn plural(n: i64, word: &str) -> String {
-    let s = if n == 1 { "" } else { "s" };
-    format!("{} {word}{s}", group_thousands(n))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,10 +426,11 @@ mod tests {
     #[test]
     fn a_genre_station_keeps_the_servers_spelling() {
         let s = genre("Hip-Hop");
-        assert_eq!(s.name, "Hip-Hop");
+        assert_eq!(s.name, Label::Server("Hip-Hop".into()));
         assert_eq!((s.kind, s.value.as_deref()), ("genre", Some("Hip-Hop")));
         assert_eq!(s.id, "genre-Hip-Hop");
-        assert_eq!(s.description, "20 tracks");
+        assert_eq!(s.description.text(Locale::En), "20 tracks");
+        assert_eq!(s.description.text(Locale::Pl), "20 utworów");
         assert_eq!(s.min_tracks, 15);
     }
 
@@ -484,14 +480,32 @@ mod tests {
         ]);
         let shown: Vec<_> = tiles
             .iter()
-            .map(|t| (t.id.as_str(), t.name.as_str(), t.kind, t.value.as_deref()))
+            .map(|t| {
+                (
+                    t.id.as_str(),
+                    t.name.text(Locale::Pl),
+                    t.kind,
+                    t.value.as_deref(),
+                )
+            })
             .collect();
         assert_eq!(
             shown,
             [
-                ("mood-calm", "Calm", "mood", Some("calm")),
-                ("mood-wildcard", "Wildcard", "mood", Some("wildcard")),
-                ("mood-brand-new", "Brand New", "mood", Some("brand-new")),
+                // The server's names, shown as received in every language.
+                ("mood-calm", "Calm".to_owned(), "mood", Some("calm")),
+                (
+                    "mood-wildcard",
+                    "Wildcard".to_owned(),
+                    "mood",
+                    Some("wildcard")
+                ),
+                (
+                    "mood-brand-new",
+                    "Brand New".to_owned(),
+                    "mood",
+                    Some("brand-new")
+                ),
             ]
         );
         assert_eq!(tiles[0].style.hue, "#5bc2b4");
@@ -527,30 +541,24 @@ mod tests {
 
     #[test]
     fn decades_are_named_and_coloured_like_upstream() {
-        assert_eq!(decade_name(1980), "80s");
-        assert_eq!(decade_name(1900), "00s");
-        assert_eq!(decade_name(2010), "2010s");
-        assert_eq!(decade_name(1850), "1850s");
         assert_eq!(decade_style(1995).hue, "#a855f7");
         assert_eq!(decade_style(1930).hue, "#eab308");
         assert_eq!(decade_style(2030).hue, "#f97316");
         assert_eq!(decade_style(1600), DEFAULT_STYLE);
         let d = decade_stations(&[(1990, 23)]).remove(0);
         assert_eq!(
-            (d.id.as_str(), d.name.as_str(), d.description.as_str()),
-            ("decade-1990", "90s", "23 tracks")
+            (
+                d.id.as_str(),
+                d.name.text(Locale::En),
+                d.description.text(Locale::En)
+            ),
+            ("decade-1990", "90s".to_owned(), "23 tracks".to_owned())
         );
+        assert_eq!(d.name.text(Locale::Pl), "lata 90.");
         assert_eq!(
             (d.kind, d.value.as_deref(), d.min_tracks),
             ("decade", Some("1990"), 15)
         );
-    }
-
-    #[test]
-    fn plural_groups_thousands_and_drops_the_s_for_one() {
-        assert_eq!(plural(1, "track"), "1 track");
-        assert_eq!(plural(0, "track"), "0 tracks");
-        assert_eq!(plural(1234567, "track"), "1,234,567 tracks");
     }
 
     #[test]
@@ -570,9 +578,22 @@ mod tests {
             rock,
             nineties,
         ]);
-        let names = |list: &[RadioStation]| list.iter().map(|s| s.name.clone()).collect::<Vec<_>>();
+        let names = |list: &[RadioStation]| {
+            list.iter()
+                .map(|s| s.name.text(Locale::En))
+                .collect::<Vec<_>>()
+        };
         // Quick stations in upstream's order, only the listed ones (Workout is not listed: no mood statistics).
         assert_eq!(names(&row.quick), ["Shuffle All", "Discovery", "Favorites"]);
+        // The page's own station names follow the language; the server's mood/genre names do not.
+        let pl = |list: &[RadioStation]| {
+            list.iter()
+                .map(|s| s.name.text(Locale::Pl))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(pl(&row.quick), ["Wszystko losowo", "Odkrycia", "Ulubione"]);
+        assert_eq!(pl(&row.moods), ["Calm"]);
+        assert_eq!(pl(&row.genres), ["rock"]);
         assert_eq!(names(&row.moods), ["Calm"]);
         assert_eq!(names(&row.genres), ["rock"]);
         assert_eq!(names(&row.decades), ["90s"]);

@@ -85,18 +85,6 @@ pub fn mix_item(t: &MixTrack) -> QueueItem {
     }
 }
 
-/// Upstream `formatTotalDuration`: whole minutes, at least one; `N min`, `H hr`, `H hr M min`.
-pub fn total_duration(seconds: i64) -> String {
-    // `Math.round(seconds / 60)`: halves round up.
-    let total = ((seconds.max(0) + 30) / 60).max(1);
-    let (hours, mins) = (total / 60, total % 60);
-    match (hours, mins) {
-        (0, m) => format!("{m} min"),
-        (h, 0) => format!("{h} hr"),
-        (h, m) => format!("{h} hr {m} min"),
-    }
-}
-
 pub async fn mixes(client: &ApiClient, tz: &str) -> Result<Vec<Mix>, ApiError> {
     client.get(&mixes_path(tz)).await
 }
@@ -205,15 +193,5 @@ mod tests {
         assert_eq!(album.cover_art, t.album.cover_url);
         assert_eq!(mix_item(&track(Some("Edited"))).title, "Edited");
         assert_eq!(mix_item(&track(Some(""))).title, t.title);
-    }
-
-    #[test]
-    fn the_total_reads_like_upstream() {
-        assert_eq!(total_duration(0), "1 min");
-        assert_eq!(total_duration(29), "1 min");
-        assert_eq!(total_duration(90), "2 min");
-        assert_eq!(total_duration(59 * 60), "59 min");
-        assert_eq!(total_duration(3600), "1 hr");
-        assert_eq!(total_duration(3600 + 5 * 60 + 31), "1 hr 6 min");
     }
 }

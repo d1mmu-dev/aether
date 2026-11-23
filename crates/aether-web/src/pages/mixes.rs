@@ -11,12 +11,12 @@ use aether_api_types::mixes::{Mix, MixDetail, MixTrack};
 use vertigo::{Computed, DomNode, Reactive, Value, bind, dom, get_driver};
 
 use crate::api::client::ApiError;
-use crate::api::mixes::{self, MixSaved, mix_item, total_duration};
+use crate::api::mixes::{self, MixSaved, mix_item};
 use crate::api::radio::browser_time_zone;
 use crate::components::{Card, Kind, media_card};
+use crate::i18n::{self, Locale, Msg};
 use crate::icons::icon;
 use crate::pages::artists;
-use crate::pages::radio::data::plural;
 use crate::route::Route;
 use crate::ui::{Ctx, cover_url, flag, format_time};
 
@@ -48,15 +48,15 @@ pub fn hero_background(color: Option<&str>) -> String {
 
 /// `20 songs` and `, 1 hr 6 min` under the mix's name, two spans as upstream (`trackCount || tracks.length`, the
 /// total only when it is above zero).
-pub fn song_line(mix: &MixDetail) -> (String, Option<String>) {
+pub fn song_line(locale: Locale, mix: &MixDetail) -> (String, Option<String>) {
     let count = if mix.mix.track_count != 0 {
         mix.mix.track_count
     } else {
         mix.tracks.len() as i64
     };
     let seconds: i64 = mix.tracks.iter().map(|t| i64::from(t.duration)).sum();
-    let total = (seconds > 0).then(|| format!(", {}", total_duration(seconds)));
-    (plural(count, "song"), total)
+    let total = (seconds > 0).then(|| format!(", {}", i18n::mix_duration(locale, seconds)));
+    (i18n::song_total(locale, count), total)
 }
 
 /// What the mix page shows for its request.
@@ -93,11 +93,11 @@ pub fn home(ctx: &Ctx) -> DomNode {
 }
 
 /// Upstream `SectionHeader` (type track) with the row's actions on the right.
-fn row_header(action: DomNode) -> DomNode {
+fn row_header(title: Computed<String>, action: DomNode) -> DomNode {
     dom! {
         <div class="flex items-center gap-3 mb-4">
             <span aria-hidden="true" class="w-1 rounded-full shrink-0 h-7 bg-type-track"></span>
-            <h2 class="font-bold tracking-tight text-white text-xl">"Made For You"</h2>
+            <h2 class="font-bold tracking-tight text-white text-xl">{title}</h2>
             <span class="flex-1 border-t border-white/10"></span>
             {action}
         </div>
@@ -140,13 +140,22 @@ fn made_for_you(ctx: &Ctx) -> DomNode {
         get_driver().spawn(bind!(ctx, state, refreshing, async move {
             match mixes::refresh(&ctx.client, &browser_time_zone()).await {
                 Ok(reply) => state.set(RowState::Ready(Rc::new(reply.mixes))),
-                Err(_) => ctx.notify("Failed to refresh mixes"),
+                Err(_) => ctx.notify(ctx.prefs.now(Msg::MixesRefreshFailed)),
             }
             refreshing.set(false);
         }));
     });
-    let refresh_label =
-        refreshing.map(|busy| if busy { "Refreshing..." } else { "Refresh" }.to_owned());
+    let refresh_label = {
+        let (refreshing, locale) = (refreshing.clone(), ctx.prefs.locale.clone());
+        Computed::from(move |c| {
+            let msg = if refreshing.get(c) {
+                Msg::Refreshing
+            } else {
+                Msg::Refresh
+            };
+            msg.text(locale.get(c)).to_owned()
+        })
+    };
     let refresh_disabled = flag(refreshing.to_computed());
 
     state.render_value(bind!(
@@ -168,7 +177,7 @@ fn made_for_you(ctx: &Ctx) -> DomNode {
                 }
             });
             let action = dom! {
-                <button type="button" class={SMALL_BUTTON} aria-label="Refresh mixes" disabled={refresh_disabled.clone()}
+                <button type="button" class={SMALL_BUTTON} aria-label={ctx.prefs.text(Msg::RefreshMixes)} disabled={refresh_disabled.clone()}
                     on_click={refresh.clone()}>
                     {refresh_icon}
                     <span class="hidden sm:inline">{refresh_label.clone()}</span>
@@ -188,8 +197,8 @@ fn made_for_you(ctx: &Ctx) -> DomNode {
                     });
                     dom! {
                         <div class="flex items-center gap-3 py-2" data-testid="mixes-error" title={message}>
-                            <p class="text-sm text-[var(--text-secondary)]">"Could not load your mixes."</p>
-                            <button type="button" class={SMALL_BUTTON} aria-label="Retry loading your mixes" on_click={retry}>"Retry"</button>
+                            <p class="text-sm text-[var(--text-secondary)]">{ctx.prefs.text(Msg::MixesLoadFailed)}</p>
+                            <button type="button" class={SMALL_BUTTON} aria-label={ctx.prefs.text(Msg::RetryMixes)} on_click={retry}>{ctx.prefs.text(Msg::Retry)}</button>
                         </div>
                     }
                 }
@@ -203,7 +212,7 @@ fn made_for_you(ctx: &Ctx) -> DomNode {
             };
             dom! {
                 <section data-testid="made-for-you" class="mb-8">
-                    {row_header(action)}
+                    {row_header(ctx.prefs.text(Msg::MadeForYou), action)}
                     {body}
                 </section>
             }
@@ -222,7 +231,10 @@ fn mixes_grid(ctx: &Ctx, list: &[Mix]) -> DomNode {
                 href: Route::Mix { id: mix.id.clone() }.to_string(),
                 covers: mix_covers(mix, token.as_deref()),
                 title: mix.name.clone(),
-                subtitle: crate::ui::fixed_text(plural(mix.track_count, "track")),
+                subtitle: {
+                    let n = mix.track_count;
+                    ctx.prefs.format(move |l| i18n::track_total(l, n))
+                },
                 kind: Kind::Playlist,
                 on_play: None,
                 index,
@@ -251,16 +263,18 @@ pub fn mix_page(ctx: &Ctx, id: String) -> DomNode {
                 </div>
             },
             MixState::Missing => page_message(
-                "Mix not found",
-                "This mix no longer exists. Rebuilding mixes replaces them with new ones.",
-                dom! { <a class={SMALL_BUTTON} href={Route::Home.to_string()}>"Home"</a> },
+                &ctx,
+                Msg::MixNotFound,
+                Msg::MixGone,
+                dom! { <a class={SMALL_BUTTON} href={Route::Home.to_string()}>{ctx.prefs.text(Msg::Home)}</a> },
             ),
             MixState::Failed(_) => {
                 let again = bind!(reload, |_| reload.change(|n| *n += 1));
                 page_message(
-                    "Couldn't load this mix",
-                    "The server didn't answer. Try again in a moment.",
-                    dom! { <button type="button" class={SMALL_BUTTON} on_click={again}>"Try again"</button> },
+                    &ctx,
+                    Msg::MixLoadFailed,
+                    Msg::ServerNoAnswer,
+                    dom! { <button type="button" class={SMALL_BUTTON} on_click={again}>{ctx.prefs.text(Msg::TryAgain)}</button> },
                 )
             }
             MixState::Ready(detail) => mix_body(&ctx, &id, &detail),
@@ -269,8 +283,8 @@ pub fn mix_page(ctx: &Ctx, id: String) -> DomNode {
 }
 
 /// Upstream `PageMessage`.
-fn page_message(title: &str, text: &str, action: DomNode) -> DomNode {
-    let (title, text) = (title.to_owned(), text.to_owned());
+fn page_message(ctx: &Ctx, title: Msg, text: Msg, action: DomNode) -> DomNode {
+    let (title, text) = (ctx.prefs.text(title), ctx.prefs.text(text));
     dom! {
         <div class="page-shell py-16 flex flex-col items-center text-center gap-3" data-testid="mix-message">
             <h1 class="text-2xl font-bold text-white">{title}</h1>
@@ -327,7 +341,8 @@ fn mix_body(ctx: &Ctx, id: &str, detail: &Rc<MixDetail>) -> DomNode {
     let play = if queue.is_empty() {
         dom! { <span class="hidden" /> }
     } else {
-        let label = format!("play {}", mix.name);
+        let name = mix.name.clone();
+        let label = ctx.prefs.format(move |l| i18n::play_mix(l, &name, false));
         let click = bind!(ctx, queue, |_| ctx.player.play_queue(queue.clone(), 0));
         dom! {
             <button type="button" name="play-mix" aria-label={label} on_click={click}
@@ -337,12 +352,13 @@ fn mix_body(ctx: &Ctx, id: &str, detail: &Rc<MixDetail>) -> DomNode {
         }
     };
     let shuffle = if queue.len() > 1 {
-        let label = format!("shuffle play {}", mix.name);
+        let name = mix.name.clone();
+        let label = ctx.prefs.format(move |l| i18n::play_mix(l, &name, true));
         let click = bind!(ctx, queue, |_| ctx
             .player
             .play_queue(shuffled(queue.clone()), 0));
         dom! {
-            <button type="button" name="shuffle-mix" aria-label={label} title="shuffle play" on_click={click}
+            <button type="button" name="shuffle-mix" aria-label={label} title={ctx.prefs.hint(Msg::ShufflePlay)} on_click={click}
                 class="h-11 w-11 rounded-full hover:bg-white/10 flex items-center justify-center text-[var(--text-secondary)] hover:text-white transition-all">
                 {icon("shuffle", "w-5 h-5")}
             </button>
@@ -365,11 +381,11 @@ fn mix_body(ctx: &Ctx, id: &str, detail: &Rc<MixDetail>) -> DomNode {
                         Some(id)
                     }
                     Ok(MixSaved::AlreadySaved { playlist_id }) => {
-                        ctx.notify("You've already saved this mix as a playlist.");
+                        ctx.notify(ctx.prefs.now(Msg::MixAlreadySaved));
                         Some(playlist_id)
                     }
                     Err(err) => {
-                        ctx.notify(format!("Failed to save mix as playlist: {}", err.message));
+                        ctx.notify(i18n::mix_save_failed(ctx.prefs.current(), &err.message));
                         None
                     }
                 };
@@ -386,23 +402,26 @@ fn mix_body(ctx: &Ctx, id: &str, detail: &Rc<MixDetail>) -> DomNode {
             }));
         })
     };
-    let save_label = saving.map(|busy| {
-        if busy {
-            "Saving..."
-        } else {
-            "Save as Playlist"
-        }
-        .to_owned()
-    });
+    let save_label = {
+        let (saving, locale) = (saving.clone(), ctx.prefs.locale.clone());
+        Computed::from(move |c| {
+            let msg = if saving.get(c) {
+                Msg::Saving
+            } else {
+                Msg::SaveAsPlaylist
+            };
+            msg.text(locale.get(c)).to_owned()
+        })
+    };
     let save_disabled = flag(saving.to_computed());
 
     let list = if detail.tracks.is_empty() {
         dom! {
             <div class="flex flex-col items-center justify-center py-12 text-center" data-testid="mix-empty">
                 <div class="mb-4 text-[var(--text-muted)]">{icon("music", "w-12 h-12")}</div>
-                <h3 class="text-lg font-medium text-white mb-2">"No tracks"</h3>
-                <p class="text-sm text-[var(--text-muted)] mb-6">"This mix is empty"</p>
-                <a class={SMALL_BUTTON} href={Route::Home.to_string()}>"Back to Mixes"</a>
+                <h3 class="text-lg font-medium text-white mb-2">{ctx.prefs.text(Msg::NoTracks)}</h3>
+                <p class="text-sm text-[var(--text-muted)] mb-6">{ctx.prefs.text(Msg::MixIsEmpty)}</p>
+                <a class={SMALL_BUTTON} href={Route::Home.to_string()}>{ctx.prefs.text(Msg::BackToMixes)}</a>
             </div>
         }
     } else {
@@ -411,11 +430,18 @@ fn mix_body(ctx: &Ctx, id: &str, detail: &Rc<MixDetail>) -> DomNode {
 
     let background = hero_background(mix.color.as_deref());
     let name = mix.name.clone();
-    let (songs, total) = song_line(detail);
-    let total = match total {
+    let line = {
+        let detail = detail.clone();
+        ctx.prefs
+            .locale
+            .to_computed()
+            .map(move |l| song_line(l, &detail))
+    };
+    let songs = line.map(|(songs, _)| songs);
+    let total = line.render_value(|(_, total)| match total {
         Some(text) => dom! { <span>{text}</span> },
         None => dom! { <span class="hidden" /> },
-    };
+    });
     dom! {
         <div class="min-h-screen" data-testid="mix-page">
             <div class="relative pt-16 pb-10 page-shell" style={background}>
@@ -424,7 +450,7 @@ fn mix_body(ctx: &Ctx, id: &str, detail: &Rc<MixDetail>) -> DomNode {
                         {cover_art}
                     </div>
                     <div class="flex-1 min-w-0 pb-1">
-                        <p class="text-xs font-medium text-[var(--text-primary)] mb-1">"Mix"</p>
+                        <p class="text-xs font-medium text-[var(--text-primary)] mb-1">{ctx.prefs.text(Msg::MixEyebrow)}</p>
                         <h1 class="text-2xl md:text-4xl lg:text-5xl font-bold text-white leading-tight line-clamp-2 mb-2">{name}</h1>
                         {description}
                         <div class="flex items-center gap-1 text-sm text-[var(--text-secondary)]">
@@ -470,9 +496,9 @@ fn track_rows(ctx: &Ctx, detail: &Rc<MixDetail>) -> DomNode {
         <div class="w-full">
             <div class="hidden md:grid grid-cols-[40px_minmax(200px,4fr)_minmax(100px,1fr)_80px] gap-4 px-4 py-2 text-xs text-[var(--text-secondary)] border-b border-white/10 mb-2">
                 <span class="text-center">"#"</span>
-                <span>"Title"</span>
-                <span>"Album"</span>
-                <span class="text-right">"Duration"</span>
+                <span>{ctx.prefs.text(Msg::ColumnTitle)}</span>
+                <span>{ctx.prefs.text(Msg::ColumnAlbum)}</span>
+                <span class="text-right">{ctx.prefs.text(Msg::ColumnDuration)}</span>
             </div>
             <div>{..rows}</div>
         </div>
@@ -520,7 +546,7 @@ fn track_row(
         move |_: vertigo::ClickEvent| {
             let title = item.title.clone();
             ctx.player.enqueue(item.clone());
-            ctx.notify(format!("Added “{title}” to the queue"));
+            ctx.notify(i18n::added_to_queue(ctx.prefs.current(), &title));
         }
     };
     let cover = match track
@@ -534,8 +560,15 @@ fn track_row(
         }
         None => icon("music", "w-5 h-5 text-[var(--text-muted)]"),
     };
-    let play_label = format!("Play {}", item.title);
-    let add_label = format!("Add {} to queue", item.title);
+    let play_label = {
+        let title = item.title.clone();
+        ctx.prefs.format(move |l| i18n::play_named(l, &title))
+    };
+    let add_label = {
+        let title = item.title.clone();
+        ctx.prefs
+            .format(move |l| i18n::add_named_to_queue(l, &title))
+    };
     let title = item.title.clone();
     let artist = track.album.artist.name.clone();
     let album = track.album.title.clone();
@@ -615,18 +648,28 @@ mod tests {
         let secs: i64 = detail.tracks.iter().map(|t| i64::from(t.duration)).sum();
         // Two spans like upstream (`<span>N songs</span><span>, total</span>` in a gap-1 flex row).
         assert_eq!(
-            song_line(&detail),
+            song_line(Locale::En, &detail),
             (
-                plural(detail.mix.track_count, "song"),
-                Some(format!(", {}", total_duration(secs)))
+                i18n::song_total(Locale::En, detail.mix.track_count),
+                Some(format!(", {}", i18n::mix_duration(Locale::En, secs)))
             )
+        );
+        assert_eq!(
+            song_line(Locale::Pl, &detail).1,
+            Some(format!(", {}", i18n::mix_duration(Locale::Pl, secs)))
         );
         detail.mix.track_count = 0;
         detail.tracks.truncate(1);
         detail.tracks[0].duration = 0;
-        assert_eq!(song_line(&detail), ("1 song".to_owned(), None));
+        assert_eq!(song_line(Locale::En, &detail), ("1 song".to_owned(), None));
+        assert_eq!(song_line(Locale::Pl, &detail), ("1 utwór".to_owned(), None));
         detail.tracks.clear();
-        assert_eq!(song_line(&detail), ("0 songs".to_owned(), None));
+        assert_eq!(song_line(Locale::En, &detail), ("0 songs".to_owned(), None));
+        detail.mix.track_count = 5;
+        assert_eq!(
+            song_line(Locale::Pl, &detail),
+            ("5 utworów".to_owned(), None)
+        );
     }
 
     #[test]

@@ -390,6 +390,149 @@ catalogue! {
     NoTracksYet => ("No tracks yet", "Nie ma jeszcze utworów"),
     AddTracksToStart => ("Add some tracks to get started", "Dodaj utwory, aby zacząć"),
     RemoveFromPlaylist => ("Remove from playlist", "Usuń z playlisty"),
+    // shared retry/again actions
+    Retry => ("Retry", "Ponów"),
+    TryAgain => ("Try again", "Spróbuj ponownie"),
+    // radio (server-named mood/genre stations stay as received)
+    RadioTagline => ("Endless shuffles from your own music", "Niekończące się losowanie z Twojej muzyki"),
+    QuickStart => ("Quick Start", "Szybki start"),
+    ByMood => ("By Mood", "Według nastroju"),
+    ByGenre => ("By Genre", "Według gatunku"),
+    ByDecade => ("By Decade", "Według dekady"),
+    StationShuffleAll => ("Shuffle All", "Wszystko losowo"),
+    StationShuffleAllLine => ("Your entire library", "Cała Twoja biblioteka"),
+    StationWorkout => ("Workout", "Trening"),
+    StationWorkoutLine => ("High energy tracks", "Utwory pełne energii"),
+    StationDiscovery => ("Discovery", "Odkrycia"),
+    StationDiscoveryLine => ("Lesser-played gems", "Rzadziej grane perełki"),
+    StationFavorites => ("Favorites", "Ulubione"),
+    StationFavoritesLine => ("Most played", "Najczęściej grane"),
+    StationsLoadFailed => ("Could not load the stations.", "Nie udało się wczytać stacji."),
+    RetryStations => ("Retry loading the stations", "Ponów wczytywanie stacji"),
+    StationsAppearLater => (
+        "Genre and decade stations appear once your library has enough tracks for them.",
+        "Stacje gatunków i dekad pojawią się, gdy w bibliotece będzie dla nich dość utworów.",
+    ),
+    StationStartFailed => ("Failed to start radio station", "Nie udało się uruchomić stacji radiowej"),
+    // mixes (mix names and descriptions stay as received)
+    MadeForYou => ("Made For You", "Dla Ciebie"),
+    RefreshMixes => ("Refresh mixes", "Odśwież miksy"),
+    Refresh => ("Refresh", "Odśwież"),
+    Refreshing => ("Refreshing...", "Odświeżanie…"),
+    MixesRefreshFailed => ("Failed to refresh mixes", "Nie udało się odświeżyć miksów"),
+    MixesLoadFailed => ("Could not load your mixes.", "Nie udało się wczytać Twoich miksów."),
+    RetryMixes => ("Retry loading your mixes", "Ponów wczytywanie miksów"),
+    MixNotFound => ("Mix not found", "Nie znaleziono miksu"),
+    MixGone => (
+        "This mix no longer exists. Rebuilding mixes replaces them with new ones.",
+        "Ten miks już nie istnieje. Przebudowa miksów zastępuje je nowymi.",
+    ),
+    MixLoadFailed => ("Couldn't load this mix", "Nie udało się wczytać tego miksu"),
+    ServerNoAnswer => (
+        "The server didn't answer. Try again in a moment.",
+        "Serwer nie odpowiedział. Spróbuj ponownie za chwilę.",
+    ),
+    MixEyebrow => ("Mix", "Miks"),
+    MixAlreadySaved => (
+        "You've already saved this mix as a playlist.",
+        "Ten miks jest już zapisany jako playlista.",
+    ),
+    Saving => ("Saving...", "Zapisywanie…"),
+    SaveAsPlaylist => ("Save as Playlist", "Zapisz jako playlistę"),
+    MixIsEmpty => ("This mix is empty", "Ten miks jest pusty"),
+    BackToMixes => ("Back to Mixes", "Wróć do miksów"),
+    // vibe (track metadata, search text and mood keys stay as they are)
+    VibeOff => ("Vibe is not available on this server", "Klimat nie jest dostępny na tym serwerze"),
+    VibeOffDetail => (
+        "The vibe map and sound matching need the music analysis model (vibe embeddings). Once an admin provisions it and the library is analysed, your tracks appear here.",
+        "Mapa klimatu i dopasowywanie brzmienia wymagają modelu analizy muzyki (osadzenia klimatu). Gdy administrator go udostępni, a biblioteka zostanie przeanalizowana, pojawią się tu Twoje utwory.",
+    ),
+    ChartingLibrary => ("Charting your library", "Tworzenie mapy Twojej biblioteki"),
+    BuildingMap => (
+        "Building the map. Large libraries take a few minutes.",
+        "Trwa budowanie mapy. Duże biblioteki wymagają kilku minut.",
+    ),
+    MapLoadFailed => ("The music map did not load", "Nie udało się wczytać mapy muzyki"),
+    NoVibeTracks => ("No tracks with vibe analysis yet", "Nie ma jeszcze utworów z analizą klimatu"),
+    RunEnrichment => (
+        "Run enrichment to analyse your library; tracks appear here as they finish.",
+        "Uruchom wzbogacanie, aby przeanalizować bibliotekę; utwory pojawią się tu w miarę postępu.",
+    ),
+    MapStillBuilding => (
+        "The map is still being built; try again later.",
+        "Mapa wciąż jest budowana; spróbuj ponownie później.",
+    ),
+    NoMatchesYet => ("No matches for this track yet", "Nie ma jeszcze dopasowań dla tego utworu"),
+    CouldNotPlayTrack => ("Couldn't play this track", "Nie udało się odtworzyć tego utworu"),
+    VibeMapLabel => (
+        "Your library mapped by vibe. Use the search box to open a track with the keyboard.",
+        "Twoja biblioteka na mapie klimatu. Użyj pola wyszukiwania, aby otworzyć utwór z klawiatury.",
+    ),
+    ClearSearch => ("Clear search", "Wyczyść wyszukiwanie"),
+    VibeSearchPlaceholder => ("find a track, artist or a sound", "znajdź utwór, wykonawcę lub brzmienie"),
+    VibeSearchLabel => ("Search tracks, artists or sounds", "Szukaj utworów, wykonawców lub brzmień"),
+    ListeningForSound => (
+        "listening for tracks that sound like it…",
+        "szukanie utworów o podobnym brzmieniu…",
+    ),
+    SoundSearchOff => (
+        "sound search is not available on this server",
+        "wyszukiwanie po brzmieniu nie jest dostępne na tym serwerze",
+    ),
+    SoundsLikeIt => ("sounds like it", "podobne brzmienie"),
+    MatchingTracks => ("Matching tracks", "Pasujące utwory"),
+    MoodsInLibrary => ("Moods in your library", "Nastroje w Twojej bibliotece"),
+    VibeHintTitle => ("This is your music, mapped by vibe.", "To Twoja muzyka na mapie klimatu."),
+    VibeHintBody => (
+        "Click a point: details, play, matching tracks · Search: by name or by sound · Moods: light them up",
+        "Kliknij punkt: szczegóły, odtwarzanie, pasujące utwory · Szukaj: po nazwie lub brzmieniu · Nastroje: podświetl je",
+    ),
+    Dismiss => ("Dismiss", "Ukryj"),
+    CloseTrackDetails => ("Close track details", "Zamknij szczegóły utworu"),
+    PlayThisTrack => ("Play this track", "Odtwórz ten utwór"),
+    BuildVibePlaylist => (
+        "Build vibe playlist from this track",
+        "Utwórz kolejkę w klimacie tego utworu",
+    ),
+    MatchVibe => ("Match Vibe", "Dopasuj klimat"),
+    FindSimilar => ("Find tracks similar to this one", "Znajdź utwory podobne do tego"),
+    Similar => ("Similar", "Podobne"),
+    NotOnMapYet => ("Not on the map yet", "Jeszcze nie ma go na mapie"),
+    OpenAlbum => ("Open album", "Otwórz album"),
+    Energy => ("Energy", "Energia"),
+    Positivity => ("Positivity", "Pozytywność"),
+    FindingSimilar => (
+        "Finding tracks that sound like this…",
+        "Szukanie utworów o podobnym brzmieniu…",
+    ),
+    PlayFromHere => ("Play from here", "Odtwórz od tego miejsca"),
+    SimilarityHint => ("Similarity", "Podobieństwo"),
+    PlayAsVibeQueue => ("Play as vibe queue", "Odtwórz jako kolejkę klimatu"),
+    MatchThisVibe => ("Match this vibe", "Dopasuj ten klimat"),
+    MatchThisVibeHint => (
+        "Match this vibe - find similar sounding tracks",
+        "Dopasuj ten klimat - znajdź podobnie brzmiące utwory",
+    ),
+    // vibe mood names (display only; the API keys `moodHappy`... are never translated)
+    MoodUpbeat => ("Upbeat", "Radosny"),
+    MoodMelancholic => ("Melancholic", "Melancholijny"),
+    MoodCalm => ("Calm", "Spokojny"),
+    MoodIntense => ("Intense", "Intensywny"),
+    MoodEnergetic => ("Energetic", "Energiczny"),
+    MoodUnanalyzed => ("Not analysed yet", "Jeszcze nieprzeanalizowany"),
+    MoodNone => ("No single mood", "Bez jednego nastroju"),
+    // shell: skip link, queue panel, phone drawer
+    SkipToContent => ("Skip to main content", "Przejdź do głównej treści"),
+    QueueEyebrow => ("Queue", "Kolejka"),
+    QueueEmpty => (
+        "Start listening to see what's playing here",
+        "Zacznij słuchać, aby zobaczyć tu, co gra",
+    ),
+    CollapsePanel => ("Collapse panel", "Zwiń panel"),
+    QuickLinks => ("Quick Links", "Na skróty"),
+    DrawerActions => ("Actions", "Działania"),
+    SyncLibraryAction => ("Sync Library", "Synchronizuj bibliotekę"),
+    Logout => ("Logout", "Wyloguj"),
 }
 
 impl Msg {
@@ -683,6 +826,267 @@ pub fn total_duration(locale: Locale, seconds: i64) -> String {
     }
 }
 
+// ---- radio, mixes and vibe ----------------------------------------------------------------------------------
+
+/// A count written with the locale's digit grouping: `1,234,567` in English (upstream `toLocaleString()`), Polish
+/// groups by a no-break space from five digits on (`1234`, `12 345`), as `Intl.NumberFormat("pl")` does.
+pub fn grouped(locale: Locale, n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let (sep, min_len) = match locale {
+        Locale::En => (',', 4),
+        Locale::Pl => ('\u{a0}', 5),
+    };
+    let mut out = String::new();
+    if n < 0 {
+        out.push('-');
+    }
+    for (i, d) in digits.chars().enumerate() {
+        if digits.len() >= min_len && i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(sep);
+        }
+        out.push(d);
+    }
+    out
+}
+
+/// Like [`counted`], with the number grouped ([`grouped`]).
+fn counted_grouped(locale: Locale, n: i64, en: (&str, &str), pl: (&str, &str, &str)) -> String {
+    let shown = grouped(locale, n);
+    let n = whole(n);
+    let noun = match locale {
+        Locale::En if n == 1 => en.0,
+        Locale::En => en.1,
+        Locale::Pl => match pl_plural(n) {
+            PlPlural::One => pl.0,
+            PlPlural::Few => pl.1,
+            PlPlural::Many => pl.2,
+        },
+    };
+    format!("{shown} {noun}")
+}
+
+/// A station's or mix card's "1,234 tracks" (grouped digits, upstream `plural`).
+pub fn track_total(locale: Locale, n: i64) -> String {
+    counted_grouped(
+        locale,
+        n,
+        ("track", "tracks"),
+        ("utwór", "utwory", "utworów"),
+    )
+}
+
+/// A mix page's "20 songs" (grouped digits).
+pub fn song_total(locale: Locale, n: i64) -> String {
+    counted_grouped(locale, n, ("song", "songs"), ("utwór", "utwory", "utworów"))
+}
+
+/// A radio section's count of its tiles.
+pub fn station_count(locale: Locale, n: i64) -> String {
+    counted(
+        locale,
+        n,
+        ("station", "stations"),
+        ("stacja", "stacje", "stacji"),
+    )
+}
+
+pub fn genre_count(locale: Locale, n: i64) -> String {
+    counted(
+        locale,
+        n,
+        ("genre", "genres"),
+        ("gatunek", "gatunki", "gatunków"),
+    )
+}
+
+pub fn decade_count(locale: Locale, n: i64) -> String {
+    counted(
+        locale,
+        n,
+        ("decade", "decades"),
+        ("dekada", "dekady", "dekad"),
+    )
+}
+
+/// The radio page's header line once the stations are known.
+pub fn radio_description(locale: Locale, stations: i64) -> String {
+    match locale {
+        Locale::En => format!(
+            "{}, each an endless shuffle from your own music",
+            station_count(locale, stations)
+        ),
+        Locale::Pl => format!(
+            "{} – każda losuje bez końca z Twojej muzyki",
+            station_count(locale, stations)
+        ),
+    }
+}
+
+/// A decade station's name: the twentieth century by two digits ("80s", "lata 80."), every other by four.
+pub fn decade_name(locale: Locale, decade: i32) -> String {
+    let short = (1900..2000).contains(&decade);
+    match (locale, short) {
+        (Locale::En, true) => format!("{:02}s", decade % 100),
+        (Locale::En, false) => format!("{decade}s"),
+        (Locale::Pl, true) => format!("lata {:02}.", decade % 100),
+        (Locale::Pl, false) => format!("lata {decade}."),
+    }
+}
+
+/// A station that found no songs; `station` is its (possibly server-given) name.
+pub fn station_no_tracks(locale: Locale, station: &str) -> String {
+    match locale {
+        Locale::En => format!("No tracks for this radio station: {station}"),
+        Locale::Pl => format!("Brak utworów dla tej stacji radiowej: {station}"),
+    }
+}
+
+/// A station that found fewer songs than it needs.
+pub fn station_too_few(locale: Locale, station: &str, found: usize, needs: usize) -> String {
+    match locale {
+        Locale::En => format!(
+            "Not enough tracks for this radio station: {station}: found {found}, needs {needs}"
+        ),
+        Locale::Pl => format!(
+            "Za mało utworów dla tej stacji radiowej: {station}: znaleziono {found}, potrzeba {needs}"
+        ),
+    }
+}
+
+/// Which sound-feature step the server is still building (upstream `describeSoundRebuild`'s steps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebuildStep {
+    Vectors,
+    Moods,
+    Map,
+}
+
+/// Upstream `describeSoundRebuild`: one plain line, e.g. "Scoring moods: 1 of 2 songs."
+pub fn sound_rebuild_line(locale: Locale, step: RebuildStep, done: i64, total: i64) -> String {
+    let (d, t) = (grouped(locale, done), grouped(locale, total));
+    match locale {
+        Locale::En => {
+            let what = match step {
+                RebuildStep::Vectors => "Building sound vectors",
+                RebuildStep::Moods => "Scoring moods",
+                RebuildStep::Map => "Laying out the map",
+            };
+            format!("{what}: {d} of {t} songs.")
+        }
+        Locale::Pl => {
+            let what = match step {
+                RebuildStep::Vectors => "Budowanie wektorów brzmienia",
+                RebuildStep::Moods => "Ocenianie nastrojów",
+                RebuildStep::Map => "Układanie mapy",
+            };
+            // "z N" takes the genitive: singular for exactly one, plural otherwise.
+            let noun = if whole(total) == 1 {
+                "utworu"
+            } else {
+                "utworów"
+            };
+            format!("{what}: {d} z {t} {noun}.")
+        }
+    }
+}
+
+/// The note under "By Mood" while the sound features are built; `line` is a [`sound_rebuild_line`].
+pub fn mood_stations_note(locale: Locale, line: &str) -> String {
+    match locale {
+        Locale::En => format!("Mood stations fill in as your sound features are built. {line}"),
+        Locale::Pl => {
+            format!("Stacje nastrojów pojawiają się w miarę budowania cech brzmienia. {line}")
+        }
+    }
+}
+
+/// A mix's total length (upstream `formatTotalDuration`: whole minutes, halves up, at least one).
+pub fn mix_duration(locale: Locale, seconds: i64) -> String {
+    let total = ((seconds.max(0) + 30) / 60).max(1);
+    let (hours, mins) = (total / 60, total % 60);
+    let hr = match locale {
+        Locale::En => "hr",
+        Locale::Pl => "godz.",
+    };
+    match (hours, mins) {
+        (0, m) => format!("{m} min"),
+        (h, 0) => format!("{h} {hr}"),
+        (h, m) => format!("{h} {hr} {m} min"),
+    }
+}
+
+/// A mix that could not be saved; `reason` is the server's message as received.
+pub fn mix_save_failed(locale: Locale, reason: &str) -> String {
+    match locale {
+        Locale::En => format!("Failed to save mix as playlist: {reason}"),
+        Locale::Pl => format!("Nie udało się zapisać miksu jako playlisty: {reason}"),
+    }
+}
+
+/// A mix's lower-case play button labels (upstream aria-labels); `name` is the mix's own name.
+pub fn play_mix(locale: Locale, name: &str, shuffle: bool) -> String {
+    match (locale, shuffle) {
+        (Locale::En, false) => format!("play {name}"),
+        (Locale::En, true) => format!("shuffle play {name}"),
+        (Locale::Pl, false) => format!("odtwórz: {name}"),
+        (Locale::Pl, true) => format!("odtwarzaj losowo: {name}"),
+    }
+}
+
+/// A row's "add to queue" label; `title` is the track's own title.
+pub fn add_named_to_queue(locale: Locale, title: &str) -> String {
+    match locale {
+        Locale::En => format!("Add {title} to queue"),
+        Locale::Pl => format!("Dodaj „{title}” do kolejki"),
+    }
+}
+
+/// The vibe search's summary: how many map tracks match the typed `query` (shown as typed).
+pub fn vibe_name_matches(locale: Locale, count: usize, query: &str) -> String {
+    let n = count as u64;
+    match locale {
+        Locale::En if n == 0 => format!("no tracks named \"{query}\" on the map"),
+        Locale::En if n == 1 => "1 match on the map".to_owned(),
+        Locale::En => format!("{n} matches on the map"),
+        Locale::Pl if n == 0 => format!("brak utworów o nazwie „{query}” na mapie"),
+        Locale::Pl => format!(
+            "{} na mapie",
+            pl_count(n, "trafienie", "trafienia", "trafień")
+        ),
+    }
+}
+
+/// A failed sound search; `reason` is the server's message as received.
+pub fn sound_search_failed(locale: Locale, reason: &str) -> String {
+    match locale {
+        Locale::En => format!("sound search: {reason}"),
+        Locale::Pl => format!("wyszukiwanie po brzmieniu: {reason}"),
+    }
+}
+
+/// The open track's matches heading.
+pub fn similar_tracks(locale: Locale, n: usize) -> String {
+    let n = n as u64;
+    match locale {
+        Locale::En if n == 1 => "1 similar track".to_owned(),
+        Locale::En => format!("{n} similar tracks"),
+        Locale::Pl => pl_count(n, "podobny utwór", "podobne utwory", "podobnych utworów"),
+    }
+}
+
+/// "Match Vibe" replaced the queue: the source plus `n` matches.
+pub fn vibe_queued(locale: Locale, n: usize) -> String {
+    let n = n as u64;
+    match locale {
+        Locale::En if n == 1 => "Playing this vibe: 1 matching track queued".to_owned(),
+        Locale::En => format!("Playing this vibe: {n} matching tracks queued"),
+        Locale::Pl => format!(
+            "Odtwarzanie w tym klimacie: w kolejce {}",
+            pl_count(n, "pasujący utwór", "pasujące utwory", "pasujących utworów")
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -879,7 +1283,7 @@ mod tests {
                 Msg::ColumnAlbum,
             ]
         );
-        assert!(Msg::ALL.len() >= 220, "{}", Msg::ALL.len());
+        assert!(Msg::ALL.len() >= 309, "{}", Msg::ALL.len());
     }
 
     #[test]
@@ -992,5 +1396,129 @@ mod tests {
         assert_eq!(other.text(Locale::Pl), "Too many attempts, wait 60s");
         let offline = UiError::sign_in(None, "network down".into());
         assert_eq!(offline.text(Locale::Pl), "network down");
+    }
+
+    #[test]
+    fn grouped_counts_follow_each_locales_digit_grouping() {
+        assert_eq!(grouped(Locale::En, 1234567), "1,234,567");
+        assert_eq!(grouped(Locale::En, 999), "999");
+        assert_eq!(grouped(Locale::Pl, 1234), "1234");
+        assert_eq!(grouped(Locale::Pl, 12345), "12\u{a0}345");
+        assert_eq!(track_total(Locale::En, 1), "1 track");
+        assert_eq!(track_total(Locale::En, 1234567), "1,234,567 tracks");
+        assert_eq!(track_total(Locale::Pl, 22), "22 utwory");
+        assert_eq!(track_total(Locale::Pl, 12345), "12\u{a0}345 utworów");
+        assert_eq!(song_total(Locale::En, 0), "0 songs");
+        assert_eq!(song_total(Locale::Pl, 1), "1 utwór");
+    }
+
+    #[test]
+    fn radio_sentences_have_whole_polish_forms() {
+        let pl = |f: fn(Locale, i64) -> String| [1, 2, 5, 22].map(|n| f(Locale::Pl, n));
+        assert_eq!(
+            pl(station_count),
+            ["1 stacja", "2 stacje", "5 stacji", "22 stacje"]
+        );
+        assert_eq!(
+            pl(genre_count),
+            ["1 gatunek", "2 gatunki", "5 gatunków", "22 gatunki"]
+        );
+        assert_eq!(
+            pl(decade_count),
+            ["1 dekada", "2 dekady", "5 dekad", "22 dekady"]
+        );
+        assert_eq!(station_count(Locale::En, 1), "1 station");
+        assert_eq!(
+            radio_description(Locale::En, 2),
+            "2 stations, each an endless shuffle from your own music"
+        );
+        assert_eq!(
+            radio_description(Locale::Pl, 5),
+            "5 stacji – każda losuje bez końca z Twojej muzyki"
+        );
+        assert_eq!(decade_name(Locale::En, 1980), "80s");
+        assert_eq!(decade_name(Locale::En, 1900), "00s");
+        assert_eq!(decade_name(Locale::En, 2010), "2010s");
+        assert_eq!(decade_name(Locale::Pl, 1980), "lata 80.");
+        assert_eq!(decade_name(Locale::Pl, 1850), "lata 1850.");
+        assert_eq!(
+            station_too_few(Locale::Pl, "Rock", 5, 15),
+            "Za mało utworów dla tej stacji radiowej: Rock: znaleziono 5, potrzeba 15"
+        );
+        assert_eq!(
+            sound_rebuild_line(Locale::En, RebuildStep::Vectors, 1234, 5000),
+            "Building sound vectors: 1,234 of 5,000 songs."
+        );
+        assert_eq!(
+            sound_rebuild_line(Locale::Pl, RebuildStep::Moods, 0, 1),
+            "Ocenianie nastrojów: 0 z 1 utworu."
+        );
+        assert_eq!(
+            sound_rebuild_line(Locale::Pl, RebuildStep::Map, 1, 2),
+            "Układanie mapy: 1 z 2 utworów."
+        );
+    }
+
+    #[test]
+    fn mix_and_vibe_sentences() {
+        // Moved from `api::mixes::total_duration` (upstream `formatTotalDuration`), now per language.
+        assert_eq!(mix_duration(Locale::En, 0), "1 min");
+        assert_eq!(mix_duration(Locale::En, 29), "1 min");
+        assert_eq!(mix_duration(Locale::En, 90), "2 min");
+        assert_eq!(mix_duration(Locale::En, 59 * 60), "59 min");
+        assert_eq!(mix_duration(Locale::Pl, 7200), "2 godz.");
+        assert_eq!(mix_duration(Locale::En, 3600), "1 hr");
+        assert_eq!(mix_duration(Locale::En, 3600 + 5 * 60 + 31), "1 hr 6 min");
+        assert_eq!(
+            mix_duration(Locale::Pl, 3600 + 5 * 60 + 31),
+            "1 godz. 6 min"
+        );
+        assert_eq!(play_mix(Locale::En, "Mix", true), "shuffle play Mix");
+        assert_eq!(
+            vibe_name_matches(Locale::En, 0, "zz"),
+            "no tracks named \"zz\" on the map"
+        );
+        assert_eq!(vibe_name_matches(Locale::En, 1, "zz"), "1 match on the map");
+        assert_eq!(
+            vibe_name_matches(Locale::En, 3, "zz"),
+            "3 matches on the map"
+        );
+        assert_eq!(
+            vibe_name_matches(Locale::Pl, 0, "zz"),
+            "brak utworów o nazwie „zz” na mapie"
+        );
+        assert_eq!(
+            vibe_name_matches(Locale::Pl, 3, "zz"),
+            "3 trafienia na mapie"
+        );
+        assert_eq!(vibe_name_matches(Locale::Pl, 5, "zz"), "5 trafień na mapie");
+        assert_eq!(similar_tracks(Locale::Pl, 1), "1 podobny utwór");
+        assert_eq!(similar_tracks(Locale::Pl, 12), "12 podobnych utworów");
+        assert_eq!(similar_tracks(Locale::En, 2), "2 similar tracks");
+        assert_eq!(
+            vibe_queued(Locale::Pl, 3),
+            "Odtwarzanie w tym klimacie: w kolejce 3 pasujące utwory"
+        );
+        assert_eq!(
+            vibe_queued(Locale::En, 20),
+            "Playing this vibe: 20 matching tracks queued"
+        );
+        let arg = "Zażółć <b>";
+        for l in Locale::ALL {
+            for text in [
+                station_no_tracks(l, arg),
+                station_too_few(l, arg, 1, 2),
+                mood_stations_note(l, arg),
+                mix_save_failed(l, arg),
+                play_mix(l, arg, false),
+                play_mix(l, arg, true),
+                add_named_to_queue(l, arg),
+                vibe_name_matches(l, 0, arg),
+                sound_search_failed(l, arg),
+            ] {
+                assert!(text.contains(arg), "{text}");
+                assert!(text.len() > arg.len() + 3, "{text}");
+            }
+        }
     }
 }

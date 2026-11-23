@@ -14,9 +14,10 @@ use vertigo::{Computed, DomNode, Reactive, Resource, Value, bind, dom, get_drive
 
 use crate::api::client::{ApiClient, ApiError};
 use crate::api::radio::{
-    BATCH_LIMIT, StationBatches, browser_time_zone, enrichment_progress, mood_note, radio_batch,
-    radio_item, radio_row, sound_rebuild, station_query, station_seed,
+    BATCH_LIMIT, SoundRebuild, StationBatches, browser_time_zone, enrichment_progress, mood_note,
+    radio_batch, radio_item, radio_row, sound_rebuild, station_query, station_seed,
 };
+use crate::i18n::{self, Locale, Msg};
 use crate::icons::icon;
 use crate::player::StationFetch;
 use crate::route::Route;
@@ -32,28 +33,25 @@ const BAR_FEATURED: &str = "bg-brand";
 const BAR_TRACK: &str = "bg-type-track";
 
 /// The page's header line (upstream `PageHeader` description).
-pub fn description(row: Option<&RadioRow>) -> String {
+pub fn description(locale: Locale, row: Option<&RadioRow>) -> String {
     match row {
-        Some(row) => format!(
-            "{} stations, each an endless shuffle from your own music",
-            row.total()
-        ),
-        None => "Endless shuffles from your own music".to_owned(),
+        Some(row) => i18n::radio_description(locale, row.total() as i64),
+        None => Msg::RadioTagline.text(locale).to_owned(),
     }
 }
 
 /// Why a station did not start, as the toast says it (upstream `notify.error` title and message in one line).
-pub fn start_problem(station: &RadioStation, found: usize) -> Option<String> {
+pub fn start_problem(locale: Locale, station: &RadioStation, found: usize) -> Option<String> {
+    let name = station.name.text(locale);
     if found == 0 {
-        return Some(format!(
-            "No tracks for this radio station: {}",
-            station.name
-        ));
+        return Some(i18n::station_no_tracks(locale, &name));
     }
     if found < station.min_tracks {
-        return Some(format!(
-            "Not enough tracks for this radio station: {}: found {found}, needs {}",
-            station.name, station.min_tracks
+        return Some(i18n::station_too_few(
+            locale,
+            &name,
+            found,
+            station.min_tracks,
         ));
     }
     None
@@ -89,7 +87,7 @@ fn is_ready(state: &Value<Resource<Rc<RadioRow>>>) -> bool {
 
 /// Loads the row into `state`; while it keeps failing and the page is open, asks again every 30 s. Starts a new
 /// loop generation, so a Retry or a new visit retires the older loop.
-fn load_row(ctx: &Ctx, state: &Value<Resource<Rc<RadioRow>>>, note: &Value<Option<String>>) {
+fn load_row(ctx: &Ctx, state: &Value<Resource<Rc<RadioRow>>>, note: &Value<Option<SoundRebuild>>) {
     if !get_driver().is_browser() {
         return;
     }
@@ -124,15 +122,16 @@ fn load_row(ctx: &Ctx, state: &Value<Resource<Rc<RadioRow>>>, note: &Value<Optio
 
 /// Upstream `useSoundRebuild` for the "By Mood" note: read while the page is open and the features are built. A
 /// failed read keeps the last note and tries again on the next tick (React Query keeps polling too).
-async fn watch_rebuild(ctx: &Ctx, note: &Value<Option<String>>, generation: u32) {
+async fn watch_rebuild(ctx: &Ctx, note: &Value<Option<SoundRebuild>>, generation: u32) {
     loop {
         let answer = enrichment_progress(&ctx.client).await;
         if !loop_is_current(generation) {
             return;
         }
         if let Ok(progress) = answer {
+            // The step is kept, not its text: the note is written when shown, so it follows the language.
             let rebuild = sound_rebuild(&progress);
-            note.set(mood_note(rebuild));
+            note.set(rebuild);
             if rebuild.is_none() {
                 return;
             }
@@ -169,8 +168,8 @@ fn start_radio(ctx: &Ctx, station: RadioStation, loading: &Value<Option<String>>
         let seed = station_seed(get_driver().utc_now(), get_driver().get_random(0, u32::MAX));
         let batches = Rc::new(RefCell::new(StationBatches::new(query, seed)));
         match next_batch(&ctx.client, &batches).await {
-            Err(_) => ctx.notify("Failed to start radio station"),
-            Ok(reply) => match start_problem(&station, reply.tracks.len()) {
+            Err(_) => ctx.notify(ctx.prefs.now(Msg::StationStartFailed)),
+            Ok(reply) => match start_problem(ctx.prefs.current(), &station, reply.tracks.len()) {
                 Some(problem) => ctx.notify(problem),
                 None => {
                     let client = ctx.client.clone();
@@ -192,9 +191,12 @@ fn start_radio(ctx: &Ctx, station: RadioStation, loading: &Value<Option<String>>
 }
 
 /// Upstream `SectionHeader` (size md): coloured bar, title, optional count, hairline.
-fn section_header(bar: &'static str, title: &str, count: Option<String>) -> DomNode {
+fn section_header(
+    bar: &'static str,
+    title: Computed<String>,
+    count: Option<Computed<String>>,
+) -> DomNode {
     let bar_class = format!("w-1 rounded-full shrink-0 h-7 {bar}");
-    let title = title.to_owned();
     let count = match count {
         Some(count) => dom! { <span class="t-meta">{count}</span> },
         None => dom! { <span class="hidden" /> },
@@ -274,6 +276,8 @@ fn station_card(
         station.description.clone(),
         station.id.clone(),
     );
+    let name = ctx.prefs.format(move |l| name.text(l));
+    let line = ctx.prefs.format(move |l| line.text(l));
     let picked = station.clone();
     let start = bind!(ctx, loading, picked, |_| start_radio(
         &ctx,
@@ -319,19 +323,19 @@ fn station_grid(
 /// Upstream `StationSection`: nothing once loaded without stations; a count of `unit`s and an optional note.
 fn station_section(
     ctx: &Ctx,
-    title: &'static str,
-    unit: &'static str,
+    title: Msg,
+    unit: fn(Locale, i64) -> String,
     pick: fn(&RadioRow) -> &Vec<RadioStation>,
     state: &Value<Resource<Rc<RadioRow>>>,
     loading: &Value<Option<String>>,
-    note: Option<Value<Option<String>>>,
+    note: Option<Value<Option<SoundRebuild>>>,
 ) -> DomNode {
     let ctx = ctx.clone();
     let loading = loading.clone();
     state.render_value(move |state| match state {
         Resource::Loading => dom! {
             <section>
-                {section_header(BAR_TRACK, title, None)}
+                {section_header(BAR_TRACK, ctx.prefs.text(title), None)}
                 {skeleton()}
             </section>
         },
@@ -341,20 +345,25 @@ fn station_section(
             if stations.is_empty() {
                 return dom! { <span class="hidden" /> };
             }
-            let count = format!("{} {unit}", stations.len());
+            let n = stations.len() as i64;
+            let count = ctx.prefs.format(move |l| unit(l, n));
             let note_view = match &note {
-                Some(note) => note.render_value(|n| match n {
-                    Some(text) => {
-                        dom! { <p class="-mt-1 mb-3 text-xs text-[var(--text-muted)]">{text}</p> }
-                    }
-                    None => dom! { <span class="hidden" /> },
-                }),
+                Some(note) => {
+                    let (note, locale) = (note.clone(), ctx.prefs.locale.clone());
+                    let text = Computed::from(move |c| mood_note(locale.get(c), note.get(c)));
+                    text.render_value(|n| match n {
+                        Some(text) => {
+                            dom! { <p class="-mt-1 mb-3 text-xs text-[var(--text-muted)]">{text}</p> }
+                        }
+                        None => dom! { <span class="hidden" /> },
+                    })
+                }
                 None => dom! { <span class="hidden" /> },
             };
             let grid = station_grid(&ctx, stations, &row, &loading);
             dom! {
                 <section>
-                    {section_header(BAR_TRACK, title, Some(count))}
+                    {section_header(BAR_TRACK, ctx.prefs.text(title), Some(count))}
                     {note_view}
                     {grid}
                 </section>
@@ -366,13 +375,16 @@ fn station_section(
 pub fn render(ctx: &Ctx) -> DomNode {
     let state: Value<Resource<Rc<RadioRow>>> = Value::new(Resource::Loading);
     let loading: Value<Option<String>> = Value::new(None);
-    let note: Value<Option<String>> = Value::new(None);
+    let note: Value<Option<SoundRebuild>> = Value::new(None);
     load_row(ctx, &state, &note);
 
-    let header_line = state.map(|s| match s {
-        Resource::Ready(row) => description(Some(&row)),
-        _ => description(None),
-    });
+    let header_line = {
+        let (state, locale) = (state.clone(), ctx.prefs.locale.clone());
+        Computed::from(move |c| match state.get(c) {
+            Resource::Ready(row) => description(locale.get(c), Some(&row)),
+            _ => description(locale.get(c), None),
+        })
+    };
 
     let quick = state.render_value(bind!(
         ctx,
@@ -387,15 +399,15 @@ pub fn render(ctx: &Ctx) -> DomNode {
                 });
                 dom! {
                     <div class="flex items-center gap-3 py-4" data-testid="radio-error" title={message}>
-                        <p class="text-sm text-[var(--text-secondary)]">"Could not load the stations."</p>
+                        <p class="text-sm text-[var(--text-secondary)]">{ctx.prefs.text(Msg::StationsLoadFailed)}</p>
                         <button class="inline-flex items-center justify-center gap-2 min-h-[44px] rounded-lg font-semibold transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed bg-white/5 hover:bg-white/10 text-[var(--text-secondary)] hover:text-white border border-white/10 hover:border-white/20 px-4 text-sm"
-                            aria-label="Retry loading the stations" on_click={retry}>"Retry"</button>
+                            aria-label={ctx.prefs.text(Msg::RetryStations)} on_click={retry}>{ctx.prefs.text(Msg::Retry)}</button>
                     </div>
                 }
             }
             Resource::Loading => dom! {
                 <section>
-                    {section_header(BAR_FEATURED, "Quick Start", None)}
+                    {section_header(BAR_FEATURED, ctx.prefs.text(Msg::QuickStart), None)}
                     {skeleton()}
                 </section>
             },
@@ -403,7 +415,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
                 let grid = station_grid(&ctx, &row.quick, &row, &loading);
                 dom! {
                     <section>
-                        {section_header(BAR_FEATURED, "Quick Start", None)}
+                        {section_header(BAR_FEATURED, ctx.prefs.text(Msg::QuickStart), None)}
                         {grid}
                     </section>
                 }
@@ -412,8 +424,8 @@ pub fn render(ctx: &Ctx) -> DomNode {
     ));
     let moods = station_section(
         ctx,
-        "By Mood",
-        "stations",
+        Msg::ByMood,
+        i18n::station_count,
         |r| &r.moods,
         &state,
         &loading,
@@ -421,8 +433,8 @@ pub fn render(ctx: &Ctx) -> DomNode {
     );
     let genres = station_section(
         ctx,
-        "By Genre",
-        "genres",
+        Msg::ByGenre,
+        i18n::genre_count,
         |r| &r.genres,
         &state,
         &loading,
@@ -430,8 +442,8 @@ pub fn render(ctx: &Ctx) -> DomNode {
     );
     let decades = station_section(
         ctx,
-        "By Decade",
-        "decades",
+        Msg::ByDecade,
+        i18n::decade_count,
         |r| &r.decades,
         &state,
         &loading,
@@ -444,7 +456,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
                 <header class="page-shell pt-6 pb-5">
                     <div class="flex flex-wrap items-end justify-between gap-4">
                         <div class="min-w-0">
-                            <h1 class="t-page-title">"Radio"</h1>
+                            <h1 class="t-page-title">{ctx.prefs.text(Msg::NavRadio)}</h1>
                             <p class="mt-2 text-sm text-[var(--text-muted)]">{header_line}</p>
                         </div>
                     </div>
@@ -455,7 +467,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
                         {moods}
                         {genres}
                         {decades}
-                        <p class="t-meta">"Genre and decade stations appear once your library has enough tracks for them."</p>
+                        <p class="t-meta">{ctx.prefs.text(Msg::StationsAppearLater)}</p>
                     </div>
                 </div>
             </div>
@@ -482,30 +494,46 @@ mod tests {
 
     #[test]
     fn the_header_counts_every_station_once_loaded() {
-        assert_eq!(description(None), "Endless shuffles from your own music");
+        assert_eq!(
+            description(Locale::En, None),
+            "Endless shuffles from your own music"
+        );
+        assert_eq!(
+            description(Locale::Pl, None),
+            "Niekończące się losowanie z Twojej muzyki"
+        );
         let row = RadioRow {
             quick: quick_stations(&["all", "discovery"]),
             ..RadioRow::default()
         };
         assert_eq!(
-            description(Some(&row)),
+            description(Locale::En, Some(&row)),
             "2 stations, each an endless shuffle from your own music"
+        );
+        assert_eq!(
+            description(Locale::Pl, Some(&row)),
+            "2 stacje – każda losuje bez końca z Twojej muzyki"
         );
     }
 
     #[test]
     fn a_station_starts_only_with_enough_songs() {
         let mut station = quick_stations(&["discovery"]).remove(0);
+        let en = Locale::En;
         assert_eq!(
-            start_problem(&station, 0).as_deref(),
+            start_problem(en, &station, 0).as_deref(),
             Some("No tracks for this radio station: Discovery")
         );
         assert_eq!(
-            start_problem(&station, 5).as_deref(),
+            start_problem(en, &station, 5).as_deref(),
             Some("Not enough tracks for this radio station: Discovery: found 5, needs 20")
         );
-        assert_eq!(start_problem(&station, 20), None);
+        assert_eq!(
+            start_problem(Locale::Pl, &station, 5).as_deref(),
+            Some("Za mało utworów dla tej stacji radiowej: Odkrycia: znaleziono 5, potrzeba 20")
+        );
+        assert_eq!(start_problem(en, &station, 20), None);
         station.min_tracks = 1;
-        assert_eq!(start_problem(&station, 1), None);
+        assert_eq!(start_problem(en, &station, 1), None);
     }
 }

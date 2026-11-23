@@ -10,6 +10,8 @@ use std::rc::Rc;
 use aether_api_types::vibe::{MapResponse, MapTrack, SearchTrack};
 use unicode_normalization::UnicodeNormalization;
 
+use crate::i18n::Msg;
+
 /// The five moods, in upstream's fixed order (`MOOD_KEYS`).
 pub const MOOD_KEYS: [&str; 5] = [
     "moodHappy",
@@ -19,16 +21,17 @@ pub const MOOD_KEYS: [&str; 5] = [
     "moodParty",
 ];
 
-/// Human name for a backend mood key (`moodLabel`); anything unknown reads as "No single mood".
-pub fn mood_label(key: &str) -> &'static str {
+/// Human name for a backend mood key (`moodLabel`); anything unknown reads as "No single mood". Only the
+/// shown name is translated: the key itself (API value, colour, lit layer) never changes.
+pub fn mood_label(key: &str) -> Msg {
     match key {
-        "moodHappy" => "Upbeat",
-        "moodSad" => "Melancholic",
-        "moodRelaxed" => "Calm",
-        "moodAggressive" => "Intense",
-        "moodParty" => "Energetic",
-        "unanalyzed" => "Not analysed yet",
-        _ => "No single mood",
+        "moodHappy" => Msg::MoodUpbeat,
+        "moodSad" => Msg::MoodMelancholic,
+        "moodRelaxed" => Msg::MoodCalm,
+        "moodAggressive" => Msg::MoodIntense,
+        "moodParty" => Msg::MoodEnergetic,
+        "unanalyzed" => Msg::MoodUnanalyzed,
+        _ => Msg::MoodNone,
     }
 }
 
@@ -307,14 +310,31 @@ mod tests {
 
     #[test]
     fn moods_have_upstream_names_and_colours() {
-        assert_eq!(mood_label("moodHappy"), "Upbeat");
-        assert_eq!(mood_label("moodSad"), "Melancholic");
-        assert_eq!(mood_label("moodRelaxed"), "Calm");
-        assert_eq!(mood_label("moodAggressive"), "Intense");
-        assert_eq!(mood_label("moodParty"), "Energetic");
-        assert_eq!(mood_label("unanalyzed"), "Not analysed yet");
-        assert_eq!(mood_label("neutral"), "No single mood");
-        assert_eq!(mood_label("whatever"), "No single mood");
+        use crate::i18n::Locale::{En, Pl};
+        let en = |k: &str| mood_label(k).text(En);
+        assert_eq!(en("moodHappy"), "Upbeat");
+        assert_eq!(en("moodSad"), "Melancholic");
+        assert_eq!(en("moodRelaxed"), "Calm");
+        assert_eq!(en("moodAggressive"), "Intense");
+        assert_eq!(en("moodParty"), "Energetic");
+        assert_eq!(en("unanalyzed"), "Not analysed yet");
+        assert_eq!(en("neutral"), "No single mood");
+        assert_eq!(en("whatever"), "No single mood");
+        let pl: Vec<&str> = MOOD_KEYS.iter().map(|k| mood_label(k).text(Pl)).collect();
+        assert_eq!(
+            pl,
+            [
+                "Radosny",
+                "Melancholijny",
+                "Spokojny",
+                "Intensywny",
+                "Energiczny"
+            ]
+        );
+        assert_eq!(
+            mood_label("unanalyzed").text(Pl),
+            "Jeszcze nieprzeanalizowany"
+        );
         assert_eq!(mood_rgb("moodHappy"), (240, 178, 90));
         assert_eq!(mood_rgb("unanalyzed"), (96, 96, 104));
         assert_eq!(mood_rgb("whatever"), (163, 163, 163));

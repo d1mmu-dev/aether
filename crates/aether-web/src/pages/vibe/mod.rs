@@ -22,9 +22,11 @@ use vertigo::{
 
 use crate::api::client::load;
 use crate::api::vibe::{self as api, Features, MapState, SEARCH_LIMIT};
+use crate::i18n::{self, Msg, UiError};
 use crate::icons::icon;
+use crate::prefs::Prefs;
 use crate::route::Route;
-use crate::ui::{Ctx, cover_url};
+use crate::ui::{Ctx, cover_url, fixed_text};
 use logic::{CacheUse, Found, Generation, SoundFailure, Via};
 
 /// How often a map that is still being computed is asked for again (upstream: every 4 s).
@@ -40,10 +42,6 @@ const SOUND_DEBOUNCE_MS: u32 = 350;
 const NAME_LIMIT: usize = 8;
 /// Lit layers up to this many points get a white outline (see `lit_layer`).
 const OUTLINE_MAX: usize = 1000;
-
-const OFF_TITLE: &str = "Vibe is not available on this server";
-const OFF_DETAIL: &str = "The vibe map and sound matching need the music analysis model (vibe embeddings). Once an admin provisions it and the library is analysed, your tracks appear here.";
-const SOUND_OFF: &str = "sound search is not available on this server";
 
 /// Vibe state that outlives one visit to the page, kept in [`Ctx`]: the loaded map (upstream keeps
 /// it in React Query for an hour) and the generation of the map loader, so a page left and opened
@@ -80,7 +78,8 @@ enum MapLoad {
     Loading,
     Computing,
     Ready(Rc<MapResponse>),
-    Failed(String),
+    /// The server's message as received, or the page's own (polling gave up).
+    Failed(UiError),
 }
 
 /// What the map lights up.
@@ -98,7 +97,7 @@ enum Matches {
     Idle,
     Loading(String),
     Ready(String, Rc<SimilarResponse>),
-    Failed(String, String),
+    Failed(String, UiError),
 }
 
 impl Matches {
@@ -143,19 +142,20 @@ pub fn render(ctx: &Ctx) -> DomNode {
     let body = attempt.render_value(bind!(ctx, attempt, |n: u32| {
         let features = load(bind!(ctx, async move { api::features(&ctx.client).await }));
         features.render_value(bind!(ctx, attempt, |state: Resource<Rc<Features>>| {
+            let t = |m: Msg| ctx.prefs.text(m);
             match state {
-                Resource::Loading => note("Charting your library", None, true, None),
+                Resource::Loading => note(t(Msg::ChartingLibrary), None, true, None),
                 Resource::Error(message) => {
                     let retry = bind!(attempt, |_| attempt.set(n.wrapping_add(1)));
                     note(
-                        "The music map did not load",
-                        Some(message),
+                        t(Msg::MapLoadFailed),
+                        Some(fixed_text(message)),
                         false,
-                        Some(retry_button(retry)),
+                        Some(retry_button(&ctx.prefs, retry)),
                     )
                 }
                 Resource::Ready(f) if !f.vibe_embeddings => {
-                    note(OFF_TITLE, Some(OFF_DETAIL.to_owned()), false, None)
+                    note(t(Msg::VibeOff), Some(t(Msg::VibeOffDetail)), false, None)
                 }
                 Resource::Ready(_) => map_page(&ctx),
             }
@@ -168,15 +168,19 @@ pub fn render(ctx: &Ctx) -> DomNode {
     }
 }
 
-fn retry_button(on_click: impl Fn(vertigo::ClickEvent) + 'static) -> DomNode {
+fn retry_button(prefs: &Prefs, on_click: impl Fn(vertigo::ClickEvent) + 'static) -> DomNode {
     dom! {
-        <button class="mt-3 inline-flex items-center justify-center rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-black hover:bg-brand-hover" on_click={on_click}>"Try again"</button>
+        <button class="mt-3 inline-flex items-center justify-center rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-black hover:bg-brand-hover" on_click={on_click}>{prefs.text(Msg::TryAgain)}</button>
     }
 }
 
 /// Upstream `CenteredNote`.
-fn note(title: &str, detail: Option<String>, spinner: bool, action: Option<DomNode>) -> DomNode {
-    let title = title.to_owned();
+fn note(
+    title: Computed<String>,
+    detail: Option<Computed<String>>,
+    spinner: bool,
+    action: Option<DomNode>,
+) -> DomNode {
     let spinner = if spinner {
         dom! { <span class="mx-auto mb-3 block h-5 w-5 animate-spin rounded-full border-2 border-white/15 border-t-brand"></span> }
     } else {
@@ -206,15 +210,16 @@ fn map_page(ctx: &Ctx) -> DomNode {
     if let Some(job) = job {
         run_map(ctx, state.clone(), job);
     }
-    state.render_value(bind!(ctx, state, |load: MapLoad| match load {
-        MapLoad::Loading => note("Charting your library", None, true, None),
+    let t = bind!(ctx, |m: Msg| ctx.prefs.text(m));
+    state.render_value(bind!(ctx, state, t, |load: MapLoad| match load {
+        MapLoad::Loading => note(t(Msg::ChartingLibrary), None, true, None),
         MapLoad::Computing => note(
-            "Charting your library",
-            Some("Building the map. Large libraries take a few minutes.".into()),
+            t(Msg::ChartingLibrary),
+            Some(t(Msg::BuildingMap)),
             true,
             None,
         ),
-        MapLoad::Failed(message) => {
+        MapLoad::Failed(error) => {
             let retry = bind!(ctx, state, |_| {
                 let (initial, job) = plan_map(&ctx, true);
                 state.set(initial);
@@ -222,18 +227,17 @@ fn map_page(ctx: &Ctx) -> DomNode {
                     run_map(&ctx, state.clone(), job);
                 }
             });
+            let detail = ctx.prefs.format(move |l| error.text(l));
             note(
-                "The music map did not load",
-                Some(message),
+                t(Msg::MapLoadFailed),
+                Some(detail),
                 false,
-                Some(retry_button(retry)),
+                Some(retry_button(&ctx.prefs, retry)),
             )
         }
         MapLoad::Ready(map) if map.tracks.is_empty() => note(
-            "No tracks with vibe analysis yet",
-            Some(
-                "Run enrichment to analyse your library; tracks appear here as they finish.".into()
-            ),
+            t(Msg::NoVibeTracks),
+            Some(t(Msg::RunEnrichment)),
             false,
             None,
         ),
@@ -318,7 +322,7 @@ fn run_map(ctx: &Ctx, state: Value<MapLoad>, job: MapJob) {
                 // A failed background refresh keeps the map on screen (upstream keeps cached data).
                 (Err(_), Some(_)) => return,
                 (Err(err), None) => {
-                    state.set(MapLoad::Failed(err.message));
+                    state.set(MapLoad::Failed(UiError::Server(err.message)));
                     return;
                 }
             }
@@ -327,9 +331,7 @@ fn run_map(ctx: &Ctx, state: Value<MapLoad>, job: MapJob) {
                 return;
             }
         }
-        state.set(MapLoad::Failed(
-            "The map is still being built; try again later.".into(),
-        ));
+        state.set(MapLoad::Failed(UiError::Msg(Msg::MapStillBuilding)));
     }));
 }
 
@@ -388,14 +390,16 @@ impl Scene {
             match answer {
                 Ok(found) if found.tracks.is_empty() => me
                     .matches
-                    .set(Matches::Failed(id, "No matches for this track yet".into())),
+                    .set(Matches::Failed(id, UiError::Msg(Msg::NoMatchesYet))),
                 Ok(found) => {
                     let mut ids = vec![id.clone()];
                     ids.extend(found.tracks.iter().map(|t| t.id.clone()));
                     me.lit.set(Lit::Similar(Rc::new(ids)));
                     me.matches.set(Matches::Ready(id, Rc::new(found)));
                 }
-                Err(err) => me.matches.set(Matches::Failed(id, err.message)),
+                Err(err) => me
+                    .matches
+                    .set(Matches::Failed(id, UiError::Server(err.message))),
             }
         });
     }
@@ -411,7 +415,7 @@ impl Scene {
             };
             let found = match ready {
                 Ok(found) if found.tracks.is_empty() => {
-                    me.ctx.notify("No matches for this track yet");
+                    me.ctx.notify(me.ctx.prefs.now(Msg::NoMatchesYet));
                     return;
                 }
                 Ok(found) => found,
@@ -425,8 +429,7 @@ impl Scene {
                     let queue = api::vibe_queue(source, &found.tracks);
                     let n = queue.len() - 1;
                     me.ctx.player.play_in_order(queue, 0);
-                    me.ctx
-                        .notify(format!("Playing this vibe: {n} matching tracks queued"));
+                    me.ctx.notify(i18n::vibe_queued(me.ctx.prefs.current(), n));
                 }
                 Err(err) => me.ctx.notify(err.message),
             }
@@ -439,11 +442,11 @@ impl Scene {
         get_driver().spawn(async move {
             match api::track(&ctx.client, &id).await {
                 Ok(item) if queue_only => {
-                    ctx.notify(format!("Added “{}” to the queue", item.title));
+                    ctx.notify(i18n::added_to_queue(ctx.prefs.current(), &item.title));
                     ctx.player.enqueue(item);
                 }
                 Ok(item) => ctx.player.play_queue(vec![item], 0),
-                Err(_) => ctx.notify("Couldn't play this track"),
+                Err(_) => ctx.notify(ctx.prefs.now(Msg::CouldNotPlayTrack)),
             }
         });
     }
@@ -701,10 +704,7 @@ fn stars(s: &Scene) -> DomNode {
     svg_root("absolute inset-0 h-full w-full")
         .attr("style", style)
         .attr_static("role", "group")
-        .attr_static(
-            "aria-label",
-            "Your library mapped by vibe. Use the search box to open a track with the keyboard.",
-        )
+        .attr("aria-label", s.ctx.prefs.text(Msg::VibeMapLabel))
         .child(group)
         .into()
 }
@@ -814,7 +814,7 @@ fn toolbar(s: &Scene) -> DomNode {
         let clear = bind!(s, |_| s.clear_search());
         dom! {
             <button class="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center justify-center rounded-full p-1 text-white/60 hover:text-white"
-                aria-label="Clear search" on_click={clear}>
+                aria-label={s.ctx.prefs.text(Msg::ClearSearch)} on_click={clear}>
                 {icon("x", "h-3.5 w-3.5")}
             </button>
         }
@@ -830,7 +830,7 @@ fn toolbar(s: &Scene) -> DomNode {
             <div class="relative w-full">
                 {icon("search", "pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-white/55")}
                 <input type="text" value={s.typed.to_computed()} on_input={on_input}
-                    placeholder="find a track, artist or a sound" aria-label="Search tracks, artists or sounds"
+                    placeholder={s.ctx.prefs.text(Msg::VibeSearchPlaceholder)} aria-label={s.ctx.prefs.text(Msg::VibeSearchLabel)}
                     autocomplete="off" autocapitalize="none"
                     class="h-9 w-80 tablet:w-full rounded-lg bg-white/[0.04] pl-8 pr-8 text-sm text-white placeholder-white/55 caret-[var(--color-brand)] outline-none transition-colors focus:bg-white/[0.07]" />
                 {clear_button}
@@ -841,25 +841,22 @@ fn toolbar(s: &Scene) -> DomNode {
 }
 
 fn results_list(s: &Scene, r: &Results) -> DomNode {
-    let summary = if r.count == 0 {
-        format!("no tracks named \"{}\" on the map", r.query)
-    } else {
-        format!(
-            "{} {} on the map",
-            r.count,
-            if r.count == 1 { "match" } else { "matches" }
-        )
+    let prefs = &s.ctx.prefs;
+    let summary = {
+        let (count, query) = (r.count, r.query.clone());
+        prefs.format(move |l| i18n::vibe_name_matches(l, count, &query))
     };
     let sound = match &r.sound {
         Sound::Pending => {
-            dom! { <p class="px-3 pb-1 text-[11px] text-white/45">"listening for tracks that sound like it…"</p> }
+            dom! { <p class="px-3 pb-1 text-[11px] text-white/45">{prefs.text(Msg::ListeningForSound)}</p> }
         }
         Sound::Done => dom! { <span /> },
         Sound::Unavailable => {
-            dom! { <p class="px-3 pb-1 text-[11px] text-white/45">{SOUND_OFF}</p> }
+            dom! { <p class="px-3 pb-1 text-[11px] text-white/45">{prefs.text(Msg::SoundSearchOff)}</p> }
         }
         Sound::Failed(message) => {
-            let message = format!("sound search: {message}");
+            let message = message.clone();
+            let message = prefs.format(move |l| i18n::sound_search_failed(l, &message));
             dom! { <p class="px-3 pb-1 text-[11px] text-danger-light">{message}</p> }
         }
     };
@@ -871,8 +868,8 @@ fn results_list(s: &Scene, r: &Results) -> DomNode {
             let play = bind!(s, f, |_| s.play_by_id(f.id.clone(), false));
             let queue = bind!(s, f, |_| s.play_by_id(f.id.clone(), true));
             let via = match f.via {
-                Via::Name => "",
-                Via::Sound => "sounds like it",
+                Via::Name => fixed_text(""),
+                Via::Sound => prefs.text(Msg::SoundsLikeIt),
             };
             let (title, artist) = (f.title.clone(), f.artist.clone());
             dom! {
@@ -881,10 +878,10 @@ fn results_list(s: &Scene, r: &Results) -> DomNode {
                         <span class="block truncate text-sm text-[var(--text-primary)]">{title}</span>
                         <span class="block truncate text-xs text-white/60">{artist}<span class="ml-2 text-white/40">{via}</span></span>
                     </button>
-                    <button class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-white/60 hover:bg-white/10 hover:text-white" aria-label="Play" title="play" on_click={play}>
+                    <button class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-white/60 hover:bg-white/10 hover:text-white" aria-label={prefs.text(Msg::Play)} title={prefs.hint(Msg::Play)} on_click={play}>
                         {icon("play", "h-3.5 w-3.5 fill-current")}
                     </button>
-                    <button class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-white/60 hover:bg-white/10 hover:text-white" aria-label="Add to queue" title="add to queue" on_click={queue}>
+                    <button class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-white/60 hover:bg-white/10 hover:text-white" aria-label={prefs.text(Msg::AddToQueue)} title={prefs.hint(Msg::AddToQueue)} on_click={queue}>
                         {icon("list-plus", "h-4 w-4")}
                     </button>
                 </div>
@@ -892,7 +889,7 @@ fn results_list(s: &Scene, r: &Results) -> DomNode {
         })
         .collect();
     dom! {
-        <div id="vibe-search-results" role="list" aria-label="Matching tracks"
+        <div id="vibe-search-results" role="list" aria-label={prefs.text(Msg::MatchingTracks)}
             class="vibe-glass vibe-glass--solid absolute left-0 top-full z-10 mt-2 w-full min-w-72 max-h-[60vh] overflow-y-auto rounded-xl py-1">
             <p class="px-3 pb-1 pt-1.5 text-[11px] text-white/60" aria-live="polite">{summary}</p>
             {sound}
@@ -919,7 +916,7 @@ fn legend(s: &Scene) -> DomNode {
             });
             let pressed = on.map(|on| on.to_string());
             let dot = format!("background: rgb({r} {g} {b}); box-shadow: 0 0 6px rgb({r} {g} {b} / 0.8);");
-            let label = logic::mood_label(&mood);
+            let label = s.ctx.prefs.text(logic::mood_label(&mood));
             let count = count.to_string();
             let toggle = bind!(s, mood, |_| s.toggle_mood(mood.clone()));
             dom! {
@@ -933,7 +930,10 @@ fn legend(s: &Scene) -> DomNode {
             }
         })
         .collect();
-    let total = format!("{} tracks", s.map.track_count);
+    let total = {
+        let n = s.map.track_count as i64;
+        s.ctx.prefs.format(move |l| i18n::track_count(l, n))
+    };
     // On phones and tablets the track panel is a bottom sheet over the legend: hide the legend meanwhile.
     let class = s.selected.map(|selected| {
         format!(
@@ -943,7 +943,7 @@ fn legend(s: &Scene) -> DomNode {
     });
     dom! {
         <div class={class}>
-            <div class="flex flex-wrap gap-1.5" role="group" aria-label="Moods in your library">{..chips}</div>
+            <div class="flex flex-wrap gap-1.5" role="group" aria-label={s.ctx.prefs.text(Msg::MoodsInLibrary)}>{..chips}</div>
             <p class="mt-2"><span class="shrink-0 text-[11px] tabular-nums text-white/60">{total}</span></p>
         </div>
     }
@@ -962,10 +962,10 @@ fn hint(s: &Scene) -> DomNode {
             <div class="absolute bottom-3 right-3 z-(--z-scene) w-[22rem] max-w-sm tablet:hidden">
                 <div class="vibe-glass flex items-start gap-3 rounded-xl px-4 py-3">
                     <div class="min-w-0 flex-1">
-                        <p class="mb-0.5 text-xs font-semibold text-[var(--text-primary)]">"This is your music, mapped by vibe."</p>
-                        <p class="text-xs leading-relaxed text-[var(--text-secondary)]">"Click a point: details, play, matching tracks · Search: by name or by sound · Moods: light them up"</p>
+                        <p class="mb-0.5 text-xs font-semibold text-[var(--text-primary)]">{s.ctx.prefs.text(Msg::VibeHintTitle)}</p>
+                        <p class="text-xs leading-relaxed text-[var(--text-secondary)]">{s.ctx.prefs.text(Msg::VibeHintBody)}</p>
                     </div>
-                    <button aria-label="Dismiss" class="shrink-0 rounded text-[var(--text-muted)] transition-colors hover:text-white/70" on_click={dismiss}>
+                    <button aria-label={s.ctx.prefs.text(Msg::Dismiss)} class="shrink-0 rounded text-[var(--text-muted)] transition-colors hover:text-white/70" on_click={dismiss}>
                         {icon("x", "h-4 w-4")}
                     </button>
                 </div>
@@ -989,28 +989,31 @@ fn panel(s: &Scene) -> DomNode {
         let vibe = bind!(s, id, |_| s.match_vibe(id.clone()));
         let similar = bind!(s, id, |_| s.similar(id.clone()));
         let head = panel_head(&s, &id);
-        let moods = s.track(&id).map_or_else(|| dom! { <span /> }, mood_rows);
+        let moods = s
+            .track(&id)
+            .map_or_else(|| dom! { <span /> }, |t| mood_rows(&s.ctx.prefs, t));
+        let t = |m: Msg| s.ctx.prefs.text(m);
         let list = similar_list(&s, id.clone());
         dom! {
             <aside id="vibe-track-panel" role="region" aria-labelledby="vibe-track-panel-title"
                 class="vibe-glass absolute right-4 top-[4.5rem] z-(--z-scene) w-[min(20rem,calc(100%-2rem))] max-h-[calc(100%-6rem)] overflow-y-auto overscroll-contain rounded-2xl p-4 animate-slide-in tablet:left-3 tablet:right-3 tablet:w-auto tablet:top-auto tablet:bottom-[var(--mini-clearance)] tablet:max-h-[60%]">
                 <div class="flex items-start gap-3">
                     {head}
-                    <button aria-label="Close track details" on_click={close}
+                    <button aria-label={t(Msg::CloseTrackDetails)} on_click={close}
                         class="-mr-1.5 -mt-1 rounded-md p-1.5 text-[var(--text-muted)] transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40">
                         {icon("x", "h-4 w-4")}
                     </button>
                 </div>
                 {moods}
                 <div class="mt-4 grid grid-cols-2 gap-2">
-                    <button aria-label="Play this track" class={ACTION_PLAY} on_click={play}>
-                        {icon("play", "h-3.5 w-3.5 fill-current")}"Play"
+                    <button aria-label={t(Msg::PlayThisTrack)} class={ACTION_PLAY} on_click={play}>
+                        {icon("play", "h-3.5 w-3.5 fill-current")}{t(Msg::Play)}
                     </button>
-                    <button aria-label="Build vibe playlist from this track" class={ACTION_PLAIN} on_click={vibe}>
-                        {icon("sparkles", "h-3.5 w-3.5")}"Match Vibe"
+                    <button aria-label={t(Msg::BuildVibePlaylist)} class={ACTION_PLAIN} on_click={vibe}>
+                        {icon("sparkles", "h-3.5 w-3.5")}{t(Msg::MatchVibe)}
                     </button>
-                    <button aria-label="Find tracks similar to this one" class={ACTION_PLAIN} on_click={similar}>
-                        {icon("audio-waveform", "h-3.5 w-3.5")}"Similar"
+                    <button aria-label={t(Msg::FindSimilar)} class={ACTION_PLAIN} on_click={similar}>
+                        {icon("audio-waveform", "h-3.5 w-3.5")}{t(Msg::Similar)}
                     </button>
                 </div>
                 {list}
@@ -1023,14 +1026,16 @@ fn panel(s: &Scene) -> DomNode {
 /// the track's detail (a sound-search result or `?track=` that is not on the map yet).
 fn panel_head(s: &Scene, id: &str) -> DomNode {
     let token = s.ctx.session.current_token();
+    let prefs = s.ctx.prefs.clone();
     if let Some(t) = s.track(id) {
         let cover = t
             .cover_url
             .as_deref()
             .and_then(|c| cover_url(c, 128, token.as_deref()));
         return head_view(
+            &prefs,
             cover,
-            t.title.clone(),
+            fixed_text(t.title.clone()),
             t.artist.clone(),
             Some(t.artist_id.clone()),
             Some(t.album_id.clone()),
@@ -1049,26 +1054,44 @@ fn panel_head(s: &Scene, id: &str) -> DomNode {
                 .and_then(|c| cover_url(c, 128, token.as_deref()));
             let artist = item.artist.clone();
             head_view(
+                &prefs,
                 cover,
-                item.title.clone(),
+                fixed_text(item.title.clone()),
                 artist.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
                 artist.map(|a| a.id),
                 album.map(|a| a.id),
-                Some("Not on the map yet"),
+                Some(Msg::NotOnMapYet),
             )
         }
-        Resource::Loading => head_view(None, "Loading…".into(), String::new(), None, None, None),
-        Resource::Error(message) => head_view(None, message, String::new(), None, None, None),
+        Resource::Loading => head_view(
+            &prefs,
+            None,
+            prefs.text(Msg::Loading),
+            String::new(),
+            None,
+            None,
+            None,
+        ),
+        Resource::Error(message) => head_view(
+            &prefs,
+            None,
+            fixed_text(message),
+            String::new(),
+            None,
+            None,
+            None,
+        ),
     })
 }
 
 fn head_view(
+    prefs: &Prefs,
     cover: Option<String>,
-    title: String,
+    title: Computed<String>,
     artist: String,
     artist_id: Option<String>,
     album_id: Option<String>,
-    note: Option<&'static str>,
+    note: Option<Msg>,
 ) -> DomNode {
     let cover = match cover {
         Some(src) => {
@@ -1089,12 +1112,12 @@ fn head_view(
     let album = match album_id {
         Some(id) => {
             let href = Route::Tracks { album: Some(id) }.to_string();
-            dom! { <a href={href} class="mt-0.5 inline-block text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] underline-offset-2 hover:underline">"Open album"</a> }
+            dom! { <a href={href} class="mt-0.5 inline-block text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] underline-offset-2 hover:underline">{prefs.text(Msg::OpenAlbum)}</a> }
         }
         None => dom! { <span /> },
     };
     let note = match note {
-        Some(n) => dom! { <p class="mt-0.5 text-[11px] text-white/45">{n}</p> },
+        Some(n) => dom! { <p class="mt-0.5 text-[11px] text-white/45">{prefs.text(n)}</p> },
         None => dom! { <span /> },
     };
     dom! {
@@ -1111,12 +1134,12 @@ fn head_view(
 }
 
 /// The mood bars and positivity of a track on the map (upstream `TrackPanel`).
-fn mood_rows(t: &MapTrack) -> DomNode {
+fn mood_rows(prefs: &Prefs, t: &MapTrack) -> DomNode {
     let rows: Vec<DomNode> = logic::mood_bars(&t.moods)
         .into_iter()
         .map(|(key, width)| {
             let (r, g, b) = logic::mood_rgb(&key);
-            let label = logic::mood_label(&key);
+            let label = prefs.text(logic::mood_label(&key));
             let style = format!("width: {width:.1}%; background: rgb({r} {g} {b} / 0.85);");
             dom! {
                 <div class="grid grid-cols-[5.5rem_1fr] items-center gap-2 text-[11px]">
@@ -1129,12 +1152,12 @@ fn mood_rows(t: &MapTrack) -> DomNode {
         })
         .collect();
     let mut stats = Vec::new();
-    for (name, value) in [("Energy", t.energy), ("Positivity", t.valence)] {
+    for (name, value) in [(Msg::Energy, t.energy), (Msg::Positivity, t.valence)] {
         if let Some(v) = value {
             let v = logic::percent(v);
             stats.push(dom! {
                 <div class="rounded-lg bg-white/[0.04] px-3 py-2">
-                    <dt class="text-micro tracking-[0.12em] text-[var(--text-muted)]">{name}</dt>
+                    <dt class="text-micro tracking-[0.12em] text-[var(--text-muted)]">{prefs.text(name)}</dt>
                     <dd class="text-sm font-medium tabular-nums text-[var(--text-primary)]">{v}</dd>
                 </div>
             });
@@ -1157,17 +1180,19 @@ fn mood_rows(t: &MapTrack) -> DomNode {
 fn similar_list(s: &Scene, id: String) -> DomNode {
     s.matches.render_value(bind!(s, id, |m: Matches| match m {
         Matches::Loading(of) if of == id => dom! {
-            <p class="mt-4 text-[11px] text-white/50" role="status">"Finding tracks that sound like this…"</p>
+            <p class="mt-4 text-[11px] text-white/50" role="status">{s.ctx.prefs.text(Msg::FindingSimilar)}</p>
         },
-        Matches::Failed(of, message) if of == id => dom! {
-            <p class="mt-4 text-[11px] text-danger-light" role="status">{message}</p>
-        },
+        Matches::Failed(of, error) if of == id => {
+            let message = s.ctx.prefs.format(move |l| error.text(l));
+            dom! { <p class="mt-4 text-[11px] text-danger-light" role="status">{message}</p> }
+        }
         Matches::Ready(of, found) if of == id => match_rows(&s, &id, &found),
         _ => dom! { <span /> },
     }))
 }
 
 fn match_rows(s: &Scene, id: &str, found: &SimilarResponse) -> DomNode {
+    let prefs = &s.ctx.prefs;
     let items: Rc<Vec<QueueItem>> = Rc::new(found.tracks.iter().map(api::match_item).collect());
     let rows: Vec<DomNode> = found
         .tracks
@@ -1177,19 +1202,20 @@ fn match_rows(s: &Scene, id: &str, found: &SimilarResponse) -> DomNode {
             let play = bind!(s, items, |_| s.ctx.player.play_queue(items.to_vec(), i));
             let item = api::match_item(t);
             let queue = bind!(s, item, |_| {
-                s.ctx.notify(format!("Added “{}” to the queue", item.title));
+                s.ctx
+                    .notify(i18n::added_to_queue(s.ctx.prefs.current(), &item.title));
                 s.ctx.player.enqueue(item.clone());
             });
             let (title, artist) = (api::shown_title(t).to_owned(), t.artist.name.clone());
             let similarity = logic::percent(t.similarity);
             dom! {
                 <div class="group flex items-center gap-1 rounded-lg hover:bg-white/[0.06]" data-vibe-match="true">
-                    <button class="min-w-0 flex-1 px-2 py-1.5 text-left" aria-label="Play" title="play from here" on_click={play}>
+                    <button class="min-w-0 flex-1 px-2 py-1.5 text-left" aria-label={prefs.text(Msg::Play)} title={prefs.hint(Msg::PlayFromHere)} on_click={play}>
                         <span class="block truncate text-xs text-[var(--text-primary)]">{title}</span>
                         <span class="block truncate text-[11px] text-white/55">{artist}</span>
                     </button>
-                    <span class="shrink-0 text-[11px] tabular-nums text-white/45" title="similarity">{similarity}</span>
-                    <button class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-white/60 hover:bg-white/10 hover:text-white" aria-label="Add to queue" title="add to queue" on_click={queue}>
+                    <span class="shrink-0 text-[11px] tabular-nums text-white/45" title={prefs.hint(Msg::SimilarityHint)}>{similarity}</span>
+                    <button class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-white/60 hover:bg-white/10 hover:text-white" aria-label={prefs.text(Msg::AddToQueue)} title={prefs.hint(Msg::AddToQueue)} on_click={queue}>
                         {icon("list-plus", "h-4 w-4")}
                     </button>
                 </div>
@@ -1198,12 +1224,13 @@ fn match_rows(s: &Scene, id: &str, found: &SimilarResponse) -> DomNode {
         .collect();
     let id = id.to_owned();
     let play_all = bind!(s, id, |_| s.match_vibe(id.clone()));
-    let heading = format!("{} similar tracks", found.tracks.len());
+    let n = found.tracks.len();
+    let heading = prefs.format(move |l| i18n::similar_tracks(l, n));
     dom! {
         <div class="mt-4">
             <div class="mb-1.5 flex items-center justify-between">
                 <p class="text-micro tracking-[0.12em] text-[var(--text-muted)]">{heading}</p>
-                <button class="text-[11px] text-brand hover:underline" on_click={play_all}>"Play as vibe queue"</button>
+                <button class="text-[11px] text-brand hover:underline" on_click={play_all}>{prefs.text(Msg::PlayAsVibeQueue)}</button>
             </div>
             <div class="space-y-0.5">{..rows}</div>
         </div>

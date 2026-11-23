@@ -9,7 +9,7 @@ use aether_api_types::playback_state::{QueueAlbum, QueueArtist, QueueItem};
 use aether_api_types::radio::{RadioReply, RadioRowReply, RadioTrack};
 
 use super::client::{ApiClient, ApiError};
-use crate::pages::radio::data::group_thousands;
+use crate::i18n::{Locale, RebuildStep, mood_stations_note, sound_rebuild_line};
 use crate::pages::search::encode_query;
 
 /// Tracks a station asks for per batch (upstream `useRadioPlayer`: `stationParams(station, 100)`).
@@ -188,33 +188,24 @@ pub fn sound_rebuild(p: &EnrichmentProgress) -> Option<SoundRebuild> {
     None
 }
 
-/// Upstream `describeSoundRebuild`: one plain line.
-pub fn describe_sound_rebuild(r: SoundRebuild) -> String {
-    let count = |done: i64, total: i64| {
-        format!(
-            "{} of {} songs",
-            group_thousands(done),
-            group_thousands(total)
-        )
+/// Upstream `describeSoundRebuild`: one plain line in `locale`.
+pub fn describe_sound_rebuild(locale: Locale, r: SoundRebuild) -> String {
+    let (step, done, total) = match r {
+        SoundRebuild::Vectors { done, total } => (RebuildStep::Vectors, done, total),
+        SoundRebuild::Moods { done, total } => (RebuildStep::Moods, done, total),
+        SoundRebuild::Map { done, total } => (RebuildStep::Map, done, total),
     };
-    match r {
-        SoundRebuild::Vectors { done, total } => {
-            format!("Building sound vectors: {}.", count(done, total))
-        }
-        SoundRebuild::Moods { done, total } => format!("Scoring moods: {}.", count(done, total)),
-        SoundRebuild::Map { done, total } => {
-            format!("Laying out the map: {}.", count(done, total))
-        }
-    }
+    sound_rebuild_line(locale, step, done, total)
 }
 
 /// The radio page's note under "By Mood" while the sound features are built (not while only the map is laid out).
-pub fn mood_note(rebuild: Option<SoundRebuild>) -> Option<String> {
+/// Written when shown, so it follows the language.
+pub fn mood_note(locale: Locale, rebuild: Option<SoundRebuild>) -> Option<String> {
     match rebuild? {
         SoundRebuild::Map { .. } => None,
-        r => Some(format!(
-            "Mood stations fill in as your sound features are built. {}",
-            describe_sound_rebuild(r)
+        r => Some(mood_stations_note(
+            locale,
+            &describe_sound_rebuild(locale, r),
         )),
     }
 }
@@ -273,27 +264,43 @@ mod tests {
         p.is_fully_complete = true;
         assert_eq!(sound_rebuild(&p), None);
         assert_eq!(
-            describe_sound_rebuild(SoundRebuild::Vectors {
-                done: 1234,
-                total: 5000
-            }),
+            describe_sound_rebuild(
+                Locale::En,
+                SoundRebuild::Vectors {
+                    done: 1234,
+                    total: 5000
+                }
+            ),
             "Building sound vectors: 1,234 of 5,000 songs."
         );
         assert_eq!(
-            describe_sound_rebuild(SoundRebuild::Moods { done: 1, total: 2 }),
+            describe_sound_rebuild(Locale::En, SoundRebuild::Moods { done: 1, total: 2 }),
             "Scoring moods: 1 of 2 songs."
         );
         assert_eq!(
-            mood_note(Some(SoundRebuild::Moods { done: 1, total: 2 })).as_deref(),
+            mood_note(Locale::En, Some(SoundRebuild::Moods { done: 1, total: 2 })).as_deref(),
             Some(
                 "Mood stations fill in as your sound features are built. Scoring moods: 1 of 2 songs."
             )
         );
         assert_eq!(
-            mood_note(Some(SoundRebuild::Map { done: 1, total: 2 })),
+            mood_note(Locale::En, Some(SoundRebuild::Map { done: 1, total: 2 })),
             None
         );
-        assert_eq!(mood_note(None), None);
+        assert_eq!(mood_note(Locale::En, None), None);
+        assert_eq!(
+            mood_note(
+                Locale::Pl,
+                Some(SoundRebuild::Vectors {
+                    done: 3,
+                    total: 12345
+                })
+            )
+            .as_deref(),
+            Some(
+                "Stacje nastrojów pojawiają się w miarę budowania cech brzmienia. Budowanie wektorów brzmienia: 3 z 12\u{a0}345 utworów."
+            )
+        );
         // Unknown keys and a sparse answer still parse.
         let sparse: EnrichmentProgress =
             serde_json::from_str(r#"{"isFullyComplete":true,"other":1}"#).unwrap();
