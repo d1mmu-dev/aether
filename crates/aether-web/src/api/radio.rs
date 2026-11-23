@@ -21,6 +21,12 @@ pub fn row_path(tz: &str) -> String {
     format!("/api/library/radio/row?scope=all&tz={}", encode_query(tz))
 }
 
+/// The same row with `covers=none` (aether, D-290): every station at once, no cover picked; the page shows its tiles
+/// from it and then asks [`row_path`] for the covers.
+pub fn row_stations_path(tz: &str) -> String {
+    format!("{}&covers=none", row_path(tz))
+}
+
 /// The query a station plays from, in upstream `stationParams` order: `type`, `value` (when it has one), `limit`,
 /// `tz`.
 pub fn station_query(kind: &str, value: Option<&str>, limit: u32, tz: &str) -> String {
@@ -129,6 +135,11 @@ pub fn browser_time_zone() -> String {
 
 pub async fn radio_row(client: &ApiClient, tz: &str) -> Result<RadioRowReply, ApiError> {
     client.get(&row_path(tz)).await
+}
+
+/// The row's stations without covers (`covers=none`).
+pub async fn radio_row_stations(client: &ApiClient, tz: &str) -> Result<RadioRowReply, ApiError> {
+    client.get(&row_stations_path(tz)).await
 }
 
 /// The part of `GET /api/enrichment/progress` the radio page reads (upstream `useSoundRebuild`); missing keys read
@@ -314,6 +325,10 @@ mod tests {
             "/api/library/radio/row?scope=all&tz=Europe%2FWarsaw"
         );
         assert_eq!(row_path(""), "/api/library/radio/row?scope=all&tz=");
+        assert_eq!(
+            row_stations_path("Europe/Warsaw"),
+            "/api/library/radio/row?scope=all&tz=Europe%2FWarsaw&covers=none"
+        );
     }
 
     #[test]

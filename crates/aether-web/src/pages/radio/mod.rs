@@ -1,28 +1,44 @@
 //! `/radio`: every station, each an endless shuffle from your own music (upstream `app/radio/page.tsx`,
 //! `features/home/components/StationCard.tsx`, `features/home/radioData.ts` `useRadioPlayer`).
 //!
-//! One request (`GET /library/radio/row?scope=all`) names every station on the page with its cover; a tile starts
-//! its station through the player's station session (`Player::play_station`), which refills it as it runs out.
+//! The tiles come from `GET /library/radio/row?scope=all&covers=none` (aether D-290: every station at once, no
+//! cover picked) and are playable as soon as it answers; one request for the full row (upstream's, with covers)
+//! follows and only lends each shown tile its cover, matched by what it plays. Until then, or if it fails, a tile
+//! keeps its colour wash. A tile starts its station through the player's station session (`Player::play_station`),
+//! which refills it as it runs out.
 
 pub mod data;
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::future::Future;
 use std::rc::Rc;
 
-use aether_api_types::radio::RadioReply;
+use aether_api_types::radio::{RadioReply, RadioRowReply};
 use vertigo::{Computed, DomNode, Reactive, Resource, Value, bind, dom, get_driver};
 
 use crate::api::client::{ApiClient, ApiError};
 use crate::api::radio::{
     BATCH_LIMIT, SoundRebuild, StationBatches, browser_time_zone, enrichment_progress, mood_note,
-    radio_batch, radio_item, radio_row, sound_rebuild, station_query, station_seed,
+    radio_batch, radio_item, radio_row, radio_row_stations, sound_rebuild, station_query,
+    station_seed,
 };
 use crate::i18n::{self, Locale, Msg};
 use crate::icons::icon;
 use crate::player::StationFetch;
 use crate::route::Route;
 use crate::ui::{Ctx, cover_url, flag};
-use data::{RadioRow, RadioStation, build_radio_row};
+use data::{RadioRow, RadioStation, build_radio_row, covers_from, merge_covers};
+
+/// Each shown tile's cover by station id; `None` (or absent) keeps the tile's colour wash.
+type Covers = Rc<HashMap<String, Option<String>>>;
+
+/// What every tile reads: the covers lent so far and the station being started.
+#[derive(Clone)]
+struct Tiles {
+    covers: Value<Covers>,
+    loading: Value<Option<String>>,
+}
 
 /// Upstream `refetchInterval` while the row failed: asked again every 30 s.
 const RETRY_MS: u32 = 30_000;
@@ -58,7 +74,7 @@ pub fn start_problem(locale: Locale, station: &RadioStation, found: usize) -> Op
 }
 
 thread_local! {
-    /// The generation of the page's background loops (row retry, mood-note poll).
+    /// The generation of the page's background work (row retry, the covers request, mood-note poll).
     static LOOPS: Cell<u32> = const { Cell::new(0) };
 }
 
@@ -85,18 +101,24 @@ fn is_ready(state: &Value<Resource<Rc<RadioRow>>>) -> bool {
     matches!(vertigo::transaction(|c| state.get(c)), Resource::Ready(_))
 }
 
-/// Loads the row into `state`; while it keeps failing and the page is open, asks again every 30 s. Starts a new
-/// loop generation, so a Retry or a new visit retires the older loop.
-fn load_row(ctx: &Ctx, state: &Value<Resource<Rc<RadioRow>>>, note: &Value<Option<SoundRebuild>>) {
+/// Loads the row's stations into `state` (`covers=none`); while that keeps failing and the page is open, asks again
+/// every 30 s. Once the tiles are shown, asks the full row once for their covers. Starts a new loop generation, so a
+/// Retry or a new visit retires the older loop and its covers request.
+fn load_row(
+    ctx: &Ctx,
+    state: &Value<Resource<Rc<RadioRow>>>,
+    covers: &Value<Covers>,
+    note: &Value<Option<SoundRebuild>>,
+) {
     if !get_driver().is_browser() {
         return;
     }
     let generation = new_loop_generation();
-    let (ctx, state, note) = (ctx.clone(), state.clone(), note.clone());
+    let (ctx, state, covers, note) = (ctx.clone(), state.clone(), covers.clone(), note.clone());
     get_driver().spawn(async move {
         loop {
             let tz = browser_time_zone();
-            let answer = radio_row(&ctx.client, &tz).await;
+            let answer = radio_row_stations(&ctx.client, &tz).await;
             if !loop_is_current(generation) {
                 return;
             }
@@ -104,7 +126,13 @@ fn load_row(ctx: &Ctx, state: &Value<Resource<Rc<RadioRow>>>, note: &Value<Optio
                 Ok(reply) => {
                     let row = Rc::new(build_radio_row(&reply.stations));
                     let has_moods = !row.moods.is_empty();
-                    state.set(Resource::Ready(row));
+                    covers.set(Rc::new(row.covers.clone()));
+                    state.set(Resource::Ready(row.clone()));
+                    let client = ctx.client.clone();
+                    let covers = covers.clone();
+                    get_driver().spawn(async move {
+                        fill_covers(radio_row(&client, &tz), &row, &covers, generation).await;
+                    });
                     if has_moods {
                         watch_rebuild(&ctx, &note, generation).await;
                     }
@@ -118,6 +146,28 @@ fn load_row(ctx: &Ctx, state: &Value<Resource<Rc<RadioRow>>>, note: &Value<Optio
             }
         }
     });
+}
+
+/// Waits for the full row and lends its covers to the shown tiles, when the visit that asked is still the page's
+/// current one. A failure changes nothing: the tiles stay playable with their colour wash, and nothing is asked again
+/// until the next visit or Retry.
+async fn fill_covers(
+    full: impl Future<Output = Result<RadioRowReply, ApiError>>,
+    row: &RadioRow,
+    covers: &Value<Covers>,
+    generation: u32,
+) {
+    let answer = full.await;
+    if !loop_is_current(generation) {
+        return;
+    }
+    if let Ok(full) = answer {
+        let shown = vertigo::transaction(|c| covers.get(c));
+        covers.set(Rc::new(merge_covers(
+            &shown,
+            covers_from(row, &full.stations),
+        )));
+    }
 }
 
 /// Upstream `useSoundRebuild` for the "By Mood" note: read while the page is open and the features are built. A
@@ -225,7 +275,7 @@ fn skeleton() -> DomNode {
 fn station_card(
     ctx: &Ctx,
     station: &RadioStation,
-    cover: Option<String>,
+    covers: &Value<Covers>,
     index: usize,
     loading: &Value<Option<String>>,
 ) -> DomNode {
@@ -240,18 +290,23 @@ fn station_card(
         "background: linear-gradient(to top, rgb(13 20 32 / 0.9), rgb(13 20 32 / 0.4) 70%), linear-gradient(135deg, {hue}40, transparent 60%);"
     );
     let token = ctx.session.current_token();
-    let cover = match cover.and_then(|c| cover_url(&c, 300, token.as_deref())) {
-        Some(src) => {
-            let tint = format!("background: {hue};");
-            dom! {
-                <div class="absolute inset-0">
-                    <img src={src} alt="" loading="eager" decoding="async" class="absolute inset-0 w-full h-full object-cover cover-zoom" />
-                    <div aria-hidden="true" class="absolute inset-0 mix-blend-color" style={tint}></div>
-                </div>
+    let tile = station.id.clone();
+    let cover = covers
+        .map(move |covers| covers.get(&tile).cloned().flatten())
+        .render_value(move |cover| {
+            match cover.and_then(|c| cover_url(&c, 300, token.as_deref())) {
+                Some(src) => {
+                    let tint = format!("background: {hue};");
+                    dom! {
+                        <div class="absolute inset-0">
+                            <img src={src} alt="" loading="eager" decoding="async" class="absolute inset-0 w-full h-full object-cover cover-zoom" />
+                            <div aria-hidden="true" class="absolute inset-0 mix-blend-color" style={tint}></div>
+                        </div>
+                    }
+                }
+                None => dom! { <span class="hidden" /> },
             }
-        }
-        None => dom! { <span class="hidden" /> },
-    };
+        });
     let id = station.id.clone();
     let busy: Computed<bool> = loading.map(move |l| l.as_deref() == Some(id.as_str()));
     let disabled = flag(loading.map(|l| l.is_some()));
@@ -301,19 +356,11 @@ fn station_card(
     }
 }
 
-fn station_grid(
-    ctx: &Ctx,
-    stations: &[RadioStation],
-    row: &RadioRow,
-    loading: &Value<Option<String>>,
-) -> DomNode {
+fn station_grid(ctx: &Ctx, stations: &[RadioStation], tiles: &Tiles) -> DomNode {
     let cards: Vec<DomNode> = stations
         .iter()
         .enumerate()
-        .map(|(i, s)| {
-            let cover = row.covers.get(&s.id).cloned().flatten();
-            station_card(ctx, s, cover, i, loading)
-        })
+        .map(|(i, s)| station_card(ctx, s, &tiles.covers, i, &tiles.loading))
         .collect();
     vertigo::dom_element! { <div class="grid-media" /> }
         .children(cards)
@@ -327,11 +374,11 @@ fn station_section(
     unit: fn(Locale, i64) -> String,
     pick: fn(&RadioRow) -> &Vec<RadioStation>,
     state: &Value<Resource<Rc<RadioRow>>>,
-    loading: &Value<Option<String>>,
+    tiles: &Tiles,
     note: Option<Value<Option<SoundRebuild>>>,
 ) -> DomNode {
     let ctx = ctx.clone();
-    let loading = loading.clone();
+    let tiles = tiles.clone();
     state.render_value(move |state| match state {
         Resource::Loading => dom! {
             <section>
@@ -360,7 +407,7 @@ fn station_section(
                 }
                 None => dom! { <span class="hidden" /> },
             };
-            let grid = station_grid(&ctx, stations, &row, &loading);
+            let grid = station_grid(&ctx, stations, &tiles);
             dom! {
                 <section>
                     {section_header(BAR_TRACK, ctx.prefs.text(title), Some(count))}
@@ -374,9 +421,14 @@ fn station_section(
 
 pub fn render(ctx: &Ctx) -> DomNode {
     let state: Value<Resource<Rc<RadioRow>>> = Value::new(Resource::Loading);
+    let covers: Value<Covers> = Value::new(Rc::default());
     let loading: Value<Option<String>> = Value::new(None);
     let note: Value<Option<SoundRebuild>> = Value::new(None);
-    load_row(ctx, &state, &note);
+    load_row(ctx, &state, &covers, &note);
+    let tiles = Tiles {
+        covers: covers.clone(),
+        loading,
+    };
 
     let header_line = {
         let (state, locale) = (state.clone(), ctx.prefs.locale.clone());
@@ -388,14 +440,15 @@ pub fn render(ctx: &Ctx) -> DomNode {
 
     let quick = state.render_value(bind!(
         ctx,
-        loading,
+        tiles,
         state,
+        covers,
         note,
         |s: Resource<Rc<RadioRow>>| match s {
             Resource::Error(message) => {
-                let retry = bind!(ctx, state, note, |_| {
+                let retry = bind!(ctx, state, covers, note, |_| {
                     state.set(Resource::Loading);
-                    load_row(&ctx, &state, &note);
+                    load_row(&ctx, &state, &covers, &note);
                 });
                 dom! {
                     <div class="flex items-center gap-3 py-4" data-testid="radio-error" title={message}>
@@ -412,7 +465,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
                 </section>
             },
             Resource::Ready(row) => {
-                let grid = station_grid(&ctx, &row.quick, &row, &loading);
+                let grid = station_grid(&ctx, &row.quick, &tiles);
                 dom! {
                     <section>
                         {section_header(BAR_FEATURED, ctx.prefs.text(Msg::QuickStart), None)}
@@ -428,7 +481,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
         i18n::station_count,
         |r| &r.moods,
         &state,
-        &loading,
+        &tiles,
         Some(note),
     );
     let genres = station_section(
@@ -437,7 +490,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
         i18n::genre_count,
         |r| &r.genres,
         &state,
-        &loading,
+        &tiles,
         None,
     );
     let decades = station_section(
@@ -446,7 +499,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
         i18n::decade_count,
         |r| &r.decades,
         &state,
-        &loading,
+        &tiles,
         None,
     );
 
@@ -478,6 +531,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_api_types::radio::RowStation;
     use data::quick_stations;
 
     #[test]
@@ -490,6 +544,97 @@ mod tests {
             "the older loop stops at its next wake"
         );
         assert!(loop_is_current(second));
+    }
+
+    fn poll_once<F: Future>(fut: &mut std::pin::Pin<Box<F>>) -> std::task::Poll<F::Output> {
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        fut.as_mut().poll(&mut cx)
+    }
+
+    fn station(kind: &str, value: Option<&str>, cover: Option<&str>) -> RowStation {
+        RowStation {
+            kind: kind.into(),
+            value: value.map(Into::into),
+            name: None,
+            description: None,
+            count: Some(3),
+            cover: cover.map(Into::into),
+        }
+    }
+
+    fn shown(covers: &Value<Covers>, id: &str) -> Option<String> {
+        vertigo::transaction(|c| covers.get(c))
+            .get(id)
+            .cloned()
+            .flatten()
+    }
+
+    /// The covers request lends covers only to the visit that asked: a late answer after a new visit or Retry
+    /// (another loop generation) is dropped, and a failure leaves the tiles' placeholders as they were.
+    #[test]
+    fn late_covers_reach_only_the_current_visit_and_a_failure_keeps_the_tiles() {
+        let row = build_radio_row(&[
+            station("all", None, None),
+            station("genre", Some("rock"), None),
+        ]);
+        let full = RadioRowReply {
+            stations: vec![
+                station("genre", Some("rock"), Some("r")),
+                station("all", None, Some("a")),
+            ],
+        };
+
+        let covers = Value::new(Rc::new(row.covers.clone()));
+        let current = new_loop_generation();
+        let mut fut = Box::pin(fill_covers(
+            std::future::ready(Ok(full.clone())),
+            &row,
+            &covers,
+            current,
+        ));
+        assert!(poll_once(&mut fut).is_ready());
+        assert_eq!(shown(&covers, "all").as_deref(), Some("a"));
+        assert_eq!(shown(&covers, "genre-rock").as_deref(), Some("r"));
+
+        // Held until a new visit started: dropped.
+        let stale = Value::new(Rc::new(row.covers.clone()));
+        let open = Rc::new(Cell::new(false));
+        let gate = open.clone();
+        let answer = full.clone();
+        let held = std::future::poll_fn(move |_| {
+            if gate.get() {
+                std::task::Poll::Ready(Ok(answer.clone()))
+            } else {
+                std::task::Poll::Pending
+            }
+        });
+        let old = new_loop_generation();
+        let mut fut = Box::pin(fill_covers(held, &row, &stale, old));
+        assert!(poll_once(&mut fut).is_pending());
+        let _new_visit = new_loop_generation();
+        open.set(true);
+        assert!(poll_once(&mut fut).is_ready());
+        assert_eq!(
+            shown(&stale, "all"),
+            None,
+            "the old visit's answer is dropped"
+        );
+        assert_eq!(shown(&stale, "genre-rock"), None);
+
+        // A failed covers request keeps the tiles' placeholders.
+        let failed = Value::new(Rc::new(row.covers.clone()));
+        let now = new_loop_generation();
+        let mut fut = Box::pin(fill_covers(
+            std::future::ready(Err(ApiError {
+                status: Some(500),
+                message: "down".into(),
+            })),
+            &row,
+            &failed,
+            now,
+        ));
+        assert!(poll_once(&mut fut).is_ready());
+        assert_eq!(*vertigo::transaction(|c| failed.get(c)), row.covers);
     }
 
     #[test]

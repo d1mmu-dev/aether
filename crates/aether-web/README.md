@@ -339,12 +339,16 @@ What is on the page:
 `/radio` (sidebar item 02 "Radio", the phone menu's "Quick Links"). Reference: upstream `frontend/app/radio/page.tsx`,
 `features/home/radioData.ts`, `features/home/components/StationCard.tsx`, `lib/station-refill.ts` at the external
 checkout's `b927e307` (these page files are identical to the M5b backend reference `9450c94b`; the player context,
-query hooks and sidebar changed there, with the same radio behaviour; D-282). One request,
-`GET /api/library/radio/row?scope=all&tz=<browser zone>`, names every station with today's cover; the page shows
+query hooks and sidebar changed there, with the same radio behaviour; D-282). The stations come first from
+`GET /api/library/radio/row?scope=all&tz=<browser zone>&covers=none` (aether, D-290: no cover picked, so it answers
+at once even when the server's covers are cold) and their tiles are playable straight away; then one request for the
+full row, `GET /api/library/radio/row?scope=all&tz=<browser zone>` (today's covers), lends each shown tile its cover,
+matched by type/value and nothing else. Until it answers, or when it fails (no error, no retry), a tile keeps its colour
+wash; a covers answer for an older visit, a Retry or another profile's document is dropped. The page shows
 "Quick Start" (Shuffle All, Workout, Discovery, Favorites: the ones the server lists), "By Mood", "By Genre" and
 "By Decade" (a section without stations is left out), the station total in the header and upstream's footer line. While
-the row loads each section shows six pulsing placeholders; a failed row shows "Could not load the stations." with Retry
-and is asked again every 30 s while the page is open.
+the stations load each section shows six pulsing placeholders; failed stations show "Could not load the stations." with
+Retry and are asked again every 30 s while the page is open.
 
 A tile starts its station: `GET /api/library/radio?type=&value=&limit=100&tz=&seed=` (one seed per station; once a reply
 carries `next`, the next batch asks `offset=<next>`), checks upstream's minimum songs (Shuffle All 10, Discovery 20,

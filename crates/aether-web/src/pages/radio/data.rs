@@ -166,6 +166,15 @@ impl RadioRow {
     pub fn total(&self) -> usize {
         self.quick.len() + self.moods.len() + self.genres.len() + self.decades.len()
     }
+
+    /// Every tile, section by section.
+    pub fn stations(&self) -> impl Iterator<Item = &RadioStation> {
+        self.quick
+            .iter()
+            .chain(&self.moods)
+            .chain(&self.genres)
+            .chain(&self.decades)
+    }
 }
 
 /// The quick stations the server lists, in upstream's order.
@@ -275,31 +284,46 @@ pub fn build_radio_row(entries: &[RowStation]) -> RadioRow {
             })
             .collect::<Vec<_>>(),
     );
+    let mut row = RadioRow {
+        quick,
+        moods,
+        genres,
+        decades,
+        covers: HashMap::new(),
+    };
+    let found = covers_from(&row, entries);
+    row.covers = row
+        .stations()
+        .map(|s| (s.id.clone(), found.get(&s.id).cloned().flatten()))
+        .collect();
+    row
+}
+
+/// The covers a row reply has for the tiles shown, by station id, matched by what each station plays (`type` and
+/// `value`), not by position. Stations the reply does not list are left out; stations it lists that are not shown
+/// are ignored, as are its names, counts and order (aether D-290: the page's tiles come from an earlier reply).
+pub fn covers_from(row: &RadioRow, entries: &[RowStation]) -> HashMap<String, Option<String>> {
     let key = |kind: &str, value: Option<&str>| format!("{kind}:{}", value.unwrap_or(""));
     let cover_of: HashMap<String, Option<String>> = entries
         .iter()
         .map(|e| (key(&e.kind, e.value.as_deref()), e.cover.clone()))
         .collect();
-    let covers = quick
-        .iter()
-        .chain(&moods)
-        .chain(&genres)
-        .chain(&decades)
-        .map(|s| {
-            let cover = cover_of
-                .get(&key(s.kind, s.value.as_deref()))
-                .cloned()
-                .flatten();
-            (s.id.clone(), cover)
+    row.stations()
+        .filter_map(|s| {
+            let cover = cover_of.get(&key(s.kind, s.value.as_deref()))?;
+            Some((s.id.clone(), cover.clone()))
         })
-        .collect();
-    RadioRow {
-        quick,
-        moods,
-        genres,
-        decades,
-        covers,
-    }
+        .collect()
+}
+
+/// `shown` with `updates` laid over it: a tile the updates do not name keeps what it had.
+pub fn merge_covers(
+    shown: &HashMap<String, Option<String>>,
+    updates: HashMap<String, Option<String>>,
+) -> HashMap<String, Option<String>> {
+    let mut merged = shown.clone();
+    merged.extend(updates);
+    merged
 }
 
 /// ECMAScript `\s` (no U+0085, unlike Rust's `char::is_whitespace`).
@@ -603,6 +627,66 @@ mod tests {
         assert_eq!(row.covers["mood-calm"].as_deref(), Some("c"));
         assert_eq!(row.covers["genre-rock"].as_deref(), Some("r"));
         assert_eq!(row.covers["decade-1990"].as_deref(), Some("n"));
+    }
+
+    /// The page's tiles come from the `covers=none` reply; the later full row only lends covers, matched by what each
+    /// station plays, never its names, counts, order or sections.
+    #[test]
+    fn later_covers_are_matched_by_kind_and_value_and_change_nothing_else() {
+        let mut rock = entry("genre", Some("rock"), None);
+        rock.count = Some(20);
+        let mut nineties = entry("decade", Some("1990"), None);
+        nineties.count = Some(23);
+        let row = build_radio_row(&[
+            entry("all", None, None),
+            entry("discovery", None, None),
+            rock,
+            nineties,
+        ]);
+        assert!(row.covers.values().all(Option::is_none));
+        let shown = row.clone();
+
+        // A later reply: other order, a changed count, a station the page does not show, one it shows missing.
+        let mut rock_later = entry("genre", Some("rock"), Some("r"));
+        rock_later.count = Some(99);
+        let updates = covers_from(
+            &row,
+            &[
+                rock_later,
+                entry("genre", Some("jazz"), Some("j")),
+                entry("discovery", None, None),
+                entry("all", None, Some("a")),
+            ],
+        );
+        assert_eq!(
+            updates,
+            HashMap::from([
+                ("genre-rock".to_owned(), Some("r".to_owned())),
+                ("discovery".to_owned(), None),
+                ("all".to_owned(), Some("a".to_owned())),
+            ])
+        );
+        assert_eq!(row, shown, "the tiles are not touched");
+
+        let merged = merge_covers(&row.covers, updates);
+        assert_eq!(merged["all"].as_deref(), Some("a"));
+        assert_eq!(merged["genre-rock"].as_deref(), Some("r"));
+        assert_eq!(merged["discovery"], None);
+        assert_eq!(
+            merged["decade-1990"], None,
+            "missing from the reply: placeholder kept"
+        );
+        assert!(!merged.contains_key("genre-jazz"));
+        assert_eq!(merged.len(), row.total());
+    }
+
+    /// A server that ignores `covers=none` answers covers in the first reply; they are shown at once.
+    #[test]
+    fn covers_in_the_first_reply_are_kept() {
+        let row = build_radio_row(&[entry("all", None, Some("a"))]);
+        assert_eq!(row.covers["all"].as_deref(), Some("a"));
+        let merged = merge_covers(&row.covers, covers_from(&row, &[]));
+        assert_eq!(merged, row.covers);
     }
 
     #[test]
