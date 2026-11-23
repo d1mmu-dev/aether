@@ -72,12 +72,13 @@ pub enum Msg {
     LanguageHint,
     Theme,
     ThemeHint,
-    DeviceOnly,
+    SavedToProfile,
+    AppearanceSaveFailed,
 }
 
 impl Msg {
     #[cfg(test)]
-    pub const ALL: [Msg; 16] = [
+    pub const ALL: [Msg; 17] = [
         Msg::NavCollection,
         Msg::NavRadio,
         Msg::NavSearch,
@@ -93,7 +94,8 @@ impl Msg {
         Msg::LanguageHint,
         Msg::Theme,
         Msg::ThemeHint,
-        Msg::DeviceOnly,
+        Msg::SavedToProfile,
+        Msg::AppearanceSaveFailed,
     ];
 
     /// `(English, Polish)`.
@@ -114,7 +116,14 @@ impl Msg {
             Msg::LanguageHint => ("Interface language", "Język interfejsu"),
             Msg::Theme => ("Theme", "Motyw"),
             Msg::ThemeHint => ("Colours of the whole app", "Kolory całej aplikacji"),
-            Msg::DeviceOnly => ("Saved on this device", "Zapisano na tym urządzeniu"),
+            Msg::SavedToProfile => (
+                "Saved to this profile. Before sign-in, this device's choice is used.",
+                "Zapisywane w tym profilu. Przed zalogowaniem obowiązuje wybór tego urządzenia.",
+            ),
+            Msg::AppearanceSaveFailed => (
+                "Couldn't save the change to your profile; it was undone.",
+                "Nie udało się zapisać zmiany w profilu; została cofnięta.",
+            ),
         }
     }
 

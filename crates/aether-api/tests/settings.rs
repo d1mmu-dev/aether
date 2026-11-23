@@ -953,3 +953,226 @@ mod test_fanart {
         assert!(replay.asked().is_empty());
     }
 }
+
+// ---- interface language and theme per profile (D-287) ----
+
+mod appearance {
+    use super::*;
+    use aether_api::AppState;
+    use aether_test_support::profiles::{SeededAccount, SeededProfile, seed_two_accounts};
+
+    fn token(state: &AppState, account: &SeededAccount, profile: &SeededProfile) -> String {
+        let user = &account.user;
+        state.jwt.issue_access(
+            user.account(),
+            profile.id,
+            &user.username,
+            &user.role,
+            user.token_version,
+        )
+    }
+
+    async fn post(
+        server: &axum_test::TestServer,
+        token: &str,
+        body: Value,
+    ) -> axum_test::TestResponse {
+        server
+            .post("/api/settings")
+            .authorization_bearer(token)
+            .json(&body)
+            .await
+    }
+
+    async fn get(server: &axum_test::TestServer, token: &str) -> Value {
+        server
+            .get("/api/settings")
+            .authorization_bearer(token)
+            .await
+            .json()
+    }
+
+    #[sqlx::test(migrator = "aether_db::MIGRATOR")]
+    async fn unset_by_default_and_valid_values_round_trip(pool: PgPool) {
+        let state = common::state(pool);
+        let (_, t) = common::user_with_token(&state, "ana").await;
+        let server = axum_test::TestServer::new(aether_api::router(state)).unwrap();
+        let first = get(&server, &t).await;
+        assert_eq!(
+            (first["uiLocale"].clone(), first["uiTheme"].clone()),
+            (Value::Null, Value::Null)
+        );
+        for (locale, theme) in [
+            ("pl", "daylight"),
+            ("en", "graphite"),
+            ("en", "midnight-slate"),
+        ] {
+            let saved: Value = server
+                .post("/api/settings")
+                .authorization_bearer(&t)
+                .json(&json!({ "uiLocale": locale, "uiTheme": theme }))
+                .await
+                .json();
+            assert_eq!(
+                (saved["uiLocale"].as_str(), saved["uiTheme"].as_str()),
+                (Some(locale), Some(theme))
+            );
+            let read = get(&server, &t).await;
+            assert_eq!(
+                (read["uiLocale"].as_str(), read["uiTheme"].as_str()),
+                (Some(locale), Some(theme))
+            );
+        }
+        // A partial save keeps the other choice and the other settings.
+        let only_theme: Value = server
+            .post("/api/settings")
+            .authorization_bearer(&t)
+            .json(&json!({ "uiTheme": "daylight", "playbackQuality": "low" }))
+            .await
+            .json();
+        assert_eq!(only_theme["uiLocale"], "en");
+        assert_eq!(only_theme["uiTheme"], "daylight");
+        let other: Value = server
+            .post("/api/settings")
+            .authorization_bearer(&t)
+            .json(&json!({ "wifiOnly": true }))
+            .await
+            .json();
+        assert_eq!(
+            (other["uiLocale"].as_str(), other["uiTheme"].as_str()),
+            (Some("en"), Some("daylight"))
+        );
+        assert_eq!(other["playbackQuality"], "low");
+        // `null` clears a choice back to the device/browser fallback.
+        let cleared: Value = server
+            .post("/api/settings")
+            .authorization_bearer(&t)
+            .json(&json!({ "uiLocale": null }))
+            .await
+            .json();
+        assert_eq!(cleared["uiLocale"], Value::Null);
+        assert_eq!(cleared["uiTheme"], "daylight");
+    }
+
+    #[sqlx::test(migrator = "aether_db::MIGRATOR")]
+    async fn invalid_and_unknown_values_are_400_and_write_nothing(pool: PgPool) {
+        let state = common::state(pool.clone());
+        let (_, t) = common::user_with_token(&state, "ana").await;
+        let server = axum_test::TestServer::new(aether_api::router(state)).unwrap();
+        for (body, path) in [
+            (json!({ "uiLocale": "de" }), "uiLocale"),
+            (json!({ "uiLocale": "PL" }), "uiLocale"),
+            (json!({ "uiLocale": "pl-PL" }), "uiLocale"),
+            (json!({ "uiLocale": "" }), "uiLocale"),
+            (json!({ "uiLocale": 1 }), "uiLocale"),
+            (json!({ "uiTheme": "url(evil)" }), "uiTheme"),
+            (json!({ "uiTheme": "Daylight" }), "uiTheme"),
+            (json!({ "uiTheme": "../../etc/passwd" }), "uiTheme"),
+            (json!({ "uiTheme": ["daylight"] }), "uiTheme"),
+            (
+                json!({ "uiTheme": "daylight", "uiLocale": "xx" }),
+                "uiLocale",
+            ),
+        ] {
+            let res = post(&server, &t, body.clone()).await;
+            res.assert_status_bad_request();
+            let err: Value = res.json();
+            let paths: Vec<&Value> = err["details"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| &d["path"][0])
+                .collect();
+            assert!(paths.contains(&&json!(path)), "{body}: {err}");
+        }
+        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM user_settings")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows, 0,
+            "a rejected body must not write (not even its valid fields)"
+        );
+        // The database refuses a value that bypassed the route.
+        let bad = sqlx::query("INSERT INTO user_settings (profile_id, ui_theme) SELECT id, 'evil' FROM profiles LIMIT 1")
+            .execute(&pool)
+            .await;
+        assert!(bad.is_err());
+    }
+
+    #[sqlx::test(migrator = "aether_db::MIGRATOR")]
+    async fn each_profile_keeps_its_own_choice(pool: PgPool) {
+        let state = common::state(pool.clone());
+        let accounts = seed_two_accounts(&pool, &state.cipher).await;
+        let server = axum_test::TestServer::new(aether_api::router(state.clone())).unwrap();
+        let a = &accounts.a;
+        let b = &accounts.b;
+        let main = token(&state, a, &a.main);
+        let kids = token(&state, a, &a.kids);
+        let standard = token(&state, a, &a.standard);
+        let other = token(&state, b, &b.main);
+        // Main and kids profiles may both choose (same allowed values).
+        for (t, locale, theme) in [(&kids, "pl", "daylight"), (&main, "en", "graphite")] {
+            server
+                .post("/api/settings")
+                .authorization_bearer(t)
+                .json(&json!({ "uiLocale": locale, "uiTheme": theme }))
+                .await
+                .assert_status_ok();
+        }
+        let k = get(&server, &kids).await;
+        assert_eq!(k["profileId"], json!(a.kids.id.into_uuid()));
+        assert_eq!(
+            (k["uiLocale"].as_str(), k["uiTheme"].as_str()),
+            (Some("pl"), Some("daylight"))
+        );
+        let m = get(&server, &main).await;
+        assert_eq!(m["profileId"], json!(a.main.id.into_uuid()));
+        assert_eq!(
+            (m["uiLocale"].as_str(), m["uiTheme"].as_str()),
+            (Some("en"), Some("graphite"))
+        );
+        // Untouched siblings and the other account see no choice.
+        for t in [&standard, &other] {
+            let s = get(&server, t).await;
+            assert_eq!(
+                (s["uiLocale"].clone(), s["uiTheme"].clone()),
+                (Value::Null, Value::Null)
+            );
+        }
+        // Clearing kids' language leaves main and kids' theme alone.
+        server
+            .post("/api/settings")
+            .authorization_bearer(&kids)
+            .json(&json!({ "uiLocale": null }))
+            .await
+            .assert_status_ok();
+        let k = get(&server, &kids).await;
+        assert_eq!(
+            (k["uiLocale"].clone(), k["uiTheme"].as_str()),
+            (Value::Null, Some("daylight"))
+        );
+        let m = get(&server, &main).await;
+        assert_eq!(
+            (m["uiLocale"].as_str(), m["uiTheme"].as_str()),
+            (Some("en"), Some("graphite"))
+        );
+        let stored: Vec<(uuid::Uuid, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT profile_id, ui_locale, ui_theme FROM user_settings ORDER BY ui_theme",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stored,
+            vec![
+                (a.kids.id.into_uuid(), None, Some("daylight".into())),
+                (
+                    a.main.id.into_uuid(),
+                    Some("en".into()),
+                    Some("graphite".into())
+                ),
+            ]
+        );
+    }
+}

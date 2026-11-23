@@ -49,6 +49,37 @@ pub fn render() -> DomNode {
         prefs: Prefs::new(Rc::new(BrowserStorage), Prefs::browser_tag()),
     };
 
+    // Profile interface preferences follow the session (D-287): each token change starts a new
+    // preference generation (dropping the previous profile's look at once) and loads the new profile's
+    // settings. The client fences answers of an old token; `apply_profile` fences the generation too.
+    if get_driver().is_browser() {
+        let follow = session
+            .token()
+            .subscribe(bind!(ctx, |token: Option<String>| {
+                // Writes are not allowed inside a subscription: defer them.
+                get_driver().spawn(bind!(ctx, async move {
+                    let generation = ctx.prefs.begin_session(token.is_some());
+                    if token.is_none() {
+                        return;
+                    }
+                    if let Ok(s) = ctx
+                        .client
+                        .get::<aether_api_types::settings::UserSettings>("/api/settings")
+                        .await
+                    {
+                        ctx.prefs.apply_profile(
+                            generation,
+                            s.ui_locale.as_deref(),
+                            s.ui_theme.as_deref(),
+                        );
+                    }
+                    // A failed read keeps the device/browser fallback; a 401 already signs out.
+                }));
+            }));
+        // The root lives as long as the page; keep its subscription for that long.
+        std::mem::forget(follow);
+    }
+
     // (requested, effective). On the server there is no session: the requested route is rendered.
     let routes: Computed<(Route, Route)> = {
         let (router, token) = (router.clone(), session.token());

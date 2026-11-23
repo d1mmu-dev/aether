@@ -3,7 +3,7 @@
 //! `POST /settings/cleanup-stale-jobs` is not ported (no job-queue maintenance yet).
 
 use aether_core::profile::AccountId;
-use aether_db::user_settings::{self, Patch, UserSettings};
+use aether_db::user_settings::{self, Patch, UI_LOCALES, UI_THEMES, UserSettings};
 use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -32,6 +32,8 @@ fn settings_json(s: &UserSettings, account: AccountId) -> Value {
         "maxCacheSizeMb": s.max_cache_size_mb,
         "shareLiveListening": s.share_live_listening,
         "podcastAiContent": s.podcast_ai_filter,
+        "uiLocale": s.ui_locale,
+        "uiTheme": s.ui_theme,
         "hasListenbrainzToken": false,
         "liveSharingAvailable": false,
     })
@@ -107,6 +109,23 @@ fn parse(body: &Value) -> Result<Patch, Vec<Value>> {
             "podcastAiContent",
             "podcastAiContent must be hide or show",
         )),
+    }
+    // aether-only (D-287): interface language and theme of this profile; `null` clears the choice.
+    for (key, allowed, slot) in [
+        ("uiLocale", &UI_LOCALES[..], &mut patch.ui_locale),
+        ("uiTheme", &UI_THEMES[..], &mut patch.ui_theme),
+    ] {
+        match obj.get(key) {
+            None => {}
+            Some(Value::Null) => *slot = Some(None),
+            Some(Value::String(v)) if allowed.contains(&v.as_str()) => {
+                *slot = Some(Some(v.clone()))
+            }
+            Some(_) => issues.push(issue(
+                key,
+                &format!("{key} must be null or one of: {}", allowed.join(", ")),
+            )),
+        }
     }
     // `listenbrainzToken` is accepted (string or null) and ignored (D-103); anything else is
     // still a type error, as upstream.

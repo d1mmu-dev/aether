@@ -1,7 +1,9 @@
 //! Settings -> Appearance & language: the language and theme selectors (localization/themes plan, task 5).
-//! A choice applies at once (reactive `<html lang>` / `data-theme`), with no reload and no player change.
+//! A choice applies at once (reactive `<html lang>` / `data-theme`), with no reload and no player change,
+//! and is saved to the signed-in profile (D-287); a failed save is undone and reported.
 
-use vertigo::{DomNode, bind, dom};
+use aether_api_types::settings::{AppearancePatch, UserSettings};
+use vertigo::{DomNode, bind, dom, get_driver};
 
 use crate::i18n::{Locale, Msg};
 use crate::theme::Theme;
@@ -10,13 +12,27 @@ use crate::ui::Ctx;
 const CHOICE: &str = "inline-flex items-center gap-2 rounded-lg border border-white/20 px-3 py-2 text-sm text-white hover:bg-white/10 aria-pressed:bg-brand/20 aria-pressed:border-brand";
 
 fn locale_button(ctx: &Ctx, locale: Locale) -> DomNode {
-    let prefs = ctx.prefs.clone();
     let pressed = ctx
         .prefs
         .locale
         .to_computed()
         .map(move |l| (l == locale).to_string());
-    let on_click = bind!(prefs, |_| prefs.set_locale(locale));
+    let on_click = bind!(ctx, |_| {
+        if let Some(ticket) = ctx.prefs.set_locale(locale) {
+            let body = AppearancePatch {
+                ui_locale: Some(locale.id().to_owned()),
+                ..AppearancePatch::default()
+            };
+            get_driver().spawn(bind!(ctx, async move {
+                if save(&ctx, &body).await.is_err() && ctx.prefs.rollback_locale(ticket) {
+                    ctx.notify(
+                        Msg::AppearanceSaveFailed
+                            .text(vertigo::transaction(|c| ctx.prefs.locale.get(c))),
+                    );
+                }
+            }));
+        }
+    });
     // Native names keep their own case; the body is lowercased by the base stylesheet.
     dom! {
         <button type="button" class={CHOICE} style="text-transform: none" lang={locale.id()}
@@ -25,13 +41,27 @@ fn locale_button(ctx: &Ctx, locale: Locale) -> DomNode {
 }
 
 fn theme_button(ctx: &Ctx, theme: Theme) -> DomNode {
-    let prefs = ctx.prefs.clone();
     let pressed = ctx
         .prefs
         .theme
         .to_computed()
         .map(move |t| (t == theme).to_string());
-    let on_click = bind!(prefs, |_| prefs.set_theme(theme));
+    let on_click = bind!(ctx, |_| {
+        if let Some(ticket) = ctx.prefs.set_theme(theme) {
+            let body = AppearancePatch {
+                ui_theme: Some(theme.id().to_owned()),
+                ..AppearancePatch::default()
+            };
+            get_driver().spawn(bind!(ctx, async move {
+                if save(&ctx, &body).await.is_err() && ctx.prefs.rollback_theme(ticket) {
+                    ctx.notify(
+                        Msg::AppearanceSaveFailed
+                            .text(vertigo::transaction(|c| ctx.prefs.locale.get(c))),
+                    );
+                }
+            }));
+        }
+    });
     let (ground, accent, text) = theme.swatch();
     let swatch = format!(
         "display:inline-block;width:2.25rem;height:1.25rem;border-radius:0.375rem;border:1px solid {text};background:linear-gradient(90deg,{ground} 0 50%,{accent} 50% 100%)"
@@ -42,6 +72,13 @@ fn theme_button(ctx: &Ctx, theme: Theme) -> DomNode {
             <span>{theme.name()}</span>
         </button>
     }
+}
+
+async fn save(
+    ctx: &Ctx,
+    body: &AppearancePatch,
+) -> Result<UserSettings, crate::api::client::ApiError> {
+    ctx.client.post("/api/settings", body).await
 }
 
 fn row(ctx: &Ctx, title: Msg, hint: Msg, controls: DomNode) -> DomNode {
@@ -84,7 +121,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
             <div class="space-y-1">
                 {language_row}
                 {theme_row}
-                <p class="text-xs text-[var(--text-muted)]">{ctx.prefs.text(Msg::DeviceOnly)}</p>
+                <p class="text-xs text-[var(--text-muted)]">{ctx.prefs.text(Msg::SavedToProfile)}</p>
             </div>
             <div class="border-t border-white/5 mt-8 mb-8"></div>
         </section>

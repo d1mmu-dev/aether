@@ -24,6 +24,22 @@ pub struct UserSettings {
     /// aether-only (D-207): `hide` (default) or `show` AI-labelled podcasts and episodes.
     #[serde(default = "hide")]
     pub podcast_ai_content: String,
+    /// aether-only (D-287): the profile's interface language id, `None` when not chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_locale: Option<String>,
+    /// aether-only (D-287): the profile's interface theme id, `None` when not chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_theme: Option<String>,
+}
+
+/// `POST /api/settings` body for the interface preferences; absent fields are left alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppearancePatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui_locale: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui_theme: Option<String>,
 }
 
 fn hide() -> String {

@@ -29,7 +29,9 @@ mod tests {
     fn browser_chrome_colour_follows_the_theme() {
         let app = include_str!("app.rs");
         assert!(app.contains(r#"<meta name="theme-color" content={theme_color} />"#));
-        assert!(app.contains("ctx.prefs.theme.to_computed().map(|t| t.swatch().0"));
+        // Compared without whitespace so rustfmt's line breaks do not matter.
+        let compact: String = app.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(compact.contains("ctx.prefs.theme.to_computed().map(|t|t.swatch().0"));
     }
 
     #[test]

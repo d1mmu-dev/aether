@@ -13,7 +13,16 @@ pub struct UserSettings {
     pub share_live_listening: bool,
     /// `hide` (default) or `show`: whether podcast lists hide AI-labelled content (D-207).
     pub podcast_ai_filter: String,
+    /// Interface language id (`en`, `pl`), `None` until the profile chooses one (D-287).
+    pub ui_locale: Option<String>,
+    /// Interface theme id (`midnight-slate`, `graphite`, `daylight`), `None` until chosen (D-287).
+    pub ui_theme: Option<String>,
 }
+
+/// The interface language ids a profile may store.
+pub const UI_LOCALES: [&str; 2] = ["en", "pl"];
+/// The interface theme ids a profile may store.
+pub const UI_THEMES: [&str; 3] = ["midnight-slate", "graphite", "daylight"];
 
 impl UserSettings {
     /// What a profile without a row has (the column defaults).
@@ -26,6 +35,8 @@ impl UserSettings {
             max_cache_size_mb: 10240,
             share_live_listening: true,
             podcast_ai_filter: "hide".into(),
+            ui_locale: None,
+            ui_theme: None,
         }
     }
 }
@@ -39,6 +50,10 @@ pub struct Patch {
     pub max_cache_size_mb: Option<i32>,
     pub share_live_listening: Option<bool>,
     pub podcast_ai_filter: Option<String>,
+    /// `Some(None)` clears the choice back to "not chosen".
+    pub ui_locale: Option<Option<String>>,
+    /// `Some(None)` clears the choice back to "not chosen".
+    pub ui_theme: Option<Option<String>>,
 }
 
 /// The profile's row, or the defaults when there is none. Writes nothing.
@@ -46,7 +61,7 @@ pub async fn get(pool: &PgPool, profile: ProfileId) -> sqlx::Result<UserSettings
     let row = sqlx::query_as!(
         UserSettings,
         r#"SELECT profile_id AS "profile_id: ProfileId", playback_quality, wifi_only, offline_enabled, max_cache_size_mb,
-                  share_live_listening, podcast_ai_filter
+                  share_live_listening, podcast_ai_filter, ui_locale, ui_theme
            FROM user_settings WHERE profile_id = $1"#,
         profile.into_uuid()
     )
@@ -61,25 +76,31 @@ pub async fn upsert(pool: &PgPool, profile: ProfileId, patch: Patch) -> sqlx::Re
         UserSettings,
         r#"INSERT INTO user_settings
                (profile_id, playback_quality, wifi_only, offline_enabled, max_cache_size_mb,
-                share_live_listening, podcast_ai_filter)
+                share_live_listening, podcast_ai_filter, ui_locale, ui_theme)
            VALUES ($1, COALESCE($2, 'original'), COALESCE($3, false), COALESCE($4, false),
-                   COALESCE($5, 10240), COALESCE($6, true), COALESCE($7, 'hide'))
+                   COALESCE($5, 10240), COALESCE($6, true), COALESCE($7, 'hide'), $9, $11)
            ON CONFLICT (profile_id) DO UPDATE SET
                playback_quality = COALESCE($2, user_settings.playback_quality),
                wifi_only = COALESCE($3, user_settings.wifi_only),
                offline_enabled = COALESCE($4, user_settings.offline_enabled),
                max_cache_size_mb = COALESCE($5, user_settings.max_cache_size_mb),
                share_live_listening = COALESCE($6, user_settings.share_live_listening),
-               podcast_ai_filter = COALESCE($7, user_settings.podcast_ai_filter)
+               podcast_ai_filter = COALESCE($7, user_settings.podcast_ai_filter),
+               ui_locale = CASE WHEN $8 THEN $9 ELSE user_settings.ui_locale END,
+               ui_theme = CASE WHEN $10 THEN $11 ELSE user_settings.ui_theme END
            RETURNING profile_id AS "profile_id: ProfileId", playback_quality, wifi_only, offline_enabled, max_cache_size_mb,
-                     share_live_listening, podcast_ai_filter"#,
+                     share_live_listening, podcast_ai_filter, ui_locale, ui_theme"#,
         profile.into_uuid(),
         patch.playback_quality,
         patch.wifi_only,
         patch.offline_enabled,
         patch.max_cache_size_mb,
         patch.share_live_listening,
-        patch.podcast_ai_filter
+        patch.podcast_ai_filter,
+        patch.ui_locale.is_some(),
+        patch.ui_locale.clone().flatten(),
+        patch.ui_theme.is_some(),
+        patch.ui_theme.clone().flatten()
     )
     .fetch_one(pool)
     .await
