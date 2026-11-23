@@ -20,7 +20,9 @@ use super::{ShowInfo, discovery_card, episode_item, image_url, resume_point};
 use crate::api::client::load;
 use crate::api::podcasts::{self as api, Order};
 use crate::components::{Kind, media_grid, section_header};
+use crate::i18n::{self, Locale, Msg};
 use crate::icons::icon;
+use crate::prefs::Prefs;
 use crate::route::Route;
 use crate::ui::{Ctx, flag, flag_now, format_time, resource_view};
 
@@ -31,20 +33,34 @@ const PRIMARY: &str = "bg-brand text-black hover:bg-brand-hover";
 const SECONDARY: &str = "bg-white/5 border border-white/10 text-white hover:bg-white/10";
 
 /// The meta line under an episode title: date, length and how far the listener got.
-pub fn episode_meta(e: &EpisodeRow) -> String {
+pub fn episode_meta(locale: Locale, e: &EpisodeRow) -> String {
     let mut parts = vec![e.published_at.get(..10).unwrap_or_default().to_owned()];
     if e.duration > 0 {
         parts.push(format_time(e.duration as f64));
     }
     match &e.progress {
-        Some(p) if p.is_finished => parts.push("played".into()),
-        Some(p) if p.progress > 0.0 => parts.push(format!("{}% played", p.progress.round() as i64)),
+        Some(p) if p.is_finished => parts.push(Msg::EpisodePlayed.text(locale).to_owned()),
+        Some(p) if p.progress > 0.0 => {
+            parts.push(i18n::percent_played(locale, p.progress.round() as i64))
+        }
         _ => {}
     }
     parts.join(" · ")
 }
 
 type Label = (AiLabel, Option<AiLabelSource>);
+
+/// The toast after checking one show: the typed `newEpisodesCount` when the answer has one, else
+/// the server's message as received.
+pub fn refresh_text(locale: Locale, done: &serde_json::Value) -> String {
+    match done["newEpisodesCount"].as_i64() {
+        Some(n) => i18n::found_new_episodes(locale, n),
+        None => done["message"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| Msg::CheckedForNewEpisodes.text(locale).to_owned()),
+    }
+}
 
 /// Whether the signed-in user may set AI labels (admins only; the server checks too).
 fn is_admin(ctx: &Ctx) -> Computed<bool> {
@@ -55,11 +71,12 @@ fn is_admin(ctx: &Ctx) -> Computed<bool> {
 }
 
 /// A label badge that follows `label` (an admin's change shows at once).
-fn live_badge(label: &Value<Label>) -> DomNode {
-    label.render_value(|(l, s)| badge(l, s))
+fn live_badge(prefs: &Prefs, label: &Value<Label>) -> DomNode {
+    label.render_value(bind!(prefs, |(l, s)| badge(&prefs, l, s)))
 }
 
 fn hero(
+    prefs: &Prefs,
     cover: Option<String>,
     title: String,
     author: String,
@@ -78,7 +95,7 @@ fn hero(
             </div>
             <div class="flex flex-col justify-end min-w-0">
                 <div class="flex items-center gap-2 mb-2">
-                    <p class="t-eyebrow">"podcast"</p>
+                    <p class="t-eyebrow">{prefs.text(Msg::PodcastEyebrow)}</p>
                     {label}
                 </div>
                 <h1 class="text-3xl md:text-5xl font-bold tracking-tight text-white">{title}</h1>
@@ -114,7 +131,7 @@ fn episode_rows(
         .iter()
         .map(|e| {
             let label = Value::new((e.ai_label, e.ai_label_source));
-            let label_badge = live_badge(&label);
+            let label_badge = live_badge(&ctx.prefs, &label);
             // An admin's change shows at once; marked AI while hiding, the row leaves the page.
             let wrap = Computed::from(bind!(label, show_ai, |c| {
                 if row_visible(show_ai.get(c), label.get(c).0) {
@@ -137,10 +154,15 @@ fn episode_rows(
                     dom! { <span class="hidden" /> }
                 }
             }));
-            let (title, meta) = (e.title.clone(), episode_meta(e));
+            let row = e.clone();
+            let (title, meta) = (
+                e.title.clone(),
+                ctx.prefs.format(move |l| episode_meta(l, &row)),
+            );
             let item = episode_item(show, &e.id.to_string(), &e.title, e.duration, e.image_url.as_deref());
             let resume = resume_point(e.progress.as_ref());
-            let label = format!("Play {}", e.title);
+            let named = e.title.clone();
+            let label = ctx.prefs.format(move |l| i18n::play_named(l, &named));
             let play = bind!(ctx, |_| ctx.player.play_episode(item.clone(), resume));
             dom! {
                 <div class={wrap}>
@@ -163,10 +185,10 @@ fn episode_rows(
     dom! { <div>{..rows}</div> }
 }
 
-fn order_text(order: Order) -> &'static str {
+fn order_text(order: Order) -> Msg {
     match order {
-        Order::Newest => "newest first",
-        Order::Oldest => "oldest first",
+        Order::Newest => Msg::NewestFirst,
+        Order::Oldest => Msg::OldestFirst,
     }
 }
 
@@ -199,8 +221,8 @@ fn episodes(
                 api::episodes(&ctx.client, &id, at, PAGE, sort, on).await
             }));
             resource_view(&ctx.prefs, page, bind!(ctx, show, show_ai, admin, reload, order, offset, |page: Rc<EpisodePage>| {
-                // Podcasts are not translated yet (separate slice): the range stays English.
-                let label = crate::i18n::page_range(crate::i18n::Locale::En, page.offset, page.episodes.len(), page.total);
+                let (from, shown, total) = (page.offset, page.episodes.len(), page.total);
+                let label = ctx.prefs.format(move |l| i18n::page_range(l, from, shown, total));
                 let has_prev = page.offset > 0;
                 let has_next = page.offset + (page.episodes.len() as i64) < page.total;
                 let prev = bind!(offset, |_| offset.change(|o| *o = o.saturating_sub(PAGE)));
@@ -214,10 +236,10 @@ fn episodes(
                     });
                     offset.set(0);
                 });
-                let order_label = order_text(vertigo::transaction(|c| order.get(c)));
-                let header = section_header(Kind::Podcast, "episodes", page.total);
+                let order_label = ctx.prefs.text(order_text(vertigo::transaction(|c| order.get(c))));
+                let header = section_header(Kind::Podcast, ctx.prefs.text(Msg::EpisodesHeading), page.total);
                 let rows = episode_rows(&ctx, &show, &page.episodes, &admin, &show_ai, &reload);
-                let note = hidden_note(page.ai_hidden.max(0) as usize);
+                let note = hidden_note(&ctx.prefs, page.ai_hidden.max(0) as usize);
                 dom! {
                     <div>
                         {header}
@@ -229,8 +251,8 @@ fn episodes(
                         <div class="flex items-center justify-between mt-4">
                             <span class="t-meta">{label}</span>
                             <div class="flex gap-2">
-                                <button name="previous" class={format!("{ACTION} {SECONDARY}")} disabled={flag_now(!has_prev)} on_click={prev}>"previous"</button>
-                                <button name="next" class={format!("{ACTION} {SECONDARY}")} disabled={flag_now(!has_next)} on_click={next}>"next"</button>
+                                <button name="previous" class={format!("{ACTION} {SECONDARY}")} disabled={flag_now(!has_prev)} on_click={prev}>{ctx.prefs.text(Msg::EpisodesPrevious)}</button>
+                                <button name="next" class={format!("{ACTION} {SECONDARY}")} disabled={flag_now(!has_next)} on_click={next}>{ctx.prefs.text(Msg::EpisodesNext)}</button>
                             </div>
                         </div>
                     </div>
@@ -263,8 +285,12 @@ fn similar(ctx: &Ctx, id: String, show_ai: &ShowAi) -> DomNode {
                         .enumerate()
                         .map(|(i, item)| discovery_card(&ctx, item, i))
                         .collect();
-                    let header = section_header(Kind::Podcast, "similar shows", items.len() as i64);
-                    let note = hidden_note(hidden);
+                    let header = section_header(
+                        Kind::Podcast,
+                        ctx.prefs.text(Msg::SimilarShows),
+                        items.len() as i64,
+                    );
+                    let note = hidden_note(&ctx.prefs, hidden);
                     dom! { <section class="page-shell page-end">{header}{note}{media_grid(cards)}</section> }
                 }),
             )
@@ -301,7 +327,15 @@ fn show_page(ctx: &Ctx, detail: Rc<ShowDetail>, show_ai: &ShowAi, reload: &Value
             busy.set(false);
         }));
     });
-    let follow_label = following.map(|f| if f { "following" } else { "follow" }.to_owned());
+    let locale = ctx.prefs.locale.clone();
+    let follow_label = Computed::from(bind!(following, locale, |c| {
+        let msg = if following.get(c) {
+            Msg::Following
+        } else {
+            Msg::Follow
+        };
+        msg.text(locale.get(c)).to_owned()
+    }));
     let follow_class =
         following.map(|f| format!("{ACTION} {}", if f { SECONDARY } else { PRIMARY }));
     let refreshing = Value::new(false);
@@ -313,12 +347,7 @@ fn show_page(ctx: &Ctx, detail: Rc<ShowDetail>, show_ai: &ShowAi, reload: &Value
                 .get::<serde_json::Value>(&format!("/api/podcasts/{id}/refresh"))
                 .await
             {
-                Ok(done) => ctx.notify(
-                    done["message"]
-                        .as_str()
-                        .unwrap_or("Checked for new episodes")
-                        .to_owned(),
-                ),
+                Ok(done) => ctx.notify(refresh_text(ctx.prefs.current(), &done)),
                 Err(err) => ctx.notify(err.message),
             }
             refreshing.set(false);
@@ -329,7 +358,7 @@ fn show_page(ctx: &Ctx, detail: Rc<ShowDetail>, show_ai: &ShowAi, reload: &Value
             <button name="follow" class={follow_class} on_click={toggle} disabled={flag(busy.to_computed())}>{follow_label}</button>
             <button name="refresh" class={format!("{ACTION} {SECONDARY}")} on_click={refresh} disabled={flag(refreshing.to_computed())}>
                 {icon("refresh-cw", "w-3.5 h-3.5")}
-                "check for new episodes"
+                {ctx.prefs.text(Msg::CheckForNewEpisodes)}
             </button>
         </div>
     };
@@ -344,7 +373,7 @@ fn show_page(ctx: &Ctx, detail: Rc<ShowDetail>, show_ai: &ShowAi, reload: &Value
             dom! { <span class="hidden" /> }
         }
     }));
-    let ai_pill = pill(show_ai);
+    let ai_pill = pill(&ctx.prefs, show_ai);
     let actions = dom! {
         <div class="flex flex-wrap items-center gap-2">
             {actions}
@@ -353,11 +382,12 @@ fn show_page(ctx: &Ctx, detail: Rc<ShowDetail>, show_ai: &ShowAi, reload: &Value
         </div>
     };
     let hero = hero(
+        &ctx.prefs,
         image_url(detail.cover_url.as_deref(), 600, token.as_deref()),
         detail.title.clone(),
         detail.author.clone().unwrap_or_default(),
         genres,
-        live_badge(&label),
+        live_badge(&ctx.prefs, &label),
         actions,
     );
     let episodes = episodes(ctx, &detail, show_ai, &admin, reload);
@@ -415,15 +445,16 @@ fn preview_page(ctx: &Ctx, p: Rc<Preview>) -> DomNode {
     let actions = dom! {
         <button name="follow" class={format!("{ACTION} {PRIMARY}")} on_click={follow} disabled={flag(busy.to_computed())}>
             {icon("plus", "w-4 h-4")}
-            "follow"
+            {ctx.prefs.text(Msg::Follow)}
         </button>
     };
     let hero = hero(
+        &ctx.prefs,
         image_url(p.cover_url.as_deref(), 600, token.as_deref()),
         p.title.clone(),
         p.author.clone().unwrap_or_default(),
         p.genres.join(" · "),
-        badge(p.ai_label, p.ai_label_source),
+        badge(&ctx.prefs, p.ai_label, p.ai_label_source),
         actions,
     );
     let rows: Vec<DomNode> = p
@@ -452,7 +483,7 @@ fn preview_page(ctx: &Ctx, p: Rc<Preview>) -> DomNode {
         })
         .collect();
     let count = p.episode_count.unwrap_or(rows.len() as i64);
-    let header = section_header(Kind::Podcast, "latest episodes", count);
+    let header = section_header(Kind::Podcast, ctx.prefs.text(Msg::LatestEpisodes), count);
     dom! {
         <div class="min-h-screen animate-rise">
             {hero}
@@ -488,10 +519,37 @@ mod tests {
 
     #[test]
     fn episode_meta_shows_date_length_and_progress() {
-        let unplayed = episode_meta(&row(None));
+        let unplayed = episode_meta(Locale::En, &row(None));
         assert!(unplayed.starts_with("2026-11-11 · "), "{unplayed}");
         assert!(!unplayed.contains("played"));
-        assert!(episode_meta(&row(Some((42.6, false)))).ends_with("43% played"));
-        assert!(episode_meta(&row(Some((100.0, true)))).ends_with("played"));
+        assert!(episode_meta(Locale::En, &row(Some((42.6, false)))).ends_with("43% played"));
+        assert!(episode_meta(Locale::En, &row(Some((100.0, true)))).ends_with("played"));
+        assert!(episode_meta(Locale::Pl, &row(Some((42.6, false)))).ends_with("odsłuchano 43%"));
+        assert!(episode_meta(Locale::Pl, &row(Some((100.0, true)))).ends_with("odsłuchany"));
+    }
+
+    #[test]
+    fn show_refresh_toast_uses_the_typed_count_else_the_server_text() {
+        let typed = serde_json::json!({"newEpisodesCount": 2, "message": "Found 2 new episodes"});
+        assert_eq!(
+            refresh_text(Locale::Pl, &typed),
+            "Znaleziono 2 nowe odcinki"
+        );
+        assert_eq!(
+            refresh_text(Locale::En, &serde_json::json!({"newEpisodesCount": 1})),
+            "Found 1 new episode"
+        );
+        let other = serde_json::json!({"message": "Something else"});
+        assert_eq!(refresh_text(Locale::Pl, &other), "Something else");
+        assert_eq!(
+            refresh_text(Locale::Pl, &serde_json::json!({})),
+            "Sprawdzono nowe odcinki"
+        );
+    }
+
+    #[test]
+    fn episode_order_labels_follow_the_order() {
+        assert_eq!(order_text(Order::Newest).text(Locale::Pl), "od najnowszych");
+        assert_eq!(order_text(Order::Oldest).text(Locale::En), "oldest first");
     }
 }

@@ -1,6 +1,7 @@
 //! Account-local profile selection (D-248); profiles are not a security boundary without PINs.
 
 use crate::api::{client::load, profiles};
+use crate::i18n::Msg;
 use crate::route::Route;
 use crate::ui::{Ctx, flag, resource_view};
 use aether_api_types::profiles::{AVATAR_PRESETS, Profile, ProfileKind, ProfilesResponse};
@@ -64,7 +65,12 @@ pub fn render(ctx: &Ctx) -> DomNode {
         bind!(ctx, busy, error, |data: std::rc::Rc<ProfilesResponse>| {
             let rows: Vec<DomNode> = data.profiles.iter().map(|profile| {
             let name = profile.name.clone();
-            let badge = if profile.kind == ProfileKind::Kids { "Kids" } else { "" };
+            // The profile kind, not a content rating: kids profiles have no content filters.
+            let badge = if profile.kind == ProfileKind::Kids {
+                ctx.prefs.text(Msg::KindKids)
+            } else {
+                crate::ui::fixed_text("")
+            };
             let picture = avatar(profile);
             let profile = profile.clone();
             let click = bind!(ctx, busy, error, |_| choose(&ctx, profile.clone(), busy.clone(), error.clone()));
@@ -81,7 +87,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
                 .iter()
                 .any(|p| p.id == data.current && crate::auth::is_main(Some(p)));
             let manage = if main {
-                dom! { <a href={Route::Settings.to_string()} class="text-brand hover:underline">"Manage profiles"</a> }
+                dom! { <a href={Route::Settings.to_string()} class="text-brand hover:underline">{ctx.prefs.text(Msg::ManageProfiles)}</a> }
             } else {
                 dom! { <span /> }
             };
@@ -101,10 +107,10 @@ pub fn render(ctx: &Ctx) -> DomNode {
     dom! {
         <main class="min-h-screen bg-black text-white flex items-center justify-center p-6">
             <div class="w-full max-w-3xl space-y-8 text-center">
-                <h1 class="text-4xl font-bold">"Who's listening?"</h1>
+                <h1 class="text-4xl font-bold">{ctx.prefs.text(Msg::WhoIsListening)}</h1>
                 {tiles}
                 {error_view}
-                <button class="text-sm text-[var(--text-muted)] hover:text-white" on_click={sign_out}>"Sign out"</button>
+                <button class="text-sm text-[var(--text-muted)] hover:text-white" on_click={sign_out}>{ctx.prefs.text(Msg::SignOut)}</button>
             </div>
         </main>
     }

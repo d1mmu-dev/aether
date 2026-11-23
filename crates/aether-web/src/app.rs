@@ -133,7 +133,7 @@ pub fn render() -> DomNode {
                 Route::Vibe { .. } => pages::vibe::render(&ctx),
                 Route::Radio => pages::radio::render(&ctx),
                 Route::Mix { id } => pages::mixes::mix_page(&ctx, id),
-                Route::NotFound => pages::not_found(),
+                Route::NotFound => pages::not_found(&ctx.prefs),
             }
         }))
     });

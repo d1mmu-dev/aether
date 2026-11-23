@@ -533,6 +533,103 @@ catalogue! {
     DrawerActions => ("Actions", "Działania"),
     SyncLibraryAction => ("Sync Library", "Synchronizuj bibliotekę"),
     Logout => ("Logout", "Wyloguj"),
+    // podcasts (show titles, descriptions, authors, categories and feed text stay as received)
+    PodcastsHeading => ("podcasts", "podcasty"),
+    PodcastsSubtitle => (
+        "find shows by category, sample an episode, follow the ones you like",
+        "znajdź audycje według kategorii, posłuchaj odcinka i obserwuj te, które lubisz",
+    ),
+    RssFeedAddress => ("rss feed address", "adres kanału RSS"),
+    FollowRssFeed => ("follow rss feed", "obserwuj kanał RSS"),
+    /// Client-side check of the feed address before anything is sent.
+    InvalidFeedAddress => ("that isn't a valid address", "to nie jest prawidłowy adres"),
+    CheckForNewEpisodes => ("check for new episodes", "sprawdź nowe odcinki"),
+    CheckingEpisodes => ("checking", "sprawdzanie…"),
+    CheckedForNewEpisodes => ("Checked for new episodes", "Sprawdzono nowe odcinki"),
+    NoSubscribedPodcasts => ("No subscribed podcasts", "Nie obserwujesz żadnych podcastów"),
+    ContinueListening => ("continue listening", "słuchaj dalej"),
+    NewFromYourShows => ("new from your shows", "nowe w Twoich audycjach"),
+    NoShowsYet => ("No shows yet", "Nie masz jeszcze audycji"),
+    NoShowsYetHint => (
+        "Find shows by category below, sample an episode, follow the ones you like.",
+        "Znajdź audycje według kategorii poniżej, posłuchaj odcinka i obserwuj te, które lubisz.",
+    ),
+    YourShows => ("your shows", "Twoje audycje"),
+    BrowseByCategory => ("browse by category", "przeglądaj według kategorii"),
+    TopShows => ("top shows", "najpopularniejsze audycje"),
+    TopShowsBecause => (
+        "what Apple Podcasts listeners follow",
+        "co obserwują słuchacze Apple Podcasts",
+    ),
+    TopShowsOnApple => ("top shows on Apple Podcasts", "najpopularniejsze audycje w Apple Podcasts"),
+    CategoryFallback => ("category", "kategoria"),
+    NoShows => ("No shows", "Brak audycji"),
+    NoShowsInCategory => (
+        "Apple lists no shows in this category.",
+        "Apple nie podaje żadnych audycji w tej kategorii.",
+    ),
+    MoreShows => ("more shows", "więcej audycji"),
+    PodcastSearchPlaceholder => ("search shows and episodes", "szukaj audycji i odcinków"),
+    PodcastSearching => ("searching…", "szukam…"),
+    PodcastSearchResults => ("search results", "wyniki wyszukiwania"),
+    PodcastSearchShows => ("shows", "audycje"),
+    PodcastSearchEpisodes => ("episodes", "odcinki"),
+    NothingFound => ("nothing found", "nic nie znaleziono"),
+    /// The show page's eyebrow (the same word in both languages).
+    PodcastEyebrow => ("podcast", "podcast"),
+    Follow => ("follow", "obserwuj"),
+    Following => ("following", "obserwujesz"),
+    EpisodesHeading => ("episodes", "odcinki"),
+    LatestEpisodes => ("latest episodes", "najnowsze odcinki"),
+    SimilarShows => ("similar shows", "podobne audycje"),
+    NewestFirst => ("newest first", "od najnowszych"),
+    OldestFirst => ("oldest first", "od najstarszych"),
+    EpisodesPrevious => ("previous", "poprzednie"),
+    EpisodesNext => ("next", "następne"),
+    EpisodePlayed => ("played", "odsłuchany"),
+    // podcast AI-content labels: about how content was made, never about age suitability
+    /// The "AI" badge (the same abbreviation in both languages).
+    AiBadge => ("AI", "AI"),
+    HumanBadge => ("Human", "Bez AI"),
+    UnlabelledBadge => ("Unlabelled", "Bez oznaczenia"),
+    /// A card subtitle's tag for a human-labelled item.
+    HumanTag => ("human", "bez AI"),
+    AiByAdmin => (
+        "AI-generated content, confirmed by an admin",
+        "Treści wygenerowane przez AI — potwierdził administrator",
+    ),
+    AiByEpisodeFeed => (
+        "AI-generated content, declared by the publisher for this episode",
+        "Treści wygenerowane przez AI — deklaracja wydawcy dla tego odcinka",
+    ),
+    AiByShowFeed => (
+        "AI-generated content, declared by the publisher for the show",
+        "Treści wygenerowane przez AI — deklaracja wydawcy dla całej audycji",
+    ),
+    HumanByAdmin => (
+        "No AI-generated content, confirmed by an admin",
+        "Bez treści wygenerowanych przez AI — potwierdził administrator",
+    ),
+    HumanByEpisodeFeed => (
+        "No AI-generated content, declared by the publisher for this episode",
+        "Bez treści wygenerowanych przez AI — deklaracja wydawcy dla tego odcinka",
+    ),
+    HumanByShowFeed => (
+        "No AI-generated content, declared by the publisher for the show",
+        "Bez treści wygenerowanych przez AI — deklaracja wydawcy dla całej audycji",
+    ),
+    AiUnknownHint => (
+        "No AI disclosure: not known whether AI was used",
+        "Brak deklaracji: nie wiadomo, czy użyto AI",
+    ),
+    AiShownPill => ("showing AI content · hide", "treści AI widoczne · ukryj"),
+    AiHiddenPill => ("AI content hidden · show", "treści AI ukryte · pokaż"),
+    MarkAsAi => ("mark as AI", "oznacz jako AI"),
+    ConfirmHuman => ("confirm human", "potwierdź: bez AI"),
+    ClearLabel => ("clear label", "usuń oznaczenie"),
+    // unknown address
+    PageNotFound => ("Page not found", "Nie znaleziono strony"),
+    BackToLibrary => ("Back to the library", "Wróć do biblioteki"),
 }
 
 impl Msg {
@@ -1087,6 +1184,78 @@ pub fn vibe_queued(locale: Locale, n: usize) -> String {
     }
 }
 
+// ---- podcasts -----------------------------------------------------------------------------------------------
+
+/// A show refresh's result, from the server's typed `newEpisodesCount`.
+pub fn found_new_episodes(locale: Locale, n: i64) -> String {
+    let n = whole(n);
+    match locale {
+        Locale::En if n == 0 => "No new episodes found".to_owned(),
+        Locale::En if n == 1 => "Found 1 new episode".to_owned(),
+        Locale::En => format!("Found {n} new episodes"),
+        Locale::Pl if n == 0 => "Nie znaleziono nowych odcinków".to_owned(),
+        Locale::Pl => format!(
+            "Znaleziono {}",
+            pl_count(n, "nowy odcinek", "nowe odcinki", "nowych odcinków")
+        ),
+    }
+}
+
+/// "Check every show" queued `n` shows (the server's typed `queued`).
+pub fn queued_podcasts(locale: Locale, n: i64) -> String {
+    let n = whole(n);
+    match locale {
+        Locale::En if n == 1 => "Queued 1 podcast for refresh".to_owned(),
+        Locale::En => format!("Queued {n} podcasts for refresh"),
+        Locale::Pl => format!(
+            "Do odświeżenia w kolejce: {}",
+            pl_count(n, "podcast", "podcasty", "podcastów")
+        ),
+    }
+}
+
+/// How many AI-labelled items a section leaves out (the pill hides them).
+pub fn ai_hidden_items(locale: Locale, n: usize) -> String {
+    let n = n as u64;
+    match locale {
+        Locale::En if n == 1 => "1 AI-labelled item hidden".to_owned(),
+        Locale::En => format!("{n} AI-labelled items hidden"),
+        Locale::Pl => format!(
+            "Ukryto {}",
+            pl_count(
+                n,
+                "pozycję oznaczoną jako AI",
+                "pozycje oznaczone jako AI",
+                "pozycji oznaczonych jako AI"
+            )
+        ),
+    }
+}
+
+/// How far an episode was played, in whole percent.
+pub fn percent_played(locale: Locale, percent: i64) -> String {
+    match locale {
+        Locale::En => format!("{percent}% played"),
+        Locale::Pl => format!("odsłuchano {percent}%"),
+    }
+}
+
+/// A for-you row's reason; `categories` are the category names as received.
+pub fn because_you_listen(locale: Locale, categories: &str) -> String {
+    match locale {
+        Locale::En => format!("because you listen to {categories}"),
+        Locale::Pl => format!("bo słuchasz: {categories}"),
+    }
+}
+
+/// "Check every show" failed; `reason` is the server's message as received.
+pub fn refresh_podcasts_failed(locale: Locale, reason: &str) -> String {
+    match locale {
+        Locale::En => format!("Couldn't refresh your podcasts: {reason}"),
+        Locale::Pl => format!("Nie udało się odświeżyć podcastów: {reason}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1281,9 +1450,11 @@ mod tests {
                 Msg::AvatarPanda,
                 Msg::AvatarRobot,
                 Msg::ColumnAlbum,
+                Msg::PodcastEyebrow,
+                Msg::AiBadge,
             ]
         );
-        assert!(Msg::ALL.len() >= 309, "{}", Msg::ALL.len());
+        assert!(Msg::ALL.len() >= 364, "{}", Msg::ALL.len());
     }
 
     #[test]
@@ -1520,5 +1691,64 @@ mod tests {
                 assert!(text.len() > arg.len() + 3, "{text}");
             }
         }
+    }
+    #[test]
+    fn podcast_sentences_decline_counts_and_keep_names() {
+        use Locale::{En, Pl};
+        assert_eq!(found_new_episodes(En, 0), "No new episodes found");
+        assert_eq!(found_new_episodes(En, 1), "Found 1 new episode");
+        assert_eq!(found_new_episodes(En, 7), "Found 7 new episodes");
+        assert_eq!(found_new_episodes(Pl, 0), "Nie znaleziono nowych odcinków");
+        assert_eq!(found_new_episodes(Pl, 1), "Znaleziono 1 nowy odcinek");
+        assert_eq!(found_new_episodes(Pl, 3), "Znaleziono 3 nowe odcinki");
+        assert_eq!(found_new_episodes(Pl, 12), "Znaleziono 12 nowych odcinków");
+        assert_eq!(found_new_episodes(Pl, 22), "Znaleziono 22 nowe odcinki");
+
+        assert_eq!(queued_podcasts(En, 1), "Queued 1 podcast for refresh");
+        assert_eq!(queued_podcasts(En, 4), "Queued 4 podcasts for refresh");
+        assert_eq!(
+            queued_podcasts(Pl, 1),
+            "Do odświeżenia w kolejce: 1 podcast"
+        );
+        assert_eq!(
+            queued_podcasts(Pl, 4),
+            "Do odświeżenia w kolejce: 4 podcasty"
+        );
+        assert_eq!(
+            queued_podcasts(Pl, 13),
+            "Do odświeżenia w kolejce: 13 podcastów"
+        );
+
+        assert_eq!(ai_hidden_items(En, 1), "1 AI-labelled item hidden");
+        assert_eq!(ai_hidden_items(En, 3), "3 AI-labelled items hidden");
+        assert_eq!(ai_hidden_items(Pl, 1), "Ukryto 1 pozycję oznaczoną jako AI");
+        assert_eq!(ai_hidden_items(Pl, 3), "Ukryto 3 pozycje oznaczone jako AI");
+        assert_eq!(
+            ai_hidden_items(Pl, 5),
+            "Ukryto 5 pozycji oznaczonych jako AI"
+        );
+        assert_eq!(
+            ai_hidden_items(Pl, 14),
+            "Ukryto 14 pozycji oznaczonych jako AI"
+        );
+
+        assert_eq!(percent_played(En, 43), "43% played");
+        assert_eq!(percent_played(Pl, 43), "odsłuchano 43%");
+        assert_eq!(
+            because_you_listen(En, "News, Comedy"),
+            "because you listen to News, Comedy"
+        );
+        assert_eq!(
+            because_you_listen(Pl, "News, Comedy"),
+            "bo słuchasz: News, Comedy"
+        );
+        assert_eq!(
+            refresh_podcasts_failed(Pl, "Bad gateway"),
+            "Nie udało się odświeżyć podcastów: Bad gateway"
+        );
+        assert_eq!(
+            refresh_podcasts_failed(En, "Bad gateway"),
+            "Couldn't refresh your podcasts: Bad gateway"
+        );
     }
 }

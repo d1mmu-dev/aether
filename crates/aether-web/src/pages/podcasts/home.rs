@@ -6,20 +6,22 @@
 use std::rc::Rc;
 
 use aether_api_types::podcasts::{
-    Category, DiscoveryItem, FollowedShow, ForYouRow, Listening, ListeningRow,
+    Category, DiscoveryItem, FollowedShow, ForYouRow, Listening, ListeningRow, RefreshAll,
 };
-use vertigo::{DomNode, Value, bind, dom, get_driver};
+use vertigo::{Computed, DomNode, Value, bind, dom, get_driver};
 
-use super::ai::{hidden_note, pill, show_ai_state, visible, when_known, with_label};
+use super::ai::{hidden_note, labelled, pill, show_ai_state, visible, when_known};
 use super::{
     ShowInfo, category_rows, discovery_card, episode_item, heading, image_url, resume_point,
 };
 use crate::api::client::load;
 use crate::api::podcasts as api;
 use crate::components::{Card, Kind, media_card, media_grid, section_header};
+use crate::i18n::{self, Locale, Msg, UiError};
 use crate::icons::icon;
+use crate::prefs::Prefs;
 use crate::route::Route;
-use crate::ui::{Ctx, empty_state, flag, resource_view};
+use crate::ui::{Ctx, empty_state, fixed_text, flag, resource_view};
 
 const BUTTON: &str = "inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold transition-all bg-white/5 border border-white/10 text-white hover:bg-white/10 disabled:opacity-50";
 const INPUT: &str = "flex-1 min-w-[180px] px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder:text-[var(--text-muted)] focus:outline-none focus:border-brand/50 focus:ring-1 focus:ring-brand/30";
@@ -39,6 +41,43 @@ pub fn progress_line(row: &ListeningRow) -> String {
     }
 }
 
+/// The toast after "check for new episodes" on every show, from the typed answer (the server's
+/// English `message` is not shown): no total means the profile follows nothing.
+pub fn refresh_all_text(locale: Locale, done: &RefreshAll) -> String {
+    if done.queued == 0 && done.total.is_none() {
+        Msg::NoSubscribedPodcasts.text(locale).to_owned()
+    } else {
+        i18n::queued_podcasts(locale, done.queued)
+    }
+}
+
+/// A catalogue shelf's heading and reason: a for-you row names its category (metadata, as
+/// received); the top-shows row is interface text.
+#[derive(Clone)]
+enum Shelf {
+    ForYou { category: String, because: String },
+    Top,
+}
+
+impl Shelf {
+    fn title(&self, prefs: &Prefs) -> Computed<String> {
+        match self {
+            Shelf::ForYou { category, .. } => fixed_text(category.clone()),
+            Shelf::Top => prefs.text(Msg::TopShows),
+        }
+    }
+
+    fn because(&self, prefs: &Prefs) -> Computed<String> {
+        match self {
+            Shelf::ForYou { because, .. } => {
+                let because = because.clone();
+                prefs.format(move |l| i18n::because_you_listen(l, &because))
+            }
+            Shelf::Top => prefs.text(Msg::TopShowsBecause),
+        }
+    }
+}
+
 fn show_href(id: impl ToString) -> String {
     Route::PodcastShow { id: id.to_string() }.to_string()
 }
@@ -50,7 +89,7 @@ fn listening_view(ctx: &Ctx, data: Rc<Listening>) -> DomNode {
     let mut sections = Vec::new();
     let hidden = data.ai_hidden.max(0) as usize;
     if hidden > 0 {
-        sections.push(hidden_note(hidden));
+        sections.push(hidden_note(&ctx.prefs, hidden));
     }
     let (in_progress, new_episodes) = (&data.in_progress, &data.new_episodes);
     if !in_progress.is_empty() {
@@ -86,10 +125,7 @@ fn listening_view(ctx: &Ctx, data: Rc<Listening>) -> DomNode {
                             .into_iter()
                             .collect(),
                         title: row.episode.title.clone(),
-                        subtitle: crate::ui::fixed_text(with_label(
-                            &progress_line(row),
-                            row.episode.ai_label,
-                        )),
+                        subtitle: labelled(&ctx.prefs, progress_line(row), row.episode.ai_label),
                         kind: Kind::Podcast,
                         on_play: Some(play),
                         index,
@@ -99,7 +135,7 @@ fn listening_view(ctx: &Ctx, data: Rc<Listening>) -> DomNode {
             .collect();
         let header = section_header(
             Kind::Podcast,
-            "continue listening",
+            ctx.prefs.text(Msg::ContinueListening),
             in_progress.len() as i64,
         );
         sections.push(dom! { <section>{header}{media_grid(cards)}</section> });
@@ -123,7 +159,11 @@ fn listening_view(ctx: &Ctx, data: Rc<Listening>) -> DomNode {
                 }
             })
             .collect();
-        let header = section_header(Kind::Podcast, "new from your shows", rows.len() as i64);
+        let header = section_header(
+            Kind::Podcast,
+            ctx.prefs.text(Msg::NewFromYourShows),
+            rows.len() as i64,
+        );
         sections.push(dom! { <section>{header}<div class="space-y-1">{..rows}</div></section> });
     }
     dom! { <div class="section-stack">{..sections}</div> }
@@ -140,8 +180,8 @@ fn followed_view(
     if shows.is_empty() && hidden == 0 {
         return empty_state(
             "mic-vocal",
-            "No shows yet",
-            "Find shows by category below, sample an episode, follow the ones you like.",
+            ctx.prefs.text(Msg::NoShowsYet),
+            ctx.prefs.text(Msg::NoShowsYetHint),
         );
     }
     let token = ctx.session.current_token();
@@ -157,10 +197,11 @@ fn followed_view(
                         .into_iter()
                         .collect(),
                     title: show.title.clone(),
-                    subtitle: crate::ui::fixed_text(with_label(
-                        show.author.as_deref().unwrap_or_default(),
+                    subtitle: labelled(
+                        &ctx.prefs,
+                        show.author.clone().unwrap_or_default(),
                         show.ai_label,
-                    )),
+                    ),
                     kind: Kind::Podcast,
                     on_play: None,
                     index,
@@ -168,8 +209,12 @@ fn followed_view(
             )
         })
         .collect();
-    let header = section_header(Kind::Podcast, "your shows", shows.len() as i64);
-    let note = hidden_note(hidden);
+    let header = section_header(
+        Kind::Podcast,
+        ctx.prefs.text(Msg::YourShows),
+        shows.len() as i64,
+    );
+    let note = hidden_note(&ctx.prefs, hidden);
     dom! {
         <section>
             {header}
@@ -180,31 +225,27 @@ fn followed_view(
     }
 }
 
-fn catalogue_rows(
-    ctx: &Ctx,
-    rows: &[(String, String, Vec<DiscoveryItem>)],
-    show_ai: bool,
-) -> DomNode {
+fn catalogue_rows(ctx: &Ctx, rows: &[(Shelf, Vec<DiscoveryItem>)], show_ai: bool) -> DomNode {
     let sections: Vec<DomNode> = rows
         .iter()
-        .filter(|(_, _, items)| !items.is_empty())
-        .map(|(title, because, items)| {
+        .filter(|(_, items)| !items.is_empty())
+        .map(|(shelf, items)| {
             let (items, hidden) = visible(items, show_ai, |i| i.ai_label);
             let cards = items
                 .iter()
                 .enumerate()
                 .map(|(i, item)| discovery_card(ctx, item, i))
                 .collect();
-            let header = section_header(Kind::Podcast, title, items.len() as i64);
-            let because = because.clone();
-            let note = hidden_note(hidden);
+            let header = section_header(Kind::Podcast, shelf.title(&ctx.prefs), items.len() as i64);
+            let because = shelf.because(&ctx.prefs);
+            let note = hidden_note(&ctx.prefs, hidden);
             dom! { <section>{header}<p class="t-meta -mt-4 mb-4">{because}</p>{note}{media_grid(cards)}</section> }
         })
         .collect();
     dom! { <div class="section-stack">{..sections}</div> }
 }
 
-fn categories_view(categories: Rc<Vec<Category>>, shown: Vec<i32>) -> DomNode {
+fn categories_view(prefs: &Prefs, categories: Rc<Vec<Category>>, shown: Vec<i32>) -> DomNode {
     let chips: Vec<DomNode> = category_rows(&categories, &shown)
         .into_iter()
         .map(|c| {
@@ -217,7 +258,11 @@ fn categories_view(categories: Rc<Vec<Category>>, shown: Vec<i32>) -> DomNode {
     if chips.is_empty() {
         return dom! { <span class="hidden" /> };
     }
-    let header = section_header(Kind::Podcast, "browse by category", chips.len() as i64);
+    let header = section_header(
+        Kind::Podcast,
+        prefs.text(Msg::BrowseByCategory),
+        chips.len() as i64,
+    );
     dom! { <section>{header}<div class="flex flex-wrap gap-2">{..chips}</div></section> }
 }
 
@@ -228,12 +273,12 @@ pub fn render(ctx: &Ctx) -> DomNode {
     let show_ai = show_ai_state(ctx);
 
     let feed = Value::new(String::new());
-    let feed_error: Value<Option<String>> = Value::new(None);
+    let feed_error: Value<Option<UiError>> = Value::new(None);
     let busy = Value::new(false);
     let follow_feed = bind!(ctx, feed, feed_error, busy, || {
         let url = vertigo::transaction(|c| feed.get(c)).trim().to_owned();
         if !(url.starts_with("http://") || url.starts_with("https://")) {
-            feed_error.set(Some("that isn't a valid address".into()));
+            feed_error.set(Some(UiError::Msg(Msg::InvalidFeedAddress)));
             return;
         }
         feed_error.set(None);
@@ -243,28 +288,33 @@ pub fn render(ctx: &Ctx) -> DomNode {
                 Ok(done) => ctx.router.set(Route::PodcastShow {
                     id: done.podcast.id.to_string(),
                 }),
-                Err(err) => feed_error.set(Some(err.message)),
+                // The server's reason as received.
+                Err(err) => feed_error.set(Some(UiError::Server(err.message))),
             }
             busy.set(false);
         }));
     });
-    let feed_error_view = feed_error.render_value(|e| match e {
-        Some(message) => dom! { <p class="w-full text-xs text-danger-light mt-1">{message}</p> },
+    let feed_error_view = feed_error.render_value(bind!(ctx, |e| match e {
+        Some(e) => {
+            let message = ctx.prefs.format(move |l| e.text(l));
+            dom! { <p class="w-full text-xs text-danger-light mt-1" data-feed-error="true">{message}</p> }
+        }
         None => dom! { <span class="hidden" /> },
-    });
+    }));
     let search = super::search::render(ctx, show_ai.clone());
-    let ai_pill = pill(&show_ai);
+    let ai_pill = pill(&ctx.prefs, &show_ai);
+    let feed_label = ctx.prefs.text(Msg::RssFeedAddress);
     let add_feed = dom! {
         <div class="page-shell mb-8 flex flex-col gap-3">
             <div class="flex flex-wrap items-center gap-2">{ai_pill}</div>
             {search}
             <form class="flex flex-wrap items-center gap-2 max-w-xl" on_submit={follow_feed}>
-                <input class={INPUT} type="url" name="feed" aria-label="rss feed address"
+                <input class={INPUT} type="url" name="feed" aria-label={feed_label}
                     placeholder="https://example.com/feed.xml" value={feed.clone()}
                     on_input={bind!(feed, |v: String| feed.set(v))} />
                 <button class={BUTTON} type="submit" disabled={flag(busy.to_computed())}>
                     {icon("plus", "w-4 h-4")}
-                    "follow rss feed"
+                    {ctx.prefs.text(Msg::FollowRssFeed)}
                 </button>
                 {feed_error_view}
             </form>
@@ -276,21 +326,25 @@ pub fn render(ctx: &Ctx) -> DomNode {
         checking.set(true);
         get_driver().spawn(bind!(ctx, checking, rev, async move {
             match api::refresh_all(&ctx.client).await {
-                Ok(done) => ctx.notify(done.message),
-                Err(err) => ctx.notify(format!("Couldn't refresh your podcasts: {}", err.message)),
+                Ok(done) => ctx.notify(refresh_all_text(ctx.prefs.current(), &done)),
+                Err(err) => ctx.notify(i18n::refresh_podcasts_failed(
+                    ctx.prefs.current(),
+                    &err.message,
+                )),
             }
             checking.set(false);
             rev.change(|n| *n += 1);
         }));
     });
-    let check_label = checking.map(|on| {
-        if on {
-            "checking"
+    let locale = ctx.prefs.locale.clone();
+    let check_label = Computed::from(bind!(checking, locale, |c| {
+        let msg = if checking.get(c) {
+            Msg::CheckingEpisodes
         } else {
-            "check for new episodes"
-        }
-        .to_owned()
-    });
+            Msg::CheckForNewEpisodes
+        };
+        msg.text(locale.get(c)).to_owned()
+    }));
 
     let mine = rev.render_value(bind!(ctx, check_all, check_label, checking, show_ai, |_rev: u32| {
         // Asked for with the pill's position and fetched again when it flips.
@@ -335,14 +389,14 @@ pub fn render(ctx: &Ctx) -> DomNode {
     });
     let for_you_view = for_you.render_value(bind!(ctx, show_ai, |state| match state {
         vertigo::Resource::Ready(rows) => {
-            let shelves: Vec<(String, String, Vec<DiscoveryItem>)> = rows
+            let shelves: Vec<(Shelf, Vec<DiscoveryItem>)> = rows
                 .iter()
                 .map(|r: &ForYouRow| {
-                    (
-                        r.category.name.clone(),
-                        format!("because you listen to {}", r.because.join(", ")),
-                        r.podcasts.clone(),
-                    )
+                    let shelf = Shelf::ForYou {
+                        category: r.category.name.clone(),
+                        because: r.because.join(", "),
+                    };
+                    (shelf, r.podcasts.clone())
                 })
                 .collect();
             when_known(
@@ -360,11 +414,7 @@ pub fn render(ctx: &Ctx) -> DomNode {
                 &show_ai,
                 bind!(ctx, items, |on| catalogue_rows(
                     &ctx,
-                    &[(
-                        "top shows".into(),
-                        "what Apple Podcasts listeners follow".into(),
-                        items.to_vec()
-                    )],
+                    &[(Shelf::Top, items.to_vec())],
                     on
                 )),
             )
@@ -373,17 +423,21 @@ pub fn render(ctx: &Ctx) -> DomNode {
     let categories_view = resource_view(
         &ctx.prefs,
         categories,
-        bind!(shown, |c: Rc<Vec<Category>>| {
-            shown.render_value(move |ids: Vec<i32>| categories_view(c.clone(), ids))
+        bind!(ctx, shown, |c: Rc<Vec<Category>>| {
+            shown.render_value(bind!(ctx, |ids: Vec<i32>| categories_view(
+                &ctx.prefs,
+                c.clone(),
+                ids
+            )))
         }),
     );
     let discover =
         dom! { <div class="section-stack">{for_you_view}{top_view}{categories_view}</div> };
 
     let head = heading(
-        "Podcasts",
-        "podcasts".into(),
-        "find shows by category, sample an episode, follow the ones you like".into(),
+        ctx.prefs.text(Msg::NavPodcasts),
+        ctx.prefs.text(Msg::PodcastsHeading),
+        ctx.prefs.text(Msg::PodcastsSubtitle),
     );
     dom! {
         <div class="min-h-screen">
@@ -415,6 +469,27 @@ mod tests {
         let shows = [show("beta"), show("Alpha"), show("gamma")];
         let titles: Vec<&str> = by_title(&shows).iter().map(|s| s.title.as_str()).collect();
         assert_eq!(titles, ["Alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn refresh_all_toast_comes_from_the_typed_answer() {
+        let done = |queued, total| RefreshAll {
+            queued,
+            total,
+            message: "server English".into(),
+        };
+        assert_eq!(
+            refresh_all_text(Locale::Pl, &done(0, None)),
+            "Nie obserwujesz żadnych podcastów"
+        );
+        assert_eq!(
+            refresh_all_text(Locale::En, &done(2, Some(2))),
+            "Queued 2 podcasts for refresh"
+        );
+        assert_eq!(
+            refresh_all_text(Locale::Pl, &done(5, Some(6))),
+            "Do odświeżenia w kolejce: 5 podcastów"
+        );
     }
 
     #[test]

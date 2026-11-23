@@ -9,6 +9,7 @@ use super::{discovery_card, heading};
 use crate::api::client::load;
 use crate::api::podcasts as api;
 use crate::components::media_grid;
+use crate::i18n::Msg;
 use crate::ui::{Ctx, empty_state, flag};
 
 pub const PAGE: u32 = 24;
@@ -48,12 +49,12 @@ fn chart_list(ctx: &Ctx, id: u32, show_ai: bool) -> DomNode {
     let grid = items.render_value(bind!(ctx, busy, |all: Vec<DiscoveryItem>| {
         if all.is_empty() {
             return if vertigo::transaction(|c| busy.get(c)) {
-                dom! { <p class="py-8 text-sm text-[var(--text-muted)]">"Loading…"</p> }
+                crate::ui::loading_row(&ctx.prefs)
             } else {
                 empty_state(
                     "mic-vocal",
-                    "No shows",
-                    "Apple lists no shows in this category.",
+                    ctx.prefs.text(Msg::NoShows),
+                    ctx.prefs.text(Msg::NoShowsInCategory),
                 )
             };
         }
@@ -64,7 +65,7 @@ fn chart_list(ctx: &Ctx, id: u32, show_ai: bool) -> DomNode {
             .collect();
         media_grid(cards)
     }));
-    let more_button = more.render_value(bind!(fetch, busy, |more: bool| {
+    let more_button = more.render_value(bind!(ctx, fetch, busy, |more: bool| {
         if !more {
             return dom! { <span class="hidden" /> };
         }
@@ -72,7 +73,7 @@ fn chart_list(ctx: &Ctx, id: u32, show_ai: bool) -> DomNode {
         dom! {
             <div class="flex justify-center mt-8">
                 <button name="more" class="px-4 py-2 rounded-lg text-xs font-semibold bg-white/5 border border-white/10 text-white hover:bg-white/10 disabled:opacity-50"
-                    on_click={click} disabled={flag(busy.to_computed())}>"more shows"</button>
+                    on_click={click} disabled={flag(busy.to_computed())}>{ctx.prefs.text(Msg::MoreShows)}</button>
             </div>
         }
     }));
@@ -88,12 +89,14 @@ pub fn render(ctx: &Ctx, id: u32) -> DomNode {
         ctx,
         async move { api::categories(&ctx.client).await }
     ));
-    let title = names.map(move |state| match state {
+    // The category's name is Apple metadata (as received); only the fallback is translated.
+    let locale = ctx.prefs.locale.to_computed();
+    let title = vertigo::Computed::from(move |c| match names.get(c) {
         vertigo::Resource::Ready(all) => all
             .iter()
-            .find(|c: &&Category| c.id as u32 == id)
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| "category".into()),
+            .find(|cat: &&Category| cat.id as u32 == id)
+            .map(|cat| cat.name.clone())
+            .unwrap_or_else(|| Msg::CategoryFallback.text(locale.get(c)).to_owned()),
         _ => "\u{a0}".into(),
     });
 
@@ -101,10 +104,13 @@ pub fn render(ctx: &Ctx, id: u32) -> DomNode {
     // paging and a page stays full; flipping the pill loads the chart again from the start. The
     // chart answer is a bare list (upstream shape), so no hidden count is shown here (D-207).
     let show_ai = show_ai_state(ctx);
-    let ai_pill = pill(&show_ai);
+    let ai_pill = pill(&ctx.prefs, &show_ai);
     let list = when_known(&show_ai, bind!(ctx, |on| chart_list(&ctx, id, on)));
-    let head = title
-        .render_value(|t: String| heading("Podcasts", t, "top shows on Apple Podcasts".into()));
+    let head = heading(
+        ctx.prefs.text(Msg::NavPodcasts),
+        title,
+        ctx.prefs.text(Msg::TopShowsOnApple),
+    );
     dom! {
         <div class="min-h-screen">
             {head}

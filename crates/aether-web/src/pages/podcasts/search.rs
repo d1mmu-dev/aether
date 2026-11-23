@@ -11,6 +11,7 @@ use super::ai::{ShowAi, hidden_text, visible, with_label};
 use super::image_url;
 use crate::api::client::ApiError;
 use crate::api::podcasts as api;
+use crate::i18n::{Locale, Msg};
 use crate::icons::icon;
 use crate::route::Route;
 use crate::ui::Ctx;
@@ -35,11 +36,11 @@ enum Answer {
 
 const ROW: &str = "flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5";
 
-fn results(ctx: &Ctx, answer: Answer, show_ai: bool) -> DomNode {
+fn results(ctx: &Ctx, answer: Answer, show_ai: bool, locale: Locale) -> DomNode {
     let found = match answer {
         Answer::Idle => return dom! { <span class="hidden" /> },
         Answer::Searching => {
-            return dom! { <p class="px-3 py-3 text-sm text-[var(--text-muted)]">"searching…"</p> };
+            return dom! { <p class="px-3 py-3 text-sm text-[var(--text-muted)]">{Msg::PodcastSearching.text(locale)}</p> };
         }
         Answer::Done(found) => found,
     };
@@ -53,7 +54,7 @@ fn results(ctx: &Ctx, answer: Answer, show_ai: bool) -> DomNode {
         let (hits, removed) = visible(&shows.results, show_ai, |h| h.ai_label);
         hidden += removed;
         if !hits.is_empty() {
-            rows.push(dom! { <p class="px-3 pt-3 pb-1 text-xs font-semibold text-[var(--text-muted)]">"shows"</p> });
+            rows.push(dom! { <p class="px-3 pt-3 pb-1 text-xs font-semibold text-[var(--text-muted)]">{Msg::PodcastSearchShows.text(locale)}</p> });
         }
         for hit in hits {
             let href = Route::PodcastPreview {
@@ -70,7 +71,11 @@ fn results(ctx: &Ctx, answer: Answer, show_ai: bool) -> DomNode {
             };
             let (name, artist) = (
                 hit.name.clone(),
-                with_label(hit.artist.as_deref().unwrap_or_default(), hit.ai_label),
+                with_label(
+                    locale,
+                    hit.artist.as_deref().unwrap_or_default(),
+                    hit.ai_label,
+                ),
             );
             rows.push(dom! {
                 <a class={ROW} href={href} data-search="show">
@@ -89,7 +94,7 @@ fn results(ctx: &Ctx, answer: Answer, show_ai: bool) -> DomNode {
         let (hits, removed) = visible(&found.episodes, show_ai, |h| h.ai_label);
         hidden += removed;
         if !hits.is_empty() {
-            rows.push(dom! { <p class="px-3 pt-3 pb-1 text-xs font-semibold text-[var(--text-muted)]">"episodes"</p> });
+            rows.push(dom! { <p class="px-3 pt-3 pb-1 text-xs font-semibold text-[var(--text-muted)]">{Msg::PodcastSearchEpisodes.text(locale)}</p> });
         }
         for hit in hits {
             let href = Route::PodcastShow {
@@ -103,7 +108,11 @@ fn results(ctx: &Ctx, answer: Answer, show_ai: bool) -> DomNode {
                 .unwrap_or_default();
             let (title, meta) = (
                 hit.title.clone(),
-                with_label(&format!("{} · {date}", hit.podcast_title), hit.ai_label),
+                with_label(
+                    locale,
+                    &format!("{} · {date}", hit.podcast_title),
+                    hit.ai_label,
+                ),
             );
             rows.push(dom! {
                 <a class={ROW} href={href} data-search="episode">
@@ -116,7 +125,7 @@ fn results(ctx: &Ctx, answer: Answer, show_ai: bool) -> DomNode {
             });
         }
     }
-    if let Some(text) = hidden_text(hidden) {
+    if let Some(text) = hidden_text(locale, hidden) {
         rows.push(
             dom! { <p class="px-3 pt-3 t-meta" data-ai-hidden={hidden.to_string()}>{text}</p> },
         );
@@ -124,12 +133,12 @@ fn results(ctx: &Ctx, answer: Answer, show_ai: bool) -> DomNode {
     if rows.is_empty() {
         let text = match (shows, episodes) {
             (Err(e), _) | (_, Err(e)) => e.clone(),
-            _ => "nothing found".to_owned(),
+            _ => Msg::NothingFound.text(locale).to_owned(),
         };
         return dom! { <p class="px-3 py-3 text-sm text-[var(--text-muted)]">{text}</p> };
     }
     dom! {
-        <div role="region" aria-label="search results"
+        <div role="region" aria-label={Msg::PodcastSearchResults.text(locale)}
             class="mt-2 max-h-[28rem] overflow-y-auto rounded-lg border-2 border-white/10 bg-[var(--bg-secondary)] pb-2">
             {..rows}
         </div>
@@ -167,17 +176,23 @@ pub fn render(ctx: &Ctx, show_ai: ShowAi) -> DomNode {
             }
         }));
     });
-    let shown = Computed::from(bind!(answer, show_ai, |c| (answer.get(c), show_ai.get(c))));
-    // Before the setting is known, hide (the default).
-    let list = shown.render_value(bind!(ctx, |(a, on): (Answer, Option<bool>)| {
-        results(&ctx, a, on.unwrap_or(false))
+    let locale = ctx.prefs.locale.clone();
+    let shown = Computed::from(bind!(answer, show_ai, locale, |c| (
+        answer.get(c),
+        show_ai.get(c),
+        locale.get(c)
+    )));
+    // Before the setting is known, hide (the default). Results are rebuilt in a new language.
+    let list = shown.render_value(bind!(ctx, |(a, on, l): (Answer, Option<bool>, Locale)| {
+        results(&ctx, a, on.unwrap_or(false), l)
     }));
+    let label = ctx.prefs.text(Msg::PodcastSearchPlaceholder);
     dom! {
         <div class="w-full sm:w-96 max-w-xl">
             <div class="relative">
                 <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]">{icon("search", "w-4 h-4")}</span>
                 <input type="text" name="podcast-search" enterkeyhint="search"
-                    placeholder="search shows and episodes" aria-label="search shows and episodes"
+                    placeholder={label.clone()} aria-label={label}
                     class="w-full rounded-lg border-2 border-white/10 bg-[var(--bg-primary)] py-2.5 pl-10 pr-4 text-sm text-white placeholder:text-[var(--text-muted)] focus:border-brand/50 focus:outline-none"
                     value={typed} on_input={on_input} />
             </div>

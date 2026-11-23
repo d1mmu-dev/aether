@@ -10,7 +10,7 @@ pub mod show;
 
 use aether_api_types::playback_state::{QueueAlbum, QueueArtist, QueueItem};
 use aether_api_types::podcasts::{Category, DiscoveryItem, Progress};
-use vertigo::{DomNode, dom};
+use vertigo::{Computed, DomNode, dom};
 
 use crate::components::{Card, Kind, media_card};
 use crate::pages::search::encode_query;
@@ -61,10 +61,11 @@ pub fn discovery_card(ctx: &Ctx, item: &DiscoveryItem, index: usize) -> DomNode 
                 .into_iter()
                 .collect(),
             title: item.title.clone(),
-            subtitle: crate::ui::fixed_text(ai::with_label(
-                item.author.as_deref().unwrap_or_default(),
+            subtitle: ai::labelled(
+                &ctx.prefs,
+                item.author.clone().unwrap_or_default(),
                 item.ai_label,
-            )),
+            ),
             kind: Kind::Podcast,
             on_play: None,
             index,
@@ -176,7 +177,11 @@ fn entity(name: &str) -> Option<char> {
 }
 
 /// A page heading in the style of the other aether-web pages.
-pub fn heading(eyebrow_text: &str, title: String, sub: String) -> DomNode {
+pub fn heading(
+    eyebrow_text: Computed<String>,
+    title: Computed<String>,
+    sub: Computed<String>,
+) -> DomNode {
     let eyebrow = crate::components::eyebrow(eyebrow_text);
     dom! {
         <div class="page-shell pt-8 pb-6">
