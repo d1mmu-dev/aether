@@ -246,6 +246,101 @@ async fn scope_default_home_400_otherwise(pool: PgPool) {
     assert_eq!(res.status_code().as_u16(), 401);
 }
 
+/// `?covers=none` (aether, D-290): the same stations in the same order and key shape, every `cover` null, and no
+/// cover worked out or kept for the listener (the expensive per-station pick never runs); the zone is kept as for the
+/// full row. The default (no `covers`) still answers the picked covers.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn covers_none_lists_the_stations_without_picking_covers(pool: PgPool) {
+    let e = env(pool, false, false).await;
+    let store = &e.state.listeners;
+    let ana = e.ana_profile.into_uuid();
+    let (day, _) = aether_db::radio::local_day(&e.pool, "UTC", time::OffsetDateTime::now_utc())
+        .await
+        .unwrap();
+    let mut fast_rows = Vec::new();
+    for scope in ["all", "home"] {
+        let (status, fast, text) = e
+            .row(
+                &e.ana,
+                &[("scope", scope), ("tz", "UTC"), ("covers", "none")],
+            )
+            .await;
+        assert_eq!(status, 200, "{text}");
+        let fast = fast["stations"].as_array().unwrap().clone();
+        assert!(!fast.is_empty());
+        assert!(fast.iter().all(|s| s["cover"].is_null()), "{text}");
+        assert!(
+            text.starts_with("{\"stations\":[{\"type\":\"all\",\"value\":null,\"cover\":null}"),
+            "{text}"
+        );
+        fast_rows.push((scope, fast));
+    }
+    for (kind, value) in [
+        ("all", None),
+        ("genre", Some("rcvgenre")),
+        ("decade", Some("1920")),
+    ] {
+        assert_eq!(
+            store.cover(ana, &day, &cover_station_key(kind, value), Instant::now()),
+            None,
+            "{kind}: nothing picked or kept"
+        );
+    }
+    assert_eq!(
+        store.cover_zones(Instant::now()),
+        vec![(ana, "UTC".to_string())]
+    );
+
+    for (scope, fast) in fast_rows {
+        let full = e.stations(&e.ana, &[("scope", scope)]).await;
+        assert!(cover(&full, "all", None).is_string());
+        let without_covers: Vec<Value> = full
+            .iter()
+            .cloned()
+            .map(|mut s| {
+                s["cover"] = Value::Null;
+                s
+            })
+            .collect();
+        assert_eq!(
+            fast, without_covers,
+            "{scope}: same stations, order and keys"
+        );
+        // Asked again once the covers are kept: still none in this mode.
+        let again = e
+            .stations(&e.ana, &[("scope", scope), ("covers", "none")])
+            .await;
+        assert_eq!(again, fast);
+    }
+}
+
+/// `covers` takes only `none`; anything else, or the key repeated, is 400 before any work, and the route still needs
+/// a signed-in listener.
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn covers_mode_other_than_none_is_400(pool: PgPool) {
+    let e = env(pool, false, false).await;
+    for covers in ["", "None", "daily", "all", "true"] {
+        let (status, body, _) = e.row(&e.ana, &[("scope", "all"), ("covers", covers)]).await;
+        assert_eq!(status, 400, "{covers:?}");
+        assert_eq!(body, json!({"error": "covers must be none"}));
+    }
+    let (status, body, _) = e
+        .row(&e.ana, &[("covers", "none"), ("covers", "none")])
+        .await;
+    assert_eq!(status, 400);
+    assert_eq!(body, json!({"error": "covers must be none"}));
+    assert_eq!(
+        e.state.listeners.cover_zones(Instant::now()),
+        Vec::<(Uuid, String)>::new()
+    );
+    let res = e
+        .server
+        .get("/api/library/radio/row")
+        .add_query_param("covers", "none")
+        .await;
+    assert_eq!(res.status_code().as_u16(), 401);
+}
+
 /// "lists the home row's stations in order, each with its cover" and "lists every genre and decade for the radio
 /// page", with the vibe analyzer off: no Workout and no mood tiles.
 #[sqlx::test(migrator = "aether_db::MIGRATOR")]

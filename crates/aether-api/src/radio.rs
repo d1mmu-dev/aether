@@ -579,31 +579,57 @@ async fn with_covers(
     stations
         .into_iter()
         .zip(covers)
-        .map(|(s, cover)| RowStationReply {
-            kind: s.kind,
-            value: s.value,
-            name: s.name,
-            description: s.description,
-            count: s.count,
-            cover,
-        })
+        .map(|(s, cover)| reply(s, cover))
         .collect()
 }
 
+fn reply(s: RowStation, cover: Option<String>) -> RowStationReply {
+    RowStationReply {
+        kind: s.kind,
+        value: s.value,
+        name: s.name,
+        description: s.description,
+        count: s.count,
+        cover,
+    }
+}
+
+/// Whether `GET /library/radio/row` works out the covers (`?covers=`, aether D-290).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowCovers {
+    /// No `covers`: each station's cover for this listener today, as upstream (the default).
+    Daily,
+    /// `covers=none`: the stations only, every `cover` null and none picked, so the page can show its tiles at once
+    /// and ask the full row for the covers afterwards.
+    None,
+}
+
+impl RowCovers {
+    /// The `covers` value: only `none` names a mode; absence is [`RowCovers::Daily`].
+    pub fn parse(value: &str) -> Option<Self> {
+        (value == "none").then_some(Self::None)
+    }
+}
+
 /// Upstream `radioRow`: a page's stations and this listener's covers for them today, in `tz` (`nightZone`: an
-/// unknown zone is the server's); the zone is kept for picking ahead.
+/// unknown zone is the server's); the zone is kept for picking ahead. With [`RowCovers::None`] the same stations
+/// come back with no cover and nothing is picked.
 pub async fn radio_row(
     state: &AppState,
     profile: ProfileId,
     tz: Option<&str>,
     scope: RowScope,
+    covers: RowCovers,
 ) -> sqlx::Result<Vec<RowStationReply>> {
     let zone = night_zone(&state.pool, tz, &server_zone()).await?;
     state
         .listeners
         .keep_cover_zone(profile.into_uuid(), &zone, Instant::now());
     let stations = row_stations(state, scope).await?;
-    Ok(with_covers(state, stations, profile, &zone).await)
+    Ok(match covers {
+        RowCovers::Daily => with_covers(state, stations, profile, &zone).await,
+        RowCovers::None => stations.into_iter().map(|s| reply(s, None)).collect(),
+    })
 }
 
 /// Upstream `warmRadioCovers`: picks the day's covers for every listener seen within a week whose local day has begun

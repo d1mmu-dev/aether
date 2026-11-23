@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
-use crate::radio::{Param, RadioQuery, RowStationReply, Selection, select_radio_tracks};
+use crate::radio::{Param, RadioQuery, RowCovers, RowStationReply, Selection, select_radio_tracks};
 use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -207,7 +207,8 @@ struct RadioRowReply {
 
 /// Upstream `GET /radio/row`: a page's stations, each with this listener's cover for the local day, in one reply;
 /// `?scope=home` (default) or `all` (400 `scope must be home or all`), `?tz=` the listener's zone. 500 `Failed to get
-/// radio stations`.
+/// radio stations`. aether (D-290): `?covers=none` answers the same stations with every `cover` null and picks none;
+/// any other `covers` value, or `covers` given twice, is 400 `covers must be none`. Without `covers` nothing changes.
 async fn radio_row(
     State(state): State<AppState>,
     user: AuthUser,
@@ -221,11 +222,17 @@ async fn radio_row(
             .ok_or_else(|| ApiError::BadRequest("scope must be home or all".into()))?,
         Param::Many => return Err(ApiError::BadRequest("scope must be home or all".into())),
     };
+    let covers = match query.param("covers") {
+        Param::Absent => RowCovers::Daily,
+        Param::One(value) => RowCovers::parse(value)
+            .ok_or_else(|| ApiError::BadRequest("covers must be none".into()))?,
+        Param::Many => return Err(ApiError::BadRequest("covers must be none".into())),
+    };
     let tz = match query.param("tz") {
         Param::One(tz) => Some(tz),
         _ => None,
     };
-    let stations = crate::radio::radio_row(&state, user.profile, tz, scope)
+    let stations = crate::radio::radio_row(&state, user.profile, tz, scope, covers)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Radio row endpoint error");
