@@ -206,6 +206,8 @@ pub(crate) struct Live {
     pub(crate) gates: HashMap<Source, Gate>,
     /// The `source_pauses` rows, mirrored; expired entries keep their count.
     pauses: Mutex<HashMap<Source, Pause>>,
+    /// slskd searches in flight (M7, D-292); a search beyond the cap is refused, not queued.
+    pub(crate) slskd_searches: Arc<tokio::sync::Semaphore>,
 }
 
 /// The one outbound HTTP client of a process.
@@ -341,6 +343,9 @@ impl Net {
                 http,
                 gates,
                 pauses: Mutex::new(HashMap::new()),
+                slskd_searches: Arc::new(tokio::sync::Semaphore::new(
+                    crate::slskd::MAX_SEARCHES,
+                )),
             }),
         }
     }
