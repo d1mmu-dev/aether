@@ -35,6 +35,7 @@ pub mod removal_log;
 pub mod search;
 pub mod settings;
 pub mod settings_kv;
+pub mod slskd_downloads;
 pub mod stages;
 pub mod stars;
 pub mod subsonic;

@@ -296,12 +296,21 @@ impl std::fmt::Debug for KeyChange {
     }
 }
 
+/// Settings row holding the slskd connection generation (D-294). Not a [`Key`]: the settings
+/// API reads and writes only `Key::ALL`, so no request body can set it and `GET` never shows it.
+const SLSKD_GENERATION: &str = "slskdGeneration";
+
 /// Saves the slskd URL/key pair in one transaction (review I-1, D-291). `url`: `None` leaves the
 /// URL alone, `Some(None)` clears it, `Some(Some(origin))` stores the normalized origin. A key
 /// belongs to the address it was saved for: when the URL changes (set, replaced or cleared) the
 /// stored key is deleted unless `key` sets a fresh one. The current URL is read from the table,
 /// not a cache, under a transaction advisory lock, so competing pair saves (key-only ones too,
 /// and also while neither row exists) are serialized.
+///
+/// When the stored URL or key actually changes, the connection generation is incremented in the
+/// same transaction (D-294): a different key, a cleared key or a changed URL bumps it; `Keep`,
+/// an equal URL or re-saving the same key does not. `soulseekEnabled` is not part of it (the
+/// worker reads that switch fresh). The generation holds no key material.
 pub async fn save_slskd(
     pool: &PgPool,
     cipher: &Cipher,
@@ -323,13 +332,113 @@ pub async fn save_slskd(
         let new = new.map(|u| Value::String(u.to_string()));
         set_plain(&mut *tx, Key::SlskdUrl, new.as_ref()).await?;
     }
+    let mut changed = url_changed;
     match key {
-        KeyChange::Set(k) => set_secret(&mut *tx, cipher, Key::SlskdApiKey, Some(&k)).await?,
-        KeyChange::Clear => delete(&mut *tx, Key::SlskdApiKey).await?,
-        KeyChange::Keep if url_changed => delete(&mut *tx, Key::SlskdApiKey).await?,
+        KeyChange::Set(k) => {
+            let stored: Option<Vec<u8>> =
+                sqlx::query_scalar("SELECT secret_enc FROM settings_kv WHERE key = $1")
+                    .bind(Key::SlskdApiKey.name())
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .flatten();
+            let same = stored
+                .and_then(|blob| cipher.decrypt(&blob, &Key::SlskdApiKey.aad()).ok())
+                .is_some_and(|plain| plain == k.as_bytes());
+            changed |= !same;
+            set_secret(&mut *tx, cipher, Key::SlskdApiKey, Some(&k)).await?;
+        }
+        KeyChange::Clear => changed |= delete_counted(&mut *tx, Key::SlskdApiKey).await?,
+        KeyChange::Keep if url_changed => {
+            delete_counted(&mut *tx, Key::SlskdApiKey).await?;
+        }
         KeyChange::Keep => {}
     }
+    if changed {
+        sqlx::query(
+            "INSERT INTO settings_kv (key, value) VALUES ($1, '1'::jsonb)
+             ON CONFLICT (key) DO UPDATE
+             SET value = to_jsonb(coalesce((settings_kv.value #>> '{}')::bigint, 0) + 1),
+                 updated_at = now()",
+        )
+        .bind(SLSKD_GENERATION)
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await
+}
+
+async fn delete_counted(pool: impl sqlx::PgExecutor<'_>, key: Key) -> sqlx::Result<bool> {
+    let done = sqlx::query("DELETE FROM settings_kv WHERE key = $1")
+        .bind(key.name())
+        .execute(pool)
+        .await?;
+    Ok(done.rows_affected() > 0)
+}
+
+/// One consistent read of the slskd connection settings, straight from the table (not the
+/// cache), for the download path: a request stores `url` and `generation`, never the key.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SlskdConnection {
+    pub enabled: bool,
+    pub url: Option<String>,
+    pub api_key: Option<String>,
+    /// 0 until the URL or key is first changed; incremented by every such change.
+    pub generation: i64,
+}
+
+impl std::fmt::Debug for SlskdConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SlskdConnection")
+            .field("enabled", &self.enabled)
+            .field("url", &self.url)
+            .field("api_key", &self.api_key.as_ref().map(|_| ".."))
+            .field("generation", &self.generation)
+            .finish()
+    }
+}
+
+pub async fn slskd_connection(pool: &PgPool, cipher: &Cipher) -> sqlx::Result<SlskdConnection> {
+    // One statement, one snapshot: the URL, key and generation belong together.
+    let rows: Vec<(String, Option<Value>, Option<Vec<u8>>)> =
+        sqlx::query_as("SELECT key, value, secret_enc FROM settings_kv WHERE key = ANY($1)")
+            .bind(vec![
+                Key::SoulseekEnabled.name(),
+                Key::SlskdUrl.name(),
+                Key::SlskdApiKey.name(),
+                SLSKD_GENERATION,
+            ])
+            .fetch_all(pool)
+            .await?;
+    let mut out = SlskdConnection {
+        enabled: false,
+        url: None,
+        api_key: None,
+        generation: 0,
+    };
+    for (key, value, secret) in rows {
+        match key.as_str() {
+            k if k == Key::SoulseekEnabled.name() => {
+                out.enabled = value.and_then(|v| v.as_bool()).unwrap_or(false);
+            }
+            k if k == Key::SlskdUrl.name() => {
+                out.url = value.and_then(|v| v.as_str().map(str::to_string));
+            }
+            k if k == Key::SlskdApiKey.name() => {
+                out.api_key = secret.and_then(|blob| {
+                    let plain = cipher
+                        .decrypt(&blob, &Key::SlskdApiKey.aad())
+                        .ok()
+                        .and_then(|b| String::from_utf8(b).ok());
+                    if plain.is_none() {
+                        warn_undecryptable(Key::SlskdApiKey);
+                    }
+                    plain
+                });
+            }
+            _ => out.generation = value.and_then(|v| v.as_i64()).unwrap_or(0),
+        }
+    }
+    Ok(out)
 }
 
 type Cached = (Instant, Arc<KvSettings>);
