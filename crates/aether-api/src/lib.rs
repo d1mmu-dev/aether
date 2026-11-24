@@ -9,6 +9,7 @@ pub mod media;
 pub mod radio;
 pub mod range;
 mod routes;
+pub mod soulseek;
 pub mod state;
 pub mod update_check;
 pub mod vibe_cache;

@@ -81,6 +81,8 @@ pub struct AppState {
     pub identify: IdentifySwitch,
     /// The one outbound HTTP client (spec §7). `Net::disabled()` unless `with_net` is used.
     pub net: Arc<Net>,
+    /// slskd search sessions and bounds (M7, D-292); in memory only.
+    pub soulseek: crate::soulseek::SlskdSearches,
     pub podcast_catalog: aether_podcast::catalog::Catalog,
     /// `PREVIEW_RSS_TIMEOUT_MS` (Task 14): how long a podcast preview's feed read may take.
     /// Tests shrink it so a feed host that never answers does not stall the suite.
@@ -135,6 +137,7 @@ impl AppState {
             settings: SettingsCache::new(pool.clone(), cipher.clone()),
             identify: IdentifySwitch::new(false, true),
             net,
+            soulseek: crate::soulseek::SlskdSearches::default(),
             pool,
             jwt: Arc::new(JwtKeys::new(session_secret)),
             progress_events: ProgressEvents::new(events.clone()),
@@ -184,6 +187,12 @@ impl AppState {
         self.podcast_catalog =
             aether_podcast::catalog::Catalog::new(net.clone(), self.pool.clone());
         self.net = net;
+        self
+    }
+
+    /// Overrides the slskd search bounds (tests: short deadlines).
+    pub fn with_slskd_search_limits(mut self, limits: aether_net::slskd::SearchLimits) -> Self {
+        self.soulseek = crate::soulseek::SlskdSearches::new(limits);
         self
     }
 

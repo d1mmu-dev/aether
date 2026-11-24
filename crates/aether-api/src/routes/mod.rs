@@ -23,6 +23,7 @@ mod recommendations;
 mod search;
 mod search_discover;
 mod settings;
+mod soulseek;
 mod stats;
 mod stubs;
 mod system;
@@ -41,6 +42,7 @@ pub fn router(state: AppState) -> Router {
         .merge(system::routes())
         .merge(stubs::routes())
         .merge(system_settings::routes())
+        .merge(soulseek::routes())
         .merge(events::routes())
         .merge(enrichment::routes())
         .merge(cover_art::routes())
