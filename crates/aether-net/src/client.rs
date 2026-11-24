@@ -343,9 +343,7 @@ impl Net {
                 http,
                 gates,
                 pauses: Mutex::new(HashMap::new()),
-                slskd_searches: Arc::new(tokio::sync::Semaphore::new(
-                    crate::slskd::MAX_SEARCHES,
-                )),
+                slskd_searches: Arc::new(tokio::sync::Semaphore::new(crate::slskd::MAX_SEARCHES)),
             }),
         }
     }
