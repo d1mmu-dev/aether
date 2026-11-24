@@ -219,7 +219,11 @@ pub async fn load(pool: &PgPool, cipher: &Cipher) -> sqlx::Result<KvSettings> {
 }
 
 /// Stores a plain setting; `None` deletes the row (back to the default).
-pub async fn set_plain(pool: &PgPool, key: Key, value: Option<&Value>) -> sqlx::Result<()> {
+pub async fn set_plain(
+    pool: impl sqlx::PgExecutor<'_>,
+    key: Key,
+    value: Option<&Value>,
+) -> sqlx::Result<()> {
     assert!(!key.is_secret(), "{} is a secret", key.name());
     match value {
         None => delete(pool, key).await,
@@ -240,7 +244,7 @@ pub async fn set_plain(pool: &PgPool, key: Key, value: Option<&Value>) -> sqlx::
 
 /// Stores a secret encrypted; `None` deletes the row.
 pub async fn set_secret(
-    pool: &PgPool,
+    pool: impl sqlx::PgExecutor<'_>,
     cipher: &Cipher,
     key: Key,
     value: Option<&str>,
@@ -264,11 +268,58 @@ pub async fn set_secret(
     }
 }
 
-async fn delete(pool: &PgPool, key: Key) -> sqlx::Result<()> {
+async fn delete(pool: impl sqlx::PgExecutor<'_>, key: Key) -> sqlx::Result<()> {
     sqlx::query!("DELETE FROM settings_kv WHERE key = $1", key.name())
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// How a save changes the slskd API key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyChange {
+    /// Absent or blank in the body: not a fresh key.
+    Keep,
+    /// `null`: delete the stored key.
+    Clear,
+    /// A fresh, already validated key.
+    Set(String),
+}
+
+/// Saves the slskd URL/key pair in one transaction (review I-1, D-291). `url`: `None` leaves the
+/// URL alone, `Some(None)` clears it, `Some(Some(origin))` stores the normalized origin. A key
+/// belongs to the address it was saved for: when the URL changes (set, replaced or cleared) the
+/// stored key is deleted unless `key` sets a fresh one. The current URL is read from the table,
+/// not a cache, under a transaction advisory lock, so competing pair saves (key-only ones too,
+/// and also while neither row exists) are serialized.
+pub async fn save_slskd(
+    pool: &PgPool,
+    cipher: &Cipher,
+    url: Option<Option<&str>>,
+    key: KeyChange,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(7003, hashtext('settings_kv:slskd'))")
+        .execute(&mut *tx)
+        .await?;
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT value #>> '{}' FROM settings_kv WHERE key = $1")
+            .bind(Key::SlskdUrl.name())
+            .fetch_optional(&mut *tx)
+            .await?
+            .flatten();
+    let url_changed = url.is_some_and(|new| new != current.as_deref());
+    if let Some(new) = url.filter(|_| url_changed) {
+        let new = new.map(|u| Value::String(u.to_string()));
+        set_plain(&mut *tx, Key::SlskdUrl, new.as_ref()).await?;
+    }
+    match key {
+        KeyChange::Set(k) => set_secret(&mut *tx, cipher, Key::SlskdApiKey, Some(&k)).await?,
+        KeyChange::Clear => delete(&mut *tx, Key::SlskdApiKey).await?,
+        KeyChange::Keep if url_changed => delete(&mut *tx, Key::SlskdApiKey).await?,
+        KeyChange::Keep => {}
+    }
+    tx.commit().await
 }
 
 type Cached = (Instant, Arc<KvSettings>);

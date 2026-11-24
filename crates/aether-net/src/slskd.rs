@@ -102,10 +102,16 @@ impl fmt::Display for SlskdUrl {
 pub struct SlskdApiKey(String);
 
 impl SlskdApiKey {
-    /// Trimmed; `None` when blank, too long, or not usable as a header value.
+    /// Trimmed; `None` when blank, too long, or not visible US-ASCII (`!`..=`~`: no spaces,
+    /// tabs, CR/LF, DEL, other controls or non-ASCII, which `HeaderValue` alone would let
+    /// through as opaque bytes). The stored key and a typed check key share this boundary.
     pub fn new(raw: &str) -> Option<SlskdApiKey> {
         let s = raw.trim();
-        if s.is_empty() || s.chars().count() > MAX_KEY_CHARS || HeaderValue::from_str(s).is_err() {
+        if s.is_empty()
+            || s.len() > MAX_KEY_CHARS
+            || !s.bytes().all(|b| b.is_ascii_graphic())
+            || HeaderValue::from_str(s).is_err()
+        {
             return None;
         }
         Some(SlskdApiKey(s.to_string()))
@@ -178,7 +184,11 @@ pub async fn check_connection(
     };
     let mut rb = http.get(target).header(ACCEPT, "application/json");
     if let Some(key) = key {
-        rb = rb.header("X-API-Key", key.expose());
+        let Ok(mut value) = HeaderValue::from_str(key.expose()) else {
+            return SlskdCheck::Unexpected;
+        };
+        value.set_sensitive(true);
+        rb = rb.header("X-API-Key", value);
     }
     let Ok(mut res) = rb.send().await else {
         return SlskdCheck::NoAnswer;

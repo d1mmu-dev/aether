@@ -143,6 +143,44 @@ fn api_key_is_trimmed_bounded_and_never_printed() {
     assert!(!format!("{k:?}").contains("secret"));
 }
 
+#[test]
+fn api_key_is_visible_us_ascii_only() {
+    // Review M-1: the same boundary for the stored key and the probe's typed key.
+    for bad in [
+        "klucz-\u{105}",
+        "key\u{7f}del",
+        "key\r\nX-Evil: 1",
+        "key\ttab",
+        "key space",
+        "key\0nul",
+    ] {
+        assert!(SlskdApiKey::new(bad).is_none(), "{bad:?}");
+    }
+    assert_eq!(
+        key("  Ab0-_.~!#$%&*+/=?^|  ").expose(),
+        "Ab0-_.~!#$%&*+/=?^|"
+    );
+}
+
+#[test]
+fn equivalent_urls_normalize_to_one_origin() {
+    for same in [
+        "http://SLSKD.Lan:80/",
+        "HTTP://slskd.lan",
+        "http://slskd.lan:80",
+    ] {
+        assert_eq!(
+            SlskdUrl::parse(same).unwrap().as_str(),
+            "http://slskd.lan",
+            "{same}"
+        );
+    }
+    assert_eq!(
+        SlskdUrl::parse("https://slskd.lan:443/").unwrap().as_str(),
+        "https://slskd.lan"
+    );
+}
+
 #[tokio::test]
 async fn connected_and_logged_in_is_connected() {
     let s = stub(json_answer(200, application(true, true))).await;

@@ -150,7 +150,9 @@ async fn saves_normalized_url_and_encrypted_key_never_echoed(pool: PgPool) {
             .await
             .unwrap();
     assert!(!blob.windows(6).any(|w| w == b"sekret"));
-    // An empty key keeps the stored one; "" and null clear the URL; null clears the key.
+    // "" and null clear the URL; an empty key is not a fresh one, so clearing the URL also drops
+    // the key bound to it (review I-1). A blank key with an unchanged URL keeps it (see
+    // `equivalent_url_with_blank_key_keeps_the_key`).
     save(
         &server,
         &admin,
@@ -160,7 +162,7 @@ async fn saves_normalized_url_and_encrypted_key_never_echoed(pool: PgPool) {
     .assert_status_ok();
     let body = get(&server, &admin).await;
     assert_eq!(body["slskdUrl"], "");
-    assert_eq!(body["hasSlskdApiKey"], true);
+    assert_eq!(body["hasSlskdApiKey"], false);
     save(
         &server,
         &admin,
@@ -413,4 +415,259 @@ async fn admin_only(pool: PgPool) {
         .await
         .assert_status_forbidden();
     assert!(slskd.seen().is_empty());
+}
+
+// --- Review I-1: the stored key is bound to the stored URL (D-291). ---
+
+const KEY_A: &str = "fixture-key-a";
+const KEY_B: &str = "fixture-key-b";
+
+/// The raw `settings_kv` rows of the slskd pair, for "nothing changed" checks.
+async fn pair_rows(pool: &PgPool) -> Vec<(String, Option<Value>, Option<Vec<u8>>)> {
+    sqlx::query_as(
+        "SELECT key, value, secret_enc FROM settings_kv
+         WHERE key IN ('slskdUrl', 'slskdApiKey') ORDER BY key",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn url_change_without_key_drops_the_stored_key(pool: PgPool) {
+    let a = stub(200, application(true, true)).await;
+    let b = stub(200, application(true, true)).await;
+    let (server, _, admin, _) = setup(pool, true).await;
+    save(
+        &server,
+        &admin,
+        json!({ "slskdUrl": a.url(), "slskdApiKey": KEY_A }),
+    )
+    .await
+    .assert_status_ok();
+    save(&server, &admin, json!({ "slskdUrl": b.url() }))
+        .await
+        .assert_status_ok();
+    let body = get(&server, &admin).await;
+    assert_eq!(body["slskdUrl"], b.url());
+    assert_eq!(body["hasSlskdApiKey"], false);
+    test_soulseek(&server, &admin, json!({}))
+        .await
+        .assert_status_ok();
+    let seen = b.seen();
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].api_key.is_none(), "the old key went to the new URL");
+    assert!(a.seen().is_empty());
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn url_change_with_a_fresh_key_keeps_only_the_new_key(pool: PgPool) {
+    let a = stub(200, application(true, true)).await;
+    let b = stub(200, application(true, true)).await;
+    let (server, _, admin, _) = setup(pool, true).await;
+    save(
+        &server,
+        &admin,
+        json!({ "slskdUrl": a.url(), "slskdApiKey": KEY_A }),
+    )
+    .await
+    .assert_status_ok();
+    save(
+        &server,
+        &admin,
+        json!({ "slskdUrl": b.url(), "slskdApiKey": KEY_B }),
+    )
+    .await
+    .assert_status_ok();
+    test_soulseek(&server, &admin, json!({}))
+        .await
+        .assert_status_ok();
+    assert_eq!(b.seen()[0].api_key.as_deref(), Some(KEY_B));
+    assert!(a.seen().is_empty());
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn equivalent_url_with_blank_key_keeps_the_key(pool: PgPool) {
+    let a = stub(200, application(true, true)).await;
+    let (server, _, admin, _) = setup(pool, true).await;
+    save(
+        &server,
+        &admin,
+        json!({ "slskdUrl": a.url(), "slskdApiKey": KEY_A }),
+    )
+    .await
+    .assert_status_ok();
+    // Same origin after normalization: scheme case and the trailing slash do not matter.
+    let same = format!("HTTP://127.0.0.1:{}/", a.port);
+    save(
+        &server,
+        &admin,
+        json!({ "slskdUrl": same, "slskdApiKey": "" }),
+    )
+    .await
+    .assert_status_ok();
+    let body = get(&server, &admin).await;
+    assert_eq!(body["slskdUrl"], a.url());
+    assert_eq!(body["hasSlskdApiKey"], true);
+    test_soulseek(&server, &admin, json!({}))
+        .await
+        .assert_status_ok();
+    assert_eq!(a.seen()[0].api_key.as_deref(), Some(KEY_A));
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn cleared_url_then_new_url_has_no_key(pool: PgPool) {
+    let a = stub(200, application(true, true)).await;
+    let b = stub(200, application(true, true)).await;
+    let (server, _, admin, _) = setup(pool, true).await;
+    save(
+        &server,
+        &admin,
+        json!({ "slskdUrl": a.url(), "slskdApiKey": KEY_A }),
+    )
+    .await
+    .assert_status_ok();
+    save(&server, &admin, json!({ "slskdUrl": null }))
+        .await
+        .assert_status_ok();
+    assert_eq!(get(&server, &admin).await["hasSlskdApiKey"], false);
+    save(&server, &admin, json!({ "slskdUrl": b.url() }))
+        .await
+        .assert_status_ok();
+    assert_eq!(get(&server, &admin).await["hasSlskdApiKey"], false);
+    test_soulseek(&server, &admin, json!({}))
+        .await
+        .assert_status_ok();
+    assert!(
+        b.seen()[0].api_key.is_none(),
+        "the old key went to the new URL"
+    );
+    assert!(a.seen().is_empty());
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn key_only_save_keeps_the_url(pool: PgPool) {
+    let a = stub(200, application(true, true)).await;
+    let (server, _, admin, _) = setup(pool, true).await;
+    save(
+        &server,
+        &admin,
+        json!({ "slskdUrl": a.url(), "slskdApiKey": KEY_A }),
+    )
+    .await
+    .assert_status_ok();
+    save(&server, &admin, json!({ "slskdApiKey": KEY_B }))
+        .await
+        .assert_status_ok();
+    assert_eq!(get(&server, &admin).await["slskdUrl"], a.url());
+    test_soulseek(&server, &admin, json!({}))
+        .await
+        .assert_status_ok();
+    assert_eq!(a.seen()[0].api_key.as_deref(), Some(KEY_B));
+}
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn failed_pair_write_rolls_back_the_url(pool: PgPool) {
+    let a = stub(200, application(true, true)).await;
+    let b = stub(200, application(true, true)).await;
+    let (server, _, admin, _) = setup(pool.clone(), true).await;
+    save(
+        &server,
+        &admin,
+        json!({ "slskdUrl": a.url(), "slskdApiKey": KEY_A }),
+    )
+    .await
+    .assert_status_ok();
+    let before = pair_rows(&pool).await;
+    // Any write of the key row fails, after the URL row was written in the same save.
+    sqlx::raw_sql(
+        "CREATE FUNCTION fail_slskd_key() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+           IF (TG_OP = 'DELETE' AND OLD.key = 'slskdApiKey')
+              OR (TG_OP <> 'DELETE' AND NEW.key = 'slskdApiKey') THEN
+             RAISE EXCEPTION 'injected key write failure';
+           END IF;
+           IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+           RETURN NEW;
+         END $$;
+         CREATE TRIGGER fail_slskd_key BEFORE INSERT OR UPDATE OR DELETE ON settings_kv
+         FOR EACH ROW EXECUTE FUNCTION fail_slskd_key()",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    // Case labels, not bodies, in failure messages: no fixture key in the logs.
+    for (case, body) in [
+        (
+            "url+key",
+            json!({ "slskdUrl": b.url(), "slskdApiKey": KEY_B }),
+        ),
+        ("url only", json!({ "slskdUrl": b.url() })),
+    ] {
+        let res = save(&server, &admin, body).await;
+        assert_eq!(
+            res.status_code(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{case}"
+        );
+        assert!(!res.text().contains(KEY_B), "{case}");
+        assert_eq!(pair_rows(&pool).await, before, "{case}");
+    }
+    sqlx::raw_sql("DROP TRIGGER fail_slskd_key ON settings_kv")
+        .execute(&pool)
+        .await
+        .unwrap();
+    test_soulseek(&server, &admin, json!({}))
+        .await
+        .assert_status_ok();
+    assert_eq!(a.seen()[0].api_key.as_deref(), Some(KEY_A));
+    assert!(b.seen().is_empty());
+}
+
+// --- Review M-1: a key must be a usable, visible US-ASCII header value. ---
+
+#[sqlx::test(migrator = "aether_db::MIGRATOR")]
+async fn invalid_key_is_400_and_changes_nothing(pool: PgPool) {
+    let a = stub(200, application(true, true)).await;
+    let b = stub(200, application(true, true)).await;
+    let (server, _, admin, _) = setup(pool.clone(), true).await;
+    save(
+        &server,
+        &admin,
+        json!({ "slskdUrl": a.url(), "slskdApiKey": KEY_A }),
+    )
+    .await
+    .assert_status_ok();
+    let before = pair_rows(&pool).await;
+    for bad in [
+        "klucz-ą",
+        "key\u{7f}del",
+        "key\r\nX-Evil: 1",
+        "key\ttab",
+        "key space",
+    ] {
+        let res = save(
+            &server,
+            &admin,
+            json!({ "soulseekEnabled": true, "slskdUrl": b.url(), "slskdApiKey": bad }),
+        )
+        .await;
+        res.assert_status_bad_request();
+        res.assert_json(
+            &json!({ "error": "Invalid settings", "details": "slskdApiKey is invalid" }),
+        );
+        assert_eq!(pair_rows(&pool).await, before, "{bad:?}");
+        let res = test_soulseek(
+            &server,
+            &admin,
+            json!({ "slskdUrl": b.url(), "slskdApiKey": bad }),
+        )
+        .await;
+        res.assert_status_bad_request();
+        assert!(!res.text().contains("klucz"));
+    }
+    let body = get(&server, &admin).await;
+    assert_eq!(body["soulseekEnabled"], false);
+    assert_eq!(body["slskdUrl"], a.url());
+    assert!(a.seen().is_empty() && b.seen().is_empty());
 }

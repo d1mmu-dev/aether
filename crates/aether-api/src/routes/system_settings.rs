@@ -1,5 +1,5 @@
 use aether_db::settings::{self, SettingsPatch, SystemSettings};
-use aether_db::settings_kv::{self, Key, KvSettings};
+use aether_db::settings_kv::{self, Key, KeyChange, KvSettings};
 use aether_ident::fanart::{self, TestResult};
 use aether_net::slskd::{SlskdApiKey, SlskdCheck, SlskdUrl};
 use axum::body::Bytes;
@@ -72,8 +72,8 @@ async fn show(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<V
 enum Change {
     Secret(Key, Option<String>),
     Plain(Key, Value),
-    /// A plain setting back to its default (row deleted).
-    Clear(Key),
+    /// The slskd URL (`None`: untouched, `Some(None)`: cleared) and key, saved together.
+    Slskd(Option<Option<String>>, KeyChange),
 }
 
 fn invalid(detail: String) -> ApiError {
@@ -97,6 +97,23 @@ fn secret_change(key: Key, value: &Value) -> Result<Option<Change>, ApiError> {
     }
 }
 
+/// The key half of the slskd pair: `null` clears, blank keeps (not a fresh key), anything else
+/// must pass the same `SlskdApiKey` boundary as the connection check.
+fn slskd_key_change(value: &Value) -> Result<KeyChange, ApiError> {
+    let name = Key::SlskdApiKey.name();
+    match value {
+        Value::Null => Ok(KeyChange::Clear),
+        Value::String(s) if s.trim().is_empty() => Ok(KeyChange::Keep),
+        Value::String(s) if s.trim().chars().count() > MAX_SECRET_CHARS => {
+            Err(invalid(format!("{name} is too long")))
+        }
+        Value::String(s) => SlskdApiKey::new(s)
+            .map(|k| KeyChange::Set(k.expose().to_string()))
+            .ok_or_else(|| invalid(format!("{name} is invalid"))),
+        _ => Err(invalid(format!("{name} must be a string or null"))),
+    }
+}
+
 fn changes(
     fields: &Map<String, Value>,
     locked: bool,
@@ -109,23 +126,27 @@ fn changes(
         );
     }
     let mut out = Vec::new();
+    let (mut slskd_url, mut slskd_key) = (None, KeyChange::Keep);
     for key in Key::ALL {
         let Some(value) = fields.get(key.name()) else {
             continue;
         };
         match key {
-            Key::AcoustidApiKey | Key::FanartApiKey | Key::SlskdApiKey => {
-                out.extend(secret_change(key, value)?)
+            Key::AcoustidApiKey | Key::FanartApiKey => out.extend(secret_change(key, value)?),
+            Key::SlskdApiKey => slskd_key = slskd_key_change(value)?,
+            Key::SlskdUrl => {
+                slskd_url = Some(match value {
+                    Value::Null => None,
+                    Value::String(s) if s.trim().is_empty() => None,
+                    Value::String(s) => Some(
+                        SlskdUrl::parse(s)
+                            .map_err(|e| invalid(e.to_string()))?
+                            .as_str()
+                            .to_string(),
+                    ),
+                    _ => return Err(invalid(format!("{} must be a string or null", key.name()))),
+                })
             }
-            Key::SlskdUrl => match value {
-                Value::Null => out.push(Change::Clear(key)),
-                Value::String(s) if s.trim().is_empty() => out.push(Change::Clear(key)),
-                Value::String(s) => {
-                    let url = SlskdUrl::parse(s).map_err(|e| invalid(e.to_string()))?;
-                    out.push(Change::Plain(key, Value::String(url.as_str().to_string())));
-                }
-                _ => return Err(invalid(format!("{} must be a string or null", key.name()))),
-            },
             Key::FanartEnabled | Key::AutoEnrichMetadata | Key::SoulseekEnabled => {
                 if !value.is_boolean() {
                     return Err(invalid(format!("{} must be a boolean", key.name())));
@@ -166,6 +187,9 @@ fn changes(
             }
         }
     }
+    if slskd_url.is_some() || slskd_key != KeyChange::Keep {
+        out.push(Change::Slskd(slskd_url, slskd_key));
+    }
     Ok((registration_open, out))
 }
 
@@ -191,7 +215,10 @@ async fn update(
             Change::Secret(key, value) => {
                 settings_kv::set_secret(&state.pool, &state.cipher, key, value.as_deref()).await?;
             }
-            Change::Clear(key) => settings_kv::set_plain(&state.pool, key, None).await?,
+            Change::Slskd(url, key) => {
+                let url = url.as_ref().map(Option::as_deref);
+                settings_kv::save_slskd(&state.pool, &state.cipher, url, key).await?;
+            }
             Change::Plain(key, value) => {
                 settings_kv::set_plain(&state.pool, key, Some(&value)).await?;
                 if key == Key::AutoEnrichMetadata {
