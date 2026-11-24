@@ -3,6 +3,7 @@
 pub mod artwork;
 pub mod autotag;
 pub mod fingerprint;
+pub mod ingest;
 pub mod jobs;
 pub mod names;
 pub mod organize;
