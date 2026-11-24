@@ -283,6 +283,113 @@ async fn the_file_cap_bounds_one_search() {
     assert_eq!(got.iter().map(|r| r.files.len()).sum::<usize>(), 4);
 }
 
+fn file(name: impl Into<Value>) -> Value {
+    json!({ "filename": name.into(), "size": 1 })
+}
+
+/// Review I-1: a peer name repeated into every result row. 16 KiB x 512 files fits the 1 MiB
+/// body cap but would format to 8 MiB of usernames; the whole response is skipped instead.
+#[tokio::test]
+async fn an_oversized_username_skips_the_whole_response() {
+    let big = "u".repeat(16 * 1024);
+    let files: Vec<Value> = (0..512).map(|i| file(format!("f{i}.mp3"))).collect();
+    let stub = stub(Script {
+        create: created(),
+        responses: answers(json!([
+            { "username": big, "files": files },
+            { "username": "ok", "files": [file("a.mp3")] }
+        ])),
+        status: complete(true),
+    })
+    .await;
+    let (end, got) = run(&stub, fast()).await;
+    assert_eq!(end, Ok(SearchEnd::Complete));
+    assert_eq!(got.len(), 1, "only the valid peer");
+    assert_eq!(got[0].username, "ok");
+    assert_eq!(got[0].files.len(), 1);
+    assert_eq!(stub.deletes().len(), 1);
+}
+
+#[tokio::test]
+async fn blank_or_missing_usernames_are_skipped() {
+    let stub = stub(Script {
+        create: created(),
+        responses: answers(json!([
+            { "username": "", "files": [file("a.mp3")] },
+            { "username": " \t", "files": [file("b.mp3")] },
+            { "files": [file("c.mp3")] },
+            { "username": "ok", "files": [file("d.mp3")] }
+        ])),
+        status: complete(true),
+    })
+    .await;
+    let (end, got) = run(&stub, fast()).await;
+    assert_eq!(end, Ok(SearchEnd::Complete));
+    let users: Vec<&str> = got.iter().map(|r| r.username.as_str()).collect();
+    assert_eq!(users, ["ok"]);
+    assert_eq!(stub.deletes().len(), 1);
+}
+
+/// Byte bounds on UTF-8 text: 255-byte username and 1024-byte filename are kept whole, one byte
+/// more is skipped (never truncated); bad files are dropped, valid siblings kept in order.
+#[tokio::test]
+async fn usernames_and_filenames_are_bounded_in_utf8_bytes() {
+    let user_max = format!("{}a", "é".repeat(127)); // 255 bytes
+    let user_over = "é".repeat(128); // 256 bytes
+    let name_max = "ü".repeat(512); // 1024 bytes
+    let name_over = format!("{}a", "ü".repeat(512)); // 1025 bytes
+    assert_eq!((user_max.len(), user_over.len()), (255, 256));
+    assert_eq!((name_max.len(), name_over.len()), (1024, 1025));
+    let stub = stub(Script {
+        create: created(),
+        responses: answers(json!([
+            { "username": user_over, "files": [file("x.mp3")] },
+            { "username": user_max, "files": [
+                file(name_over.clone()),
+                file(name_max.clone()),
+                file(""),
+                file("  "),
+                { "size": 1 },
+                file("ok.mp3")
+            ] }
+        ])),
+        status: complete(true),
+    })
+    .await;
+    let (end, got) = run(&stub, fast()).await;
+    assert_eq!(end, Ok(SearchEnd::Complete));
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].username, user_max);
+    let names: Vec<&str> = got[0].files.iter().map(|f| f.filename.as_str()).collect();
+    assert_eq!(names, [name_max.as_str(), "ok.mp3"]);
+    assert_eq!(stub.deletes().len(), 1);
+}
+
+/// Skipped files do not use up the file cap.
+#[tokio::test]
+async fn invalid_files_do_not_consume_the_file_cap() {
+    let stub = stub(Script {
+        create: created(),
+        responses: answers(json!([
+            { "username": "a", "files": [file(""), file("x".repeat(1025)), file("1.mp3"), file("2.mp3")] }
+        ])),
+        status: complete(true),
+    })
+    .await;
+    let (end, got) = run(
+        &stub,
+        SearchLimits {
+            max_files: 2,
+            ..fast()
+        },
+    )
+    .await;
+    assert_eq!(end, Ok(SearchEnd::Capped));
+    let names: Vec<&str> = got[0].files.iter().map(|f| f.filename.as_str()).collect();
+    assert_eq!(names, ["1.mp3", "2.mp3"]);
+    assert_eq!(stub.deletes().len(), 1);
+}
+
 #[tokio::test]
 async fn a_rejected_key_stops_the_search() {
     let stub = stub(Script {

@@ -278,6 +278,17 @@ pub async fn check_connection(
 pub const MAX_SEARCHES: usize = 2;
 /// The longest query sent (characters, after trimming).
 pub const MAX_QUERY_CHARS: usize = 200;
+/// The longest peer username kept, in UTF-8 bytes (review I-1: it is repeated into every result
+/// row). A blank or longer name skips that peer's whole response; it is never truncated.
+pub const MAX_USERNAME_BYTES: usize = 255;
+/// The longest shared-file path kept, in UTF-8 bytes. A blank or longer path skips that file
+/// only, without using up the file cap; it is never truncated.
+pub const MAX_FILENAME_BYTES: usize = 1024;
+
+/// Untrusted peer text within bounds: not blank (white space only) and at most `max` bytes.
+fn bounded(text: &str, max: usize) -> bool {
+    text.len() <= max && !text.trim().is_empty()
+}
 
 /// The bounds of one search. `Default` is the production setting; tests shorten the times.
 #[derive(Debug, Clone)]
@@ -328,7 +339,9 @@ pub struct SearchFile {
     pub bitrate: u64,
 }
 
-/// One user's answer, first one per user; locked files left out.
+/// One user's answer, first one per user; locked files left out. [`search`] passes only a
+/// non-blank `username` of at most [`MAX_USERNAME_BYTES`] and filenames of at most
+/// [`MAX_FILENAME_BYTES`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchResponse {
     pub username: String,
@@ -393,7 +406,7 @@ struct Status {
 #[serde(rename_all = "camelCase")]
 struct WireResponse {
     #[serde(default)]
-    username: String,
+    username: Option<String>,
     #[serde(default)]
     has_free_upload_slot: Option<bool>,
     #[serde(default, deserialize_with = "lenient")]
@@ -422,21 +435,26 @@ struct WireFile {
 }
 
 impl WireFile {
-    fn into_file(self) -> SearchFile {
+    /// The file when it is shared (not locked) and its name is within bounds.
+    fn into_file(self) -> Option<SearchFile> {
+        if self.is_locked == Some(true) {
+            return None;
+        }
+        let filename = self.filename.filter(|f| bounded(f, MAX_FILENAME_BYTES))?;
         let size = self.size.unwrap_or(0);
         let length = self.length.filter(|&l| l > 0);
         let bitrate = match length {
             Some(l) if size > 0 => ((size as f64 * 8.0) / (l as f64 * 1000.0)).round() as u64,
             _ => 0,
         };
-        SearchFile {
-            filename: self.filename.unwrap_or_default(),
+        Some(SearchFile {
+            filename,
             size,
             length,
             sample_rate: self.sample_rate.filter(|&r| r > 0),
             bit_depth: self.bit_depth.filter(|&b| b > 0),
             bitrate,
-        }
+        })
     }
 }
 
@@ -614,20 +632,24 @@ async fn poll(
                     if seen_users.len() >= limits.response_limit as usize || files_left == 0 {
                         return Ok(SearchEnd::Capped);
                     }
-                    if !seen_users.insert(resp.username.clone()) {
+                    // An invalid name skips the peer before it is stored or cloned.
+                    let Some(username) = resp.username.filter(|u| bounded(u, MAX_USERNAME_BYTES))
+                    else {
+                        continue;
+                    };
+                    if !seen_users.insert(username.clone()) {
                         continue;
                     }
                     let files: Vec<SearchFile> = resp
                         .files
                         .unwrap_or_default()
                         .into_iter()
-                        .filter(|f| f.is_locked != Some(true))
+                        .filter_map(WireFile::into_file)
                         .take(files_left)
-                        .map(WireFile::into_file)
                         .collect();
                     files_left -= files.len();
                     on_response(SearchResponse {
-                        username: resp.username,
+                        username,
                         has_free_upload_slot: resp.has_free_upload_slot.unwrap_or(false),
                         upload_speed: resp.upload_speed.unwrap_or(0),
                         queue_length: resp.queue_length.unwrap_or(0),

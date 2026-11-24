@@ -200,4 +200,58 @@ mod tests {
             assert_eq!(title_from_file_name(name), want, "{name:?}");
         }
     }
+
+    /// Review I-1: with the adapter's bounds (username <= 255, path <= 1024 bytes, <= 1000 files)
+    /// every row holds at most 255 + 4 * 1024 bytes of text (path; leaf or whole path; artist,
+    /// album and title are parts of it), so one session stays under about 4.2 MiB of text.
+    #[test]
+    fn formatted_rows_stay_within_the_adapter_bounds() {
+        use aether_net::slskd::{MAX_FILENAME_BYTES, MAX_USERNAME_BYTES, SearchFile};
+        let row_max = MAX_USERNAME_BYTES + 4 * MAX_FILENAME_BYTES;
+        let pad = |s: String| format!("{s}{}", "x".repeat(MAX_FILENAME_BYTES - s.len()));
+        let shapes = [
+            pad("a/b/".to_string()),                             // leaf is the rest
+            format!("{}/", "a".repeat(1023)),                    // empty leaf: whole path again
+            format!("/{}/", "/".repeat(1022)),                   // only separators
+            pad("01 - ".to_string()),                            // no separators
+            format!("{}/{}/", "a".repeat(511), "b".repeat(511)), // artist + album, empty leaf
+        ];
+        for path in shapes {
+            assert_eq!(path.len(), MAX_FILENAME_BYTES, "{}", &path[..8]);
+            let resp = SearchResponse {
+                username: "u".repeat(MAX_USERNAME_BYTES),
+                has_free_upload_slot: false,
+                upload_speed: 0,
+                queue_length: 0,
+                files: vec![
+                    SearchFile {
+                        filename: path,
+                        size: 1,
+                        length: None,
+                        sample_rate: None,
+                        bit_depth: None,
+                        bitrate: 0,
+                    };
+                    1000
+                ],
+            };
+            let rows = format_response(resp);
+            assert_eq!(rows.len(), 1000);
+            let total: usize = rows
+                .iter()
+                .map(|r| {
+                    let n = r.username.len()
+                        + r.path.len()
+                        + r.filename.len()
+                        + [&r.parsed_artist, &r.parsed_album, &r.parsed_title]
+                            .iter()
+                            .map(|o| o.as_ref().map_or(0, String::len))
+                            .sum::<usize>();
+                    assert!(n <= row_max, "{n} > {row_max}");
+                    n
+                })
+                .sum();
+            assert!(total <= 1000 * row_max);
+        }
+    }
 }
