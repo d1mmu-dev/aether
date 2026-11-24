@@ -488,6 +488,42 @@ fn cancellation_mid_stream_removes_the_part() {
     assert_eq!(tree(&music), ["A"]);
 }
 
+/// Returns all its bytes, then sets the cancel flag when it reports EOF.
+struct CancelAtEof<'a> {
+    data: &'a [u8],
+    cancel: &'a AtomicBool,
+}
+impl Read for CancelAtEof<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.data.read(buf)?;
+        if n == 0 {
+            self.cancel.store(true, Ordering::SeqCst);
+        }
+        Ok(n)
+    }
+}
+
+#[test]
+fn cancellation_at_end_of_stream_publishes_nothing() {
+    let t = tmp();
+    let music = t.path().join("music");
+    fs::create_dir(&music).unwrap();
+    let cancel = AtomicBool::new(false);
+    let data = vec![4u8; 100_000];
+    let r = copy_into(
+        &music,
+        &rel("A/f.flac"),
+        &mut CancelAtEof {
+            data: &data,
+            cancel: &cancel,
+        },
+        limits(MIB),
+        &cancel,
+    );
+    assert!(matches!(r, Err(IngestError::Cancelled)), "{r:?}");
+    assert_eq!(tree(&music), ["A"]);
+}
+
 #[test]
 fn concurrent_writers_exactly_one_wins() {
     let t = tmp();
