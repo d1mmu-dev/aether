@@ -1,6 +1,7 @@
 use aether_db::settings::{self, SettingsPatch, SystemSettings};
 use aether_db::settings_kv::{self, Key, KvSettings};
 use aether_ident::fanart::{self, TestResult};
+use aether_net::slskd::{SlskdApiKey, SlskdCheck, SlskdUrl};
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -22,6 +23,7 @@ pub fn routes() -> Router<AppState> {
         .route("/system-settings", get(show).post(update))
         .route("/system-settings/public-config", get(public_config))
         .route("/system-settings/test-fanart", post(test_fanart))
+        .route("/system-settings/test-soulseek", post(test_soulseek))
 }
 
 /// The key-value state. The frontend's `getPublicConfig()` reads `canAcquire`, which aether
@@ -58,6 +60,11 @@ async fn show(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<V
         "podcastChartCountry": kv.podcast_chart_country,
         // Upstream's switch for the daily update check (M5b Task 17, D-270).
         "updateChecksEnabled": updates.enabled,
+        // M7 slskd (D-291): off by default; the key is never returned.
+        "soulseekEnabled": kv.soulseek_enabled,
+        "slskdUrl": kv.slskd_url.as_deref().unwrap_or(""),
+        "slskdApiKey": "",
+        "hasSlskdApiKey": kv.slskd_api_key.is_some(),
     })))
 }
 
@@ -65,6 +72,8 @@ async fn show(State(state): State<AppState>, _admin: AdminUser) -> Result<Json<V
 enum Change {
     Secret(Key, Option<String>),
     Plain(Key, Value),
+    /// A plain setting back to its default (row deleted).
+    Clear(Key),
 }
 
 fn invalid(detail: String) -> ApiError {
@@ -105,8 +114,19 @@ fn changes(
             continue;
         };
         match key {
-            Key::AcoustidApiKey | Key::FanartApiKey => out.extend(secret_change(key, value)?),
-            Key::FanartEnabled | Key::AutoEnrichMetadata => {
+            Key::AcoustidApiKey | Key::FanartApiKey | Key::SlskdApiKey => {
+                out.extend(secret_change(key, value)?)
+            }
+            Key::SlskdUrl => match value {
+                Value::Null => out.push(Change::Clear(key)),
+                Value::String(s) if s.trim().is_empty() => out.push(Change::Clear(key)),
+                Value::String(s) => {
+                    let url = SlskdUrl::parse(s).map_err(|e| invalid(e.to_string()))?;
+                    out.push(Change::Plain(key, Value::String(url.as_str().to_string())));
+                }
+                _ => return Err(invalid(format!("{} must be a string or null", key.name()))),
+            },
+            Key::FanartEnabled | Key::AutoEnrichMetadata | Key::SoulseekEnabled => {
                 if !value.is_boolean() {
                     return Err(invalid(format!("{} must be a boolean", key.name())));
                 }
@@ -171,6 +191,7 @@ async fn update(
             Change::Secret(key, value) => {
                 settings_kv::set_secret(&state.pool, &state.cipher, key, value.as_deref()).await?;
             }
+            Change::Clear(key) => settings_kv::set_plain(&state.pool, key, None).await?,
             Change::Plain(key, value) => {
                 settings_kv::set_plain(&state.pool, key, Some(&value)).await?;
                 if key == Key::AutoEnrichMetadata {
@@ -271,5 +292,89 @@ async fn test_fanart(
             Json(json!({ "error": "Fanart.tv did not answer" })),
         )
             .into_response(),
+    })
+}
+
+/// The fields of a `test-soulseek` body that this slice reads (upstream `systemSettings.ts`
+/// `/test-soulseek`: `mode`, `slskdUrl`, `slskdApiKey`; `username`/`password` are p2p-only).
+#[derive(Default)]
+struct SoulseekProbe {
+    mode: Option<String>,
+    url: Option<String>,
+    key: Option<String>,
+}
+
+/// Parses a `test-soulseek` body. Anything but an object of optional strings is a bare 400
+/// that quotes nothing; blank strings count as absent.
+fn soulseek_probe(body: &[u8]) -> Result<SoulseekProbe, ApiError> {
+    let bad = || ApiError::BadRequest("Invalid request".into());
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(SoulseekProbe::default());
+    }
+    let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else {
+        return Err(bad());
+    };
+    let text = |name: &str| match fields.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.trim().to_string()).filter(|s| !s.is_empty())),
+        Some(_) => Err(bad()),
+    };
+    Ok(SoulseekProbe {
+        mode: text("mode")?,
+        url: text("slskdUrl")?,
+        key: text(Key::SlskdApiKey.name())?,
+    })
+}
+
+/// `POST /system-settings/test-soulseek`, slskd mode only (M7 first slice, D-291): asks the
+/// body's `slskdUrl`, else the stored one, for `GET /api/v0/application`. The body's key is sent
+/// when given; the stored key only to the stored address. Nothing is saved, the integration
+/// switch is not required, and no URL, key or slskd text is echoed.
+async fn test_soulseek(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let probe = soulseek_probe(&body)?;
+    if probe.mode.as_deref().is_some_and(|m| m != "slskd") {
+        return Err(ApiError::BadRequest(
+            "Only slskd can be tested for now".into(),
+        ));
+    }
+    let kv = state.settings.get().await?;
+    let stored_url = kv
+        .slskd_url
+        .as_deref()
+        .and_then(|u| SlskdUrl::parse(u).ok());
+    let url = match probe.url.as_deref() {
+        Some(raw) => SlskdUrl::parse(raw).map_err(|e| ApiError::BadRequest(e.to_string()))?,
+        None => stored_url
+            .clone()
+            .ok_or_else(|| ApiError::BadRequest("slskd URL is required".into()))?,
+    };
+    let key = match probe.key.as_deref() {
+        Some(raw) => Some(
+            SlskdApiKey::new(raw).ok_or_else(|| ApiError::BadRequest("Invalid request".into()))?,
+        ),
+        None if stored_url.as_ref() == Some(&url) => {
+            kv.slskd_api_key.as_deref().and_then(SlskdApiKey::new)
+        }
+        None => None,
+    };
+    let failed = |message: &'static str| ApiError::BadGateway(message).into_response();
+    Ok(match state.net.check_slskd(&url, key.as_ref()).await {
+        SlskdCheck::Connected => Json(json!({
+            "success": true,
+            "message": "Connected to slskd",
+            "isConnected": true,
+        }))
+        .into_response(),
+        SlskdCheck::NotLoggedIn => failed("slskd is not connected to the Soulseek network"),
+        SlskdCheck::Rejected => failed("slskd rejected the API key"),
+        SlskdCheck::NoAnswer => failed("slskd did not answer"),
+        SlskdCheck::Unexpected => failed("slskd answered unexpectedly"),
+        SlskdCheck::Refused | SlskdCheck::Disabled => {
+            return Err(ApiError::Conflict("Outbound connections are turned off"));
+        }
     })
 }

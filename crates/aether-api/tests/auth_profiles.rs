@@ -205,6 +205,7 @@ const ADMIN_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/system-settings"),
     ("POST", "/api/system-settings"),
     ("POST", "/api/system-settings/test-fanart"),
+    ("POST", "/api/system-settings/test-soulseek"),
 ];
 
 async fn call(

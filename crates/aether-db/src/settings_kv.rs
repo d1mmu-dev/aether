@@ -20,10 +20,16 @@ pub enum Key {
     AutotagAutoApply,
     /// ISO 3166 alpha-2, lowercase; the Apple podcast chart country (M6 Task 17, D-038 amended).
     PodcastChartCountry,
+    /// M7: the Soulseek integration switch; off unless an admin turns it on (D-291).
+    SoulseekEnabled,
+    /// M7: the slskd origin, validated by `aether_net::slskd::SlskdUrl` before it is stored.
+    SlskdUrl,
+    /// M7: the slskd API key (secret).
+    SlskdApiKey,
 }
 
 impl Key {
-    pub const ALL: [Key; 7] = [
+    pub const ALL: [Key; 10] = [
         Key::AcoustidApiKey,
         Key::FanartApiKey,
         Key::FanartEnabled,
@@ -31,6 +37,9 @@ impl Key {
         Key::EnrichmentConcurrency,
         Key::AutotagAutoApply,
         Key::PodcastChartCountry,
+        Key::SoulseekEnabled,
+        Key::SlskdUrl,
+        Key::SlskdApiKey,
     ];
 
     /// The camelCase key of spec §15.1, used as the row key and the JSON field.
@@ -43,11 +52,17 @@ impl Key {
             Key::EnrichmentConcurrency => "enrichmentConcurrency",
             Key::AutotagAutoApply => "autotagAutoApply",
             Key::PodcastChartCountry => "podcastChartCountry",
+            Key::SoulseekEnabled => "soulseekEnabled",
+            Key::SlskdUrl => "slskdUrl",
+            Key::SlskdApiKey => "slskdApiKey",
         }
     }
 
     pub fn is_secret(self) -> bool {
-        matches!(self, Key::AcoustidApiKey | Key::FanartApiKey)
+        matches!(
+            self,
+            Key::AcoustidApiKey | Key::FanartApiKey | Key::SlskdApiKey
+        )
     }
 
     fn aad(self) -> Vec<u8> {
@@ -87,6 +102,9 @@ pub struct KvSettings {
     pub enrichment_concurrency: u8,
     pub autotag_auto_apply: AutoApply,
     pub podcast_chart_country: String,
+    pub soulseek_enabled: bool,
+    pub slskd_url: Option<String>,
+    pub slskd_api_key: Option<String>,
 }
 
 impl Default for KvSettings {
@@ -99,6 +117,9 @@ impl Default for KvSettings {
             enrichment_concurrency: 1,
             autotag_auto_apply: AutoApply::Off,
             podcast_chart_country: "us".to_string(),
+            soulseek_enabled: false,
+            slskd_url: None,
+            slskd_api_key: None,
         }
     }
 }
@@ -120,6 +141,9 @@ impl std::fmt::Debug for KvSettings {
             .field("enrichment_concurrency", &self.enrichment_concurrency)
             .field("autotag_auto_apply", &self.autotag_auto_apply)
             .field("podcast_chart_country", &self.podcast_chart_country)
+            .field("soulseek_enabled", &self.soulseek_enabled)
+            .field("slskd_url", &self.slskd_url)
+            .field("slskd_api_key", &self.slskd_api_key.as_ref().map(|_| ".."))
             .finish()
     }
 }
@@ -164,6 +188,7 @@ pub async fn load(pool: &PgPool, cipher: &Cipher) -> sqlx::Result<KvSettings> {
             }
             match key {
                 Key::AcoustidApiKey => out.acoustid_api_key = plain,
+                Key::SlskdApiKey => out.slskd_api_key = plain,
                 _ => out.fanart_api_key = plain,
             }
             continue;
@@ -185,6 +210,8 @@ pub async fn load(pool: &PgPool, cipher: &Cipher) -> sqlx::Result<KvSettings> {
                     out.podcast_chart_country = s.to_string();
                 }
             }
+            Key::SoulseekEnabled => out.soulseek_enabled = value.as_bool().unwrap_or(false),
+            Key::SlskdUrl => out.slskd_url = value.as_str().map(str::to_string),
             _ => {}
         }
     }
