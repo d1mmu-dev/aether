@@ -14,6 +14,7 @@ mod outcome;
 pub mod record;
 mod req;
 mod secrets;
+pub mod slskd;
 mod source;
 pub mod ssrf;
 #[cfg(feature = "testing")]
