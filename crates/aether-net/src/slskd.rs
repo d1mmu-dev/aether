@@ -369,8 +369,11 @@ pub enum SearchError {
 fn lenient<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
     let n = Option::<serde_json::Number>::deserialize(d)?;
     Ok(n.and_then(|n| {
-        n.as_u64()
-            .or_else(|| n.as_f64().filter(|f| f.is_finite() && *f >= 0.0).map(|f| f as u64))
+        n.as_u64().or_else(|| {
+            n.as_f64()
+                .filter(|f| f.is_finite() && *f >= 0.0)
+                .map(|f| f as u64)
+        })
     }))
 }
 
@@ -452,7 +455,7 @@ enum Answer {
     /// A non-success status (redirects included, never followed).
     Status,
     /// No answer within its time.
-    NoAnswer,
+    Silent,
     /// Over the size cap, or broken mid-body.
     Bad,
 }
@@ -467,12 +470,12 @@ impl Endpoint {
     async fn send(&self, rb: RequestBuilder, cap: usize, until: Instant) -> Answer {
         // An expired budget sends nothing (a ready timeout can still poll the request once).
         if Instant::now() >= until {
-            return Answer::NoAnswer;
+            return Answer::Silent;
         }
         let rb = with_key(rb.header(ACCEPT, "application/json"), &self.key);
         let work = async {
             let Ok(res) = rb.send().await else {
-                return Answer::NoAnswer;
+                return Answer::Silent;
             };
             let status = res.status();
             if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
@@ -483,13 +486,13 @@ impl Endpoint {
             }
             match read_capped(res, cap).await {
                 Ok(body) => Answer::Body(body),
-                Err(BodyError::Timeout) => Answer::NoAnswer,
+                Err(BodyError::Timeout) => Answer::Silent,
                 Err(_) => Answer::Bad,
             }
         };
         tokio::time::timeout_at(until, work)
             .await
-            .unwrap_or(Answer::NoAnswer)
+            .unwrap_or(Answer::Silent)
     }
 }
 
@@ -502,12 +505,10 @@ struct Cleanup {
 }
 
 impl Cleanup {
-    fn request(endpoint: Arc<Endpoint>, url: Url, timeout: Duration) -> impl Future<Output = ()> {
-        async move {
-            let until = Instant::now() + timeout;
-            let rb = endpoint.http.delete(url);
-            let _ = endpoint.send(rb, MAX_BODY, until).await;
-        }
+    async fn request(endpoint: Arc<Endpoint>, url: Url, timeout: Duration) {
+        let until = Instant::now() + timeout;
+        let rb = endpoint.http.delete(url);
+        let _ = endpoint.send(rb, MAX_BODY, until).await;
     }
 
     async fn run(mut self) {
@@ -552,14 +553,20 @@ pub async fn search(
     let endpoint = Arc::new(Endpoint { http, base, key });
 
     let body = serde_json::json!({ "searchText": query, "responseLimit": limits.response_limit });
-    let rb = endpoint.http.post(endpoint.url("/api/v0/searches")).json(&body);
-    let id = match endpoint.send(rb, limits.max_body, budget(Instant::now())).await {
+    let rb = endpoint
+        .http
+        .post(endpoint.url("/api/v0/searches"))
+        .json(&body);
+    let id = match endpoint
+        .send(rb, limits.max_body, budget(Instant::now()))
+        .await
+    {
         Answer::Body(b) => serde_json::from_slice::<Created>(&b)
             .ok()
             .and_then(|c| Uuid::parse_str(&c.id).ok())
             .ok_or(SearchError::Unexpected)?,
         Answer::Rejected => return Err(SearchError::Rejected),
-        Answer::NoAnswer => return Err(SearchError::NoAnswer),
+        Answer::Silent => return Err(SearchError::NoAnswer),
         Answer::Status | Answer::Bad => return Err(SearchError::Unexpected),
     };
     let search_path = format!("/api/v0/searches/{}", id.hyphenated());
@@ -596,7 +603,10 @@ async fn poll(
         }
 
         let rb = endpoint.http.get(responses_url.clone());
-        match endpoint.send(rb, limits.max_responses_body, budget(Instant::now())).await {
+        match endpoint
+            .send(rb, limits.max_responses_body, budget(Instant::now()))
+            .await
+        {
             Answer::Body(b) => {
                 let wire: Vec<WireResponse> =
                     serde_json::from_slice(&b).map_err(|_| SearchError::Unexpected)?;
@@ -631,18 +641,21 @@ async fn poll(
             Answer::Rejected => return Err(SearchError::Rejected),
             Answer::Bad => return Err(SearchError::Unexpected),
             // Upstream keeps polling through a failed poll.
-            Answer::Status | Answer::NoAnswer => continue,
+            Answer::Status | Answer::Silent => continue,
         }
 
         let rb = endpoint.http.get(status_url.clone());
-        match endpoint.send(rb, limits.max_body, budget(Instant::now())).await {
+        match endpoint
+            .send(rb, limits.max_body, budget(Instant::now()))
+            .await
+        {
             Answer::Body(b) => {
                 if serde_json::from_slice::<Status>(&b).is_ok_and(|s| s.is_complete) {
                     return Ok(SearchEnd::Complete);
                 }
             }
             Answer::Rejected => return Err(SearchError::Rejected),
-            Answer::Bad | Answer::Status | Answer::NoAnswer => {}
+            Answer::Bad | Answer::Status | Answer::Silent => {}
         }
     }
 }

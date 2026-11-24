@@ -46,7 +46,10 @@ impl Stub {
         self.seen.lock().unwrap().clone()
     }
     fn deletes(&self) -> Vec<Seen> {
-        self.seen().into_iter().filter(|s| s.method == "DELETE").collect()
+        self.seen()
+            .into_iter()
+            .filter(|s| s.method == "DELETE")
+            .collect()
     }
 }
 
@@ -134,10 +137,16 @@ fn sample_responses() -> Value {
     ])
 }
 
-async fn run(stub: &Stub, limits: SearchLimits) -> (Result<SearchEnd, SearchError>, Vec<SearchResponse>) {
+async fn run(
+    stub: &Stub,
+    limits: SearchLimits,
+) -> (Result<SearchEnd, SearchError>, Vec<SearchResponse>) {
     let key = SlskdApiKey::new("sk-synthetic").unwrap();
     let mut got = Vec::new();
-    let end = search(&stub.url(), Some(&key), "artist song", &limits, true, |r| got.push(r)).await;
+    let end = search(&stub.url(), Some(&key), "artist song", &limits, true, |r| {
+        got.push(r)
+    })
+    .await;
     (end, got)
 }
 
@@ -156,12 +165,21 @@ async fn search_uses_the_upstream_wire_and_cleans_up() {
     let post: Value = serde_json::from_str(&seen[0].body).unwrap();
     assert_eq!(seen[0].method, "POST");
     assert_eq!(seen[0].target, "/api/v0/searches");
-    assert_eq!(post, json!({ "searchText": "artist song", "responseLimit": 100 }));
+    assert_eq!(
+        post,
+        json!({ "searchText": "artist song", "responseLimit": 100 })
+    );
     assert_eq!(seen[1].target, format!("/api/v0/searches/{ID}/responses"));
     assert_eq!(seen[2].target, format!("/api/v0/searches/{ID}"));
     assert_eq!(seen.last().unwrap().method, "DELETE");
-    assert_eq!(seen.last().unwrap().target, format!("/api/v0/searches/{ID}"));
-    assert!(seen.iter().all(|s| s.api_key.as_deref() == Some("sk-synthetic")));
+    assert_eq!(
+        seen.last().unwrap().target,
+        format!("/api/v0/searches/{ID}")
+    );
+    assert!(
+        seen.iter()
+            .all(|s| s.api_key.as_deref() == Some("sk-synthetic"))
+    );
 
     // First response per user; locked files dropped; metadata kept for the later download.
     assert_eq!(got.len(), 2);
@@ -191,7 +209,12 @@ async fn a_search_id_that_is_not_a_uuid_is_never_put_into_a_path() {
     .await;
     let (end, _) = run(&stub, fast()).await;
     assert_eq!(end, Err(SearchError::Unexpected));
-    assert_eq!(stub.seen().len(), 1, "only the create request: {:?}", stub.seen());
+    assert_eq!(
+        stub.seen().len(),
+        1,
+        "only the create request: {:?}",
+        stub.seen()
+    );
 }
 
 #[tokio::test]
@@ -220,7 +243,14 @@ async fn an_oversized_responses_answer_is_an_error_and_still_deleted() {
         status: complete(true),
     })
     .await;
-    let (end, got) = run(&stub, SearchLimits { max_responses_body: 1024, ..fast() }).await;
+    let (end, got) = run(
+        &stub,
+        SearchLimits {
+            max_responses_body: 1024,
+            ..fast()
+        },
+    )
+    .await;
     assert_eq!(end, Err(SearchError::Unexpected));
     assert!(got.is_empty());
     assert_eq!(stub.deletes().len(), 1);
@@ -240,7 +270,14 @@ async fn the_file_cap_bounds_one_search() {
         status: complete(true),
     })
     .await;
-    let (end, got) = run(&stub, SearchLimits { max_files: 4, ..fast() }).await;
+    let (end, got) = run(
+        &stub,
+        SearchLimits {
+            max_files: 4,
+            ..fast()
+        },
+    )
+    .await;
     assert_eq!(end, Ok(SearchEnd::Capped));
     assert_eq!(stub.deletes().len(), 1);
     assert_eq!(got.iter().map(|r| r.files.len()).sum::<usize>(), 4);
@@ -263,7 +300,11 @@ async fn a_rejected_key_stops_the_search() {
 async fn a_redirect_is_not_followed() {
     let stub = stub(Script {
         create: Arc::new(|| {
-            (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, "http://127.0.0.1:9/")]).into_response()
+            (
+                StatusCode::TEMPORARY_REDIRECT,
+                [(header::LOCATION, "http://127.0.0.1:9/")],
+            )
+                .into_response()
         }),
         responses: answers(json!([])),
         status: complete(true),
@@ -291,7 +332,10 @@ async fn a_cancelled_search_is_still_deleted() {
     .await;
     let s2 = stub.clone();
     let task = tokio::spawn(async move {
-        let limits = SearchLimits { deadline: Duration::from_secs(30), ..fast() };
+        let limits = SearchLimits {
+            deadline: Duration::from_secs(30),
+            ..fast()
+        };
         search(&s2.url(), None, "q", &limits, true, |_| {}).await
     });
     // Wait until polling has started, then cancel.
