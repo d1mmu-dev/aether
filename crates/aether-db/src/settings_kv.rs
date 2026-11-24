@@ -276,7 +276,7 @@ async fn delete(pool: impl sqlx::PgExecutor<'_>, key: Key) -> sqlx::Result<()> {
 }
 
 /// How a save changes the slskd API key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum KeyChange {
     /// Absent or blank in the body: not a fresh key.
     Keep,
@@ -284,6 +284,16 @@ pub enum KeyChange {
     Clear,
     /// A fresh, already validated key.
     Set(String),
+}
+
+impl std::fmt::Debug for KeyChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Keep => "Keep",
+            Self::Clear => "Clear",
+            Self::Set(_) => "Set([redacted])",
+        })
+    }
 }
 
 /// Saves the slskd URL/key pair in one transaction (review I-1, D-291). `url`: `None` leaves the

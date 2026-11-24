@@ -6,6 +6,21 @@ use aether_db::PgPool;
 use aether_db::settings_kv::{self, AutoApply, Key, KvSettings, SettingsCache};
 use serde_json::json;
 
+#[test]
+fn slskd_key_change_debug_redacts_the_key() {
+    use settings_kv::KeyChange;
+
+    let change = KeyChange::Set("fixture-key-not-for-logging".into());
+    let debug = format!("{change:?}");
+    assert!(
+        !debug.contains("fixture-key-not-for-logging"),
+        "Debug must redact the key"
+    );
+    assert!(debug.contains("Set"));
+    assert_eq!(format!("{:?}", KeyChange::Keep), "Keep");
+    assert_eq!(format!("{:?}", KeyChange::Clear), "Clear");
+}
+
 #[sqlx::test(migrator = "aether_db::MIGRATOR")]
 async fn secret_encrypted_at_rest_with_key_aad(pool: PgPool) {
     let cipher = Cipher::random();
