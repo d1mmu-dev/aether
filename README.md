@@ -1,29 +1,16 @@
 # Aether
 
-This project is a fork of [Chevron7Locked/kima-hub](https://github.com/Chevron7Locked/kima-hub),
-ported to the Rust language.
+Aether is a self-hosted music server inspired by
+[Chevron7Locked's kima-hub](https://github.com/Chevron7Locked/kima-hub).
 
-Aether is a self-hosted music server. It replaces the Node/TypeScript backend and the Python analyzers with a single Rust
-`aether` binary plus Postgres, and replaces the upstream Next.js frontend with `aether-web`, a Rust/WASM
-frontend (vertigo) that `aether` renders on the server. `aether-web` is the only frontend: no Next.js or Node
-runs in the Docker image, the production server or CI. The repository does not bundle the upstream Next.js app
-(removed 2026-11-18, D-180): visual/functional comparisons use an external, freshly pulled kima-hub checkout
-(`tools/prepare-kima-hub-reference.sh`, `tools/run-aether-web-visual.sh`, configured by `AETHER_UPSTREAM_REFERENCE`). The target look is the upstream kima-hub v1.12.3 UI (after the M-SYNC milestone); `aether-web`
-does not match it yet, see [`crates/aether-web/README.md`](crates/aether-web/README.md). Every difference from upstream is logged in
-[`docs/DIVERGENCES.md`](docs/DIVERGENCES.md). Licensed under GPL-3.0-only, like upstream.
-
-## Renamed from kima-rs (D-285)
-
-Until 2026-11-23 this project was called kima-rs (repository `kima-rs-hub`). Every own technical name moved to
-Aether in one step, with no compatibility layer: crates `aether-*`, binary `aether`, environment variables
-`AETHER_*` (the old `KIMA_*` names are not read), browser storage `aether-web.*` (users sign in once again),
-the Subsonic server/player identity `Aether`, the `x-aether-ai-hidden` header, Docker service/image/volume
-`aether`/`aether:dev`/`aether_data`, the bundled database role/database `aether`, temporary and private paths
-(`.aether-snapshots`, `.aether-tag-*`, `/opt/aether`). An existing installation therefore needs its environment
-renamed and starts with a fresh Docker volume; nothing migrates old Kima data automatically. Unchanged on purpose:
-the applied database migrations (including the `kima:profile_*` error hints they raise), the settings-encryption
-key derivation label (changing it would make stored secrets unreadable), upstream kima-hub names, paths, pins and
-licences, captured fixtures and the historical plans and ledger.
+It combines a single Rust `aether` binary and Postgres with `aether-web`, a Rust/WASM
+frontend (Vertigo) rendered on the server. `aether-web` is the only frontend: no Next.js or Node
+runs in the Docker image, the production server or CI. Functional and visual comparisons use an
+external kima-hub checkout (`tools/prepare-kima-hub-reference.sh`, `tools/run-aether-web-visual.sh`,
+configured by `AETHER_UPSTREAM_REFERENCE`); see [`crates/aether-web/README.md`](crates/aether-web/README.md)
+and [`docs/DIVERGENCES.md`](docs/DIVERGENCES.md) for implementation details and differences.
+Licensed under GPL-3.0-only; see [`LICENSE`](LICENSE) and the
+[third-party notices for bundled web assets](crates/aether-web/assets/NOTICE.md).
 
 ## Status
 
